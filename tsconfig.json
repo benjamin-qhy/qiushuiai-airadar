@@ -4,6 +4,7 @@
     { "path": "./packages/domain" },
     { "path": "./packages/config" },
     { "path": "./packages/source-adapters" },
+    { "path": "./packages/runtime" },
     { "path": "./apps/service" },
     { "path": "./apps/cli" },
     { "path": "./apps/web/tsconfig.app.json" },

@@ -67,6 +67,13 @@ const contentRecordSchema = z
     id: z.string().min(1),
     title: z.string().min(1),
     body: z.string(),
+    canonicalUrl: z.url().optional(),
+    sourceId: z.string().min(1).optional(),
+    externalId: z.string().min(1).optional(),
+    publishedAt: timestampSchema.optional(),
+    discoveredAt: timestampSchema.optional(),
+    enrichmentStatus: z.enum(['pending', 'succeeded', 'failed']).optional(),
+    enrichmentError: z.string().optional(),
   })
   .passthrough()
 
@@ -82,7 +89,8 @@ const discoveryRecordSchema = z
 const progressSchema = z
   .object({
     sourceId: z.string().min(1),
-    cursor: z.string().min(1),
+    cursor: z.string().min(1).optional(),
+    baselineExternalIds: z.array(z.string().min(1)).optional(),
     updatedAt: timestampSchema,
   })
   .strict()
@@ -103,10 +111,58 @@ const auditSchema = z
   })
   .strict()
 
+const usageSchema = z
+  .object({
+    inputTokens: z.number().int().nonnegative(),
+    outputTokens: z.number().int().nonnegative(),
+    cacheReadTokens: z.number().int().nonnegative(),
+    cacheWriteTokens: z.number().int().nonnegative(),
+    costUsd: z.number().nonnegative(),
+  })
+  .strict()
+
+const analysisRecordSchema = z
+  .object({
+    id: z.string().min(1),
+    contentId: z.string().min(1),
+    fingerprint: z.string().min(1),
+    version: z.number().int().positive(),
+    manual: z.boolean(),
+    provider: z.string().min(1),
+    model: z.string().min(1),
+    promptVersion: z.string().min(1),
+    profileVersionId: z.string().min(1),
+    ruleVersion: z.string().min(1),
+    createdAt: timestampSchema,
+    durationMs: z.number().int().nonnegative(),
+    usage: usageSchema,
+    result: jsonObjectSchema,
+  })
+  .strict()
+
+const analysisCallSchema = z
+  .object({
+    id: z.string().min(1),
+    contentId: z.string().min(1),
+    analysisId: z.string().min(1).optional(),
+    provider: z.string().min(1),
+    model: z.string().min(1),
+    startedAt: timestampSchema,
+    finishedAt: timestampSchema,
+    durationMs: z.number().int().nonnegative(),
+    status: z.enum(['succeeded', 'failed']),
+    usage: usageSchema.optional(),
+    error: z.string().optional(),
+  })
+  .strict()
+
 export type RuntimeTask = z.infer<typeof runtimeTaskSchema>
 export type ParameterScope = z.infer<typeof parameterScopeSchema>
 export type RuntimeParameterVersion = z.infer<typeof parameterVersionSchema>
 export type RuntimeAudit = z.infer<typeof auditSchema>
+export type ContentRecord = z.infer<typeof contentRecordSchema>
+export type AnalysisRecord = z.infer<typeof analysisRecordSchema>
+export type AnalysisCall = z.infer<typeof analysisCallSchema>
 
 export interface EnqueueTaskInput {
   id: string
@@ -129,7 +185,8 @@ export interface SaveParameterVersionInput {
 
 export interface DiscoveryBatchInput {
   sourceId: string
-  nextCursor: string
+  nextCursor?: string
+  baselineExternalIds?: string[]
   contents: Array<z.input<typeof contentRecordSchema>>
   discoveries: Array<z.input<typeof discoveryRecordSchema>>
 }
@@ -455,6 +512,24 @@ export class RuntimeRepository {
         source_id TEXT NOT NULL,
         record_json TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS analyses (
+        id TEXT PRIMARY KEY,
+        content_id TEXT NOT NULL,
+        fingerprint TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        record_json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS analyses_fingerprint
+        ON analyses (content_id, fingerprint);
+      CREATE UNIQUE INDEX IF NOT EXISTS analyses_version
+        ON analyses (content_id, version);
+      CREATE TABLE IF NOT EXISTS analysis_calls (
+        id TEXT PRIMARY KEY,
+        content_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        record_json TEXT NOT NULL
+      );
     `)
     await this.rebuildIndex()
   }
@@ -487,6 +562,38 @@ export class RuntimeRepository {
     return this.count('discoveries')
   }
 
+  hasDiscovery(id: string): boolean {
+    return this.hasRecord('discoveries', id)
+  }
+
+  getDiscovery(id: string): z.infer<typeof discoveryRecordSchema> | undefined {
+    return rowRecord(
+      this.database
+        .prepare('SELECT record_json FROM discoveries WHERE id = ?')
+        .get(id),
+      discoveryRecordSchema
+    )
+  }
+
+  listDiscoveries(
+    sourceId?: string
+  ): Array<z.infer<typeof discoveryRecordSchema>> {
+    const rows = sourceId
+      ? this.database
+          .prepare(
+            'SELECT record_json FROM discoveries WHERE source_id = ? ORDER BY id'
+          )
+          .all(sourceId)
+      : this.database
+          .prepare('SELECT record_json FROM discoveries ORDER BY id')
+          .all()
+    return rows
+      .map((row) => rowRecord(row, discoveryRecordSchema))
+      .filter((record): record is z.infer<typeof discoveryRecordSchema> =>
+        Boolean(record)
+      )
+  }
+
   activeSourceLockCount(): number {
     return this.count('source_locks')
   }
@@ -514,6 +621,8 @@ export class RuntimeRepository {
       DELETE FROM discoveries;
       DELETE FROM progress;
       DELETE FROM audits;
+      DELETE FROM analyses;
+      DELETE FROM analysis_calls;
     `)
 
     await this.rebuildTasks()
@@ -529,6 +638,12 @@ export class RuntimeRepository {
     })
     await this.rebuildFolder('audits', auditSchema, (record) => {
       this.upsertAudit(record)
+    })
+    await this.rebuildFolder('analyses', analysisRecordSchema, (record) => {
+      this.upsertAnalysis(record)
+    })
+    await this.rebuildFolder('analysis-calls', analysisCallSchema, (record) => {
+      this.upsertAnalysisCall(record)
     })
   }
 
@@ -917,18 +1032,39 @@ export class RuntimeRepository {
       )
       this.upsertDiscovery(discovery)
     }
-    await hooks.beforeProgress?.()
+    if (input.nextCursor || input.baselineExternalIds) {
+      await hooks.beforeProgress?.()
+      await this.writeProgress(
+        input.sourceId,
+        input.nextCursor,
+        input.baselineExternalIds
+      )
+    }
+  }
+
+  async advanceProgress(
+    sourceId: string,
+    cursor: string,
+    options: { baselineExternalIds?: string[] } = {}
+  ): Promise<void> {
+    await this.serializeMutation(() =>
+      this.writeProgress(sourceId, cursor, options.baselineExternalIds)
+    )
+  }
+
+  private async writeProgress(
+    sourceId: string,
+    cursor: string | undefined,
+    baselineExternalIds?: string[]
+  ): Promise<void> {
+    const previous = this.getProgress(sourceId)
     const progress = progressSchema.parse({
-      sourceId: input.sourceId,
-      cursor: input.nextCursor,
+      sourceId,
+      cursor: cursor ?? previous?.cursor,
+      baselineExternalIds: baselineExternalIds ?? previous?.baselineExternalIds,
       updatedAt: nowIso(),
     })
-    await this.writeRecord(
-      'progress',
-      input.sourceId,
-      'source progress',
-      progress
-    )
+    await this.writeRecord('progress', sourceId, 'source progress', progress)
     this.upsertProgress(progress)
   }
 
@@ -939,6 +1075,247 @@ export class RuntimeRepository {
         .get(id),
       contentRecordSchema
     )
+  }
+
+  listContents(): ContentRecord[] {
+    return this.database
+      .prepare('SELECT record_json FROM contents ORDER BY id')
+      .all()
+      .map((row) => rowRecord(row, contentRecordSchema))
+      .filter((record): record is ContentRecord => Boolean(record))
+  }
+
+  async completeContentEnrichment(
+    id: string,
+    input: { body: string; canonicalUrl?: string }
+  ): Promise<ContentRecord> {
+    return this.serializeMutation(async () => {
+      const content = this.getContent(id)
+      if (!content) throw new Error(`Content does not exist: ${id}`)
+      if (content.body.trim() && content.enrichmentStatus === 'succeeded') {
+        return content
+      }
+      if (!input.body.trim()) throw new Error('Completed content body is empty')
+      const completed = contentRecordSchema.parse({
+        ...content,
+        ...input,
+        enrichmentStatus: 'succeeded',
+        enrichmentError: undefined,
+      })
+      await atomicWriteFile(
+        this.contentMarkdownPath(id),
+        recordMarkdown('content', completed)
+      )
+      this.upsertContent(completed)
+      return completed
+    })
+  }
+
+  async mergeContentIdentity(
+    fromId: string,
+    canonicalId: string,
+    input: { body: string; canonicalUrl: string }
+  ): Promise<ContentRecord> {
+    return this.serializeMutation(async () => {
+      if (fromId === canonicalId) {
+        const content = this.getContent(fromId)
+        if (!content) throw new Error(`Content does not exist: ${fromId}`)
+        if (content.body.trim() && content.enrichmentStatus === 'succeeded') {
+          return content
+        }
+        if (!input.body.trim())
+          throw new Error('Completed content body is empty')
+        const completed = contentRecordSchema.parse({
+          ...content,
+          ...input,
+          enrichmentStatus: 'succeeded',
+          enrichmentError: undefined,
+        })
+        await atomicWriteFile(
+          this.contentMarkdownPath(fromId),
+          recordMarkdown('content', completed)
+        )
+        this.upsertContent(completed)
+        return completed
+      }
+
+      const source = this.getContent(fromId)
+      if (!source) throw new Error(`Content does not exist: ${fromId}`)
+      if (!input.body.trim()) throw new Error('Completed content body is empty')
+      if (
+        this.database
+          .prepare('SELECT 1 FROM analyses WHERE content_id = ?')
+          .get(fromId)
+      ) {
+        throw new Error('Cannot merge content identity after analysis')
+      }
+      const existing = this.getContent(canonicalId)
+      const canonical = contentRecordSchema.parse(
+        existing?.body.trim() && existing.enrichmentStatus === 'succeeded'
+          ? existing
+          : {
+              ...source,
+              ...existing,
+              ...input,
+              id: canonicalId,
+              enrichmentStatus: 'succeeded',
+              enrichmentError: undefined,
+            }
+      )
+      await atomicWriteFile(
+        this.contentMarkdownPath(canonicalId),
+        recordMarkdown('content', canonical)
+      )
+      this.upsertContent(canonical)
+
+      const discoveries = this.database
+        .prepare('SELECT record_json FROM discoveries WHERE content_id = ?')
+        .all(fromId)
+        .map((row) => rowRecord(row, discoveryRecordSchema))
+        .filter((record): record is z.infer<typeof discoveryRecordSchema> =>
+          Boolean(record)
+        )
+      for (const discovery of discoveries) {
+        const migrated = discoveryRecordSchema.parse({
+          ...discovery,
+          contentId: canonicalId,
+        })
+        await this.writeRecord(
+          'discoveries',
+          migrated.id,
+          'discovery',
+          migrated
+        )
+        this.upsertDiscovery(migrated)
+      }
+      await rm(path.dirname(this.contentMarkdownPath(fromId)), {
+        recursive: true,
+        force: true,
+      })
+      this.database.prepare('DELETE FROM contents WHERE id = ?').run(fromId)
+      return canonical
+    })
+  }
+
+  async failContentEnrichment(
+    id: string,
+    error: string
+  ): Promise<ContentRecord> {
+    return this.serializeMutation(async () => {
+      const content = this.getContent(id)
+      if (!content) throw new Error(`Content does not exist: ${id}`)
+      const failed = contentRecordSchema.parse({
+        ...content,
+        enrichmentStatus: 'failed',
+        enrichmentError: redactText(error),
+      })
+      await atomicWriteFile(
+        this.contentMarkdownPath(id),
+        recordMarkdown('content', failed)
+      )
+      this.upsertContent(failed)
+      return failed
+    })
+  }
+
+  getAnalysisByFingerprint(
+    contentId: string,
+    fingerprint: string
+  ): AnalysisRecord | undefined {
+    return rowRecord(
+      this.database
+        .prepare(
+          `SELECT record_json FROM analyses
+           WHERE content_id = ? AND fingerprint = ?
+           ORDER BY version DESC LIMIT 1`
+        )
+        .get(contentId, fingerprint),
+      analysisRecordSchema
+    )
+  }
+
+  listAnalyses(contentId?: string): AnalysisRecord[] {
+    const rows = contentId
+      ? this.database
+          .prepare(
+            'SELECT record_json FROM analyses WHERE content_id = ? ORDER BY version DESC'
+          )
+          .all(contentId)
+      : this.database
+          .prepare('SELECT record_json FROM analyses ORDER BY created_at DESC')
+          .all()
+    return rows
+      .map((row) => rowRecord(row, analysisRecordSchema))
+      .filter((record): record is AnalysisRecord => Boolean(record))
+  }
+
+  nextAnalysisVersion(contentId: string): number {
+    const row = this.database
+      .prepare(
+        'SELECT COALESCE(MAX(version), 0) AS version FROM analyses WHERE content_id = ?'
+      )
+      .get(contentId) as { version?: unknown } | undefined
+    return Number(row?.version ?? 0) + 1
+  }
+
+  async saveAnalysis(
+    input: z.input<typeof analysisRecordSchema>
+  ): Promise<AnalysisRecord> {
+    return this.serializeMutation(async () => {
+      const analysis = analysisRecordSchema.parse(input)
+      if (containsSensitiveKey(analysis.result)) {
+        throw new Error('Analysis result cannot contain secrets')
+      }
+      if (this.hasRecord('analyses', analysis.id)) {
+        throw new Error(`Analysis ${analysis.id} is immutable`)
+      }
+      if (!analysis.manual) {
+        const existing = this.getAnalysisByFingerprint(
+          analysis.contentId,
+          analysis.fingerprint
+        )
+        if (existing) return existing
+      }
+      const content = this.getContent(analysis.contentId)
+      if (!content?.body.trim() || content.enrichmentStatus !== 'succeeded') {
+        throw new Error('Only completely enriched content can be analyzed')
+      }
+      await this.writeRecord('analyses', analysis.id, 'analysis', analysis)
+      this.upsertAnalysis(analysis)
+      return analysis
+    })
+  }
+
+  async saveAnalysisCall(
+    input: z.input<typeof analysisCallSchema>
+  ): Promise<AnalysisCall> {
+    return this.serializeMutation(async () => {
+      const call = analysisCallSchema.parse({
+        ...input,
+        error: input.error ? redactText(input.error) : undefined,
+      })
+      if (this.hasRecord('analysis_calls', call.id)) {
+        throw new Error(`Analysis call ${call.id} is immutable`)
+      }
+      await this.writeRecord('analysis-calls', call.id, 'analysis call', call)
+      this.upsertAnalysisCall(call)
+      return call
+    })
+  }
+
+  listAnalysisCalls(contentId?: string): AnalysisCall[] {
+    const rows = contentId
+      ? this.database
+          .prepare(
+            'SELECT record_json FROM analysis_calls WHERE content_id = ? ORDER BY id DESC'
+          )
+          .all(contentId)
+      : this.database
+          .prepare('SELECT record_json FROM analysis_calls ORDER BY id DESC')
+          .all()
+    return rows
+      .map((row) => rowRecord(row, analysisCallSchema))
+      .filter((record): record is AnalysisCall => Boolean(record))
   }
 
   contentMarkdownPath(contentId: string): string {
@@ -1071,7 +1448,8 @@ export class RuntimeRepository {
   }
 
   private hasRecord(
-    table: 'audits' | 'contents' | 'discoveries',
+    table:
+      'analyses' | 'analysis_calls' | 'audits' | 'contents' | 'discoveries',
     id: string
   ): boolean {
     return Boolean(
@@ -1184,7 +1562,7 @@ export class RuntimeRepository {
           cursor = excluded.cursor,
           record_json = excluded.record_json`
       )
-      .run(progress.sourceId, progress.cursor, JSON.stringify(progress))
+      .run(progress.sourceId, progress.cursor ?? '', JSON.stringify(progress))
   }
 
   private upsertAudit(audit: RuntimeAudit): void {
@@ -1193,6 +1571,32 @@ export class RuntimeRepository {
         `INSERT INTO audits (id, source_id, record_json) VALUES (?, ?, ?)`
       )
       .run(audit.id, audit.sourceId, JSON.stringify(audit))
+  }
+
+  private upsertAnalysis(analysis: AnalysisRecord): void {
+    this.database
+      .prepare(
+        `INSERT INTO analyses
+          (id, content_id, fingerprint, version, created_at, record_json)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        analysis.id,
+        analysis.contentId,
+        analysis.fingerprint,
+        analysis.version,
+        analysis.createdAt,
+        JSON.stringify(analysis)
+      )
+  }
+
+  private upsertAnalysisCall(call: AnalysisCall): void {
+    this.database
+      .prepare(
+        `INSERT INTO analysis_calls (id, content_id, status, record_json)
+         VALUES (?, ?, ?, ?)`
+      )
+      .run(call.id, call.contentId, call.status, JSON.stringify(call))
   }
 }
 

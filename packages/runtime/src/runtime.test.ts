@@ -581,5 +581,101 @@ describe('deterministic runtime repository', () => {
   })
 })
 
+describe('enriched content and analysis records', () => {
+  it('freezes a successful body and rebuilds analysis evidence from Markdown', async () => {
+    const root = await temporaryRoot()
+    let repository = await RuntimeRepository.open(root)
+    await repository.commitDiscoveryBatch({
+      sourceId: 'rss-source',
+      nextCursor: 'entry-1',
+      contents: [
+        {
+          id: 'content-1',
+          title: 'Article',
+          body: '',
+          canonicalUrl: 'https://example.com/article',
+          enrichmentStatus: 'pending',
+        },
+      ],
+      discoveries: [
+        {
+          id: 'discovery-1',
+          sourceId: 'rss-source',
+          contentId: 'content-1',
+          discoveredAt: '2026-09-14T00:00:00.000Z',
+        },
+      ],
+    })
+    const invalidAnalysis = {
+      id: 'analysis-invalid',
+      contentId: 'content-1',
+      fingerprint: 'fingerprint-1',
+      version: 1,
+      manual: false,
+      provider: 'test',
+      model: 'test-model',
+      promptVersion: 'prompt-1',
+      profileVersionId: 'profile-1',
+      ruleVersion: 'rules-1',
+      createdAt: '2026-09-14T00:01:00.000Z',
+      durationMs: 1,
+      usage: {
+        inputTokens: 1,
+        outputTokens: 1,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        costUsd: 0,
+      },
+      result: {},
+    }
+    await expect(repository.saveAnalysis(invalidAnalysis)).rejects.toThrow(
+      /completely enriched/i
+    )
+
+    const first = await repository.completeContentEnrichment('content-1', {
+      body: 'First complete body',
+      canonicalUrl: 'https://example.com/article',
+    })
+    const frozen = await repository.completeContentEnrichment('content-1', {
+      body: 'Replacement body',
+      canonicalUrl: 'https://example.com/changed',
+    })
+    expect(frozen).toEqual(first)
+
+    const analysis = await repository.saveAnalysis({
+      ...invalidAnalysis,
+      id: 'analysis-1',
+      provider: 'openai-codex',
+      model: 'gpt-5.3-codex-spark',
+      createdAt: '2026-09-14T00:02:00.000Z',
+      durationMs: 12,
+      result: { recommendation: 'core', totalScore: 80 },
+    })
+    await repository.saveAnalysisCall({
+      id: 'call-1',
+      contentId: 'content-1',
+      analysisId: analysis.id,
+      provider: analysis.provider,
+      model: analysis.model,
+      startedAt: '2026-09-14T00:01:59.000Z',
+      finishedAt: '2026-09-14T00:02:00.000Z',
+      durationMs: 12,
+      status: 'succeeded',
+      usage: analysis.usage,
+    })
+    await repository.close()
+
+    repository = await RuntimeRepository.open(root)
+    expect(
+      repository.getAnalysisByFingerprint('content-1', 'fingerprint-1')?.id
+    ).toBe('analysis-1')
+    expect(repository.nextAnalysisVersion('content-1')).toBe(2)
+    expect(repository.listAnalysisCalls('content-1')).toEqual([
+      expect.objectContaining({ id: 'call-1', status: 'succeeded' }),
+    ])
+    await repository.close()
+  })
+})
+
 function assertTask(_task: RuntimeTask): void {}
 void assertTask

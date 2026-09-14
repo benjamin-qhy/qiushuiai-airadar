@@ -18,6 +18,10 @@ import {
   createPiModelGateway,
   createReadOnlyCodexCredentialStore,
   enrichArticle,
+  enrichImagePostContent,
+  enrichImagePostsIndependently,
+  enrichPlatformVideoContent,
+  enrichPlatformVideosIndependently,
   enrichYouTubeContent,
   RssAdapter,
   runPlatformDiscovery,
@@ -470,6 +474,579 @@ describe('X and YouTube discovery gate', () => {
     expect(runtime.getContent('youtube:dQw4w9WgXcQ')).toMatchObject({
       enrichmentStatus: 'succeeded',
       body: 'complete automatic transcription',
+    })
+    await runtime.close()
+  })
+})
+
+describe('strict multimedia enrichment', () => {
+  it('merges complementary metadata from providers for one platform video', async () => {
+    const runtime = await repository()
+    const source = {
+      id: 'douyin-source',
+      slug: 'douyin-source',
+      name: 'Douyin source',
+      type: 'douyin' as const,
+      externalIdentity: 'creator-1',
+      status: 'enabled' as const,
+    }
+    for (const video of [
+      { durationSeconds: 30, mediaUrl: 'https://media.example/video.mp4' },
+      { providerReference: 'transcript-reference' },
+    ]) {
+      await runPlatformDiscovery({
+        repository: runtime,
+        source,
+        limit: 1,
+        runner: {
+          async discover() {
+            return {
+              providerId: 'provider',
+              items: [
+                {
+                  externalId: 'video-1',
+                  platformIdentity: 'douyin:video-1',
+                  content: {
+                    kind: 'video' as const,
+                    canonicalUrl: 'https://www.douyin.com/video/video-1',
+                    title: 'Video',
+                  },
+                  video: { scope: 'normal' as const, ...video },
+                },
+              ],
+            }
+          },
+        },
+      })
+    }
+    expect(runtime.getContent('douyin:video-1')?.video).toMatchObject({
+      durationSeconds: 30,
+      mediaUrl: 'https://media.example/video.mp4',
+      providerReference: 'transcript-reference',
+    })
+    await runtime.close()
+  })
+
+  it('keeps image posts pending until every ordered image is saved and recognized', async () => {
+    const runtime = await repository()
+    await runPlatformDiscovery({
+      repository: runtime,
+      source: {
+        id: 'xhs-images',
+        slug: 'xhs-images',
+        name: 'XHS images',
+        type: 'xiaohongshu',
+        externalIdentity: 'user-1',
+        status: 'enabled',
+      },
+      limit: 1,
+      runner: {
+        async discover() {
+          return {
+            providerId: 'tikhub-xiaohongshu',
+            items: [
+              {
+                externalId: 'note-1',
+                platformIdentity: 'xiaohongshu:note-1',
+                description: '图文正文',
+                content: {
+                  kind: 'image_post',
+                  canonicalUrl: 'https://www.xiaohongshu.com/explore/note-1',
+                  title: '图文样本',
+                },
+                images: [
+                  { order: 0, url: 'https://media.example/one.webp' },
+                  { order: 1, url: 'https://media.example/two.webp' },
+                ],
+              },
+            ],
+          }
+        },
+      },
+    })
+    expect(runtime.getContent('xiaohongshu:note-1')).toMatchObject({
+      body: '',
+      enrichmentStatus: 'pending',
+      images: [
+        { order: 0, url: 'https://media.example/one.webp' },
+        { order: 1, url: 'https://media.example/two.webp' },
+      ],
+    })
+    const task = await runtime.claimNextTask('image-worker')
+    expect(task?.payload).toMatchObject({ mode: 'image-post-enrichment' })
+    await runtime.completeTask(task!.id)
+
+    const recognized: number[] = []
+    await enrichImagePostContent({
+      repository: runtime,
+      contentId: 'xiaohongshu:note-1',
+      fetch: async (url) =>
+        new Response(new Uint8Array([String(url).includes('one') ? 1 : 2]), {
+          headers: { 'content-type': 'image/webp' },
+        }),
+      recognizer: {
+        providerId: 'real-ocr',
+        async recognize(input) {
+          expect(
+            await readFile(
+              path.join(
+                path.dirname(runtime.contentMarkdownPath(input.contentId)),
+                `image-${String(input.order + 1).padStart(3, '0')}.webp`
+              )
+            )
+          ).toEqual(Buffer.from([input.order + 1]))
+          recognized.push(input.order)
+          return `第 ${input.order + 1} 张图识别文本`
+        },
+      },
+    })
+    expect(recognized).toEqual([0, 1])
+    expect(runtime.getContent('xiaohongshu:note-1')).toMatchObject({
+      enrichmentStatus: 'succeeded',
+      body: expect.stringContaining('第 2 张图识别文本'),
+      media: {
+        images: [
+          { order: 0, fileName: 'image-001.webp' },
+          { order: 1, fileName: 'image-002.webp' },
+        ],
+      },
+    })
+    await runtime.close()
+  })
+
+  it('does not complete an image post when any image is missing', async () => {
+    const runtime = await repository()
+    await runtime.commitDiscoveryBatch({
+      sourceId: 'xhs',
+      contents: [
+        {
+          id: 'xiaohongshu:broken',
+          title: 'Broken image post',
+          body: '',
+          canonicalUrl: 'https://www.xiaohongshu.com/explore/broken',
+          kind: 'image_post',
+          enrichmentStatus: 'pending',
+          images: [
+            { order: 0, url: 'https://media.example/one.webp' },
+            { order: 1, url: 'https://media.example/missing.webp' },
+          ],
+        },
+      ],
+      discoveries: [
+        {
+          id: 'xhs:broken',
+          sourceId: 'xhs',
+          contentId: 'xiaohongshu:broken',
+          discoveredAt: '2026-09-14T08:00:00.000Z',
+        },
+      ],
+    })
+    await expect(
+      enrichImagePostContent({
+        repository: runtime,
+        contentId: 'xiaohongshu:broken',
+        fetch: async (url) =>
+          String(url).includes('missing')
+            ? new Response('missing', { status: 404 })
+            : new Response(new Uint8Array([1]), {
+                headers: { 'content-type': 'image/webp' },
+              }),
+        recognizer: {
+          providerId: 'real-ocr',
+          async recognize() {
+            return 'recognized'
+          },
+        },
+      })
+    ).rejects.toThrow('image 2')
+    expect(runtime.getContent('xiaohongshu:broken')).toMatchObject({
+      body: '',
+      enrichmentStatus: 'pending',
+    })
+    await runtime.close()
+  })
+
+  it.each([
+    [
+      'private network URL',
+      'http://127.0.0.1/private.png',
+      undefined,
+      'trusted media CDN',
+    ],
+    [
+      'non-image response',
+      'https://media.example/not-image',
+      async () =>
+        new Response('html', { headers: { 'content-type': 'text/html' } }),
+      'invalid content type',
+    ],
+    [
+      'unsupported image MIME',
+      'https://media.example/vector.svg',
+      async () =>
+        new Response('<svg/>', {
+          headers: { 'content-type': 'image/svg+xml' },
+        }),
+      'invalid content type',
+    ],
+    [
+      'oversized image',
+      'https://media.example/large.png',
+      async () =>
+        new Response(new Uint8Array([1]), {
+          headers: {
+            'content-type': 'image/png',
+            'content-length': String(21 * 1024 * 1024),
+          },
+        }),
+      'size limit',
+    ],
+  ] as const)(
+    'rejects unsafe image download: %s',
+    async (_name, imageUrl, fetcher, expectedCause) => {
+      const runtime = await repository()
+      await runtime.commitDiscoveryBatch({
+        sourceId: 'xhs-security',
+        contents: [
+          {
+            id: 'xiaohongshu:unsafe',
+            title: 'Unsafe image post',
+            body: '',
+            canonicalUrl: 'https://www.xiaohongshu.com/explore/unsafe',
+            kind: 'image_post',
+            enrichmentStatus: 'pending',
+            images: [{ order: 0, url: imageUrl }],
+          },
+        ],
+        discoveries: [
+          {
+            id: 'xhs-security:unsafe',
+            sourceId: 'xhs-security',
+            contentId: 'xiaohongshu:unsafe',
+            discoveredAt: '2026-09-14T08:00:00.000Z',
+          },
+        ],
+      })
+      let caught: unknown
+      try {
+        await enrichImagePostContent({
+          repository: runtime,
+          contentId: 'xiaohongshu:unsafe',
+          ...(fetcher ? { fetch: fetcher } : {}),
+          recognizer: {
+            providerId: 'ocr',
+            async recognize() {
+              return 'never reached'
+            },
+          },
+        })
+      } catch (error) {
+        caught = error
+      }
+      expect(caught).toBeInstanceOf(Error)
+      expect((caught as Error).cause).toBeInstanceOf(Error)
+      expect(((caught as Error).cause as Error).message).toContain(
+        expectedCause
+      )
+      await runtime.close()
+    }
+  )
+
+  it('isolates an image detail failure from a succeeding sibling', async () => {
+    const runtime = await repository()
+    await runtime.commitDiscoveryBatch({
+      sourceId: 'xhs-isolation',
+      contents: ['broken', 'good'].map((id) => ({
+        id: `xiaohongshu:${id}`,
+        title: `${id} image post`,
+        body: '',
+        canonicalUrl: `https://www.xiaohongshu.com/explore/${id}`,
+        kind: 'image_post' as const,
+        enrichmentStatus: 'pending' as const,
+      })),
+      discoveries: ['broken', 'good'].map((id) => ({
+        id: `xhs-isolation:${id}`,
+        sourceId: 'xhs-isolation',
+        contentId: `xiaohongshu:${id}`,
+        discoveredAt: '2026-09-14T08:00:00.000Z',
+      })),
+    })
+    const result = await enrichImagePostsIndependently({
+      repository: runtime,
+      contentIds: ['xiaohongshu:broken', 'xiaohongshu:good'],
+      detailProvider: {
+        providerId: 'xhs-detail',
+        async fetchDetail({ contentId }) {
+          if (contentId.endsWith('broken')) throw new Error('missing image 2')
+          return {
+            sourceText: '完整正文',
+            images: [{ order: 0, url: 'https://media.example/good.webp' }],
+          }
+        },
+      },
+      fetch: async () =>
+        new Response(new Uint8Array([1]), {
+          headers: { 'content-type': 'image/webp' },
+        }),
+      recognizer: {
+        providerId: 'ocr',
+        async recognize() {
+          return '识别正文'
+        },
+      },
+    })
+    expect(result).toEqual([
+      {
+        contentId: 'xiaohongshu:broken',
+        status: 'failed',
+        error: 'missing image 2',
+      },
+      { contentId: 'xiaohongshu:good', status: 'succeeded' },
+    ])
+    expect(runtime.getContent('xiaohongshu:broken')?.enrichmentStatus).toBe(
+      'failed'
+    )
+    expect(runtime.getContent('xiaohongshu:good')?.enrichmentStatus).toBe(
+      'succeeded'
+    )
+    await runtime.close()
+  })
+
+  it('relates equal work titles across platforms without merging records', async () => {
+    const runtime = await repository()
+    const title = '同一作品跨平台发布完整测试标题'
+    for (const [type, id] of [
+      ['douyin', 'video-1'],
+      ['xiaohongshu', 'note-1'],
+    ] as const) {
+      await runPlatformDiscovery({
+        repository: runtime,
+        source: {
+          id: `source-${type}`,
+          slug: `source-${type}`,
+          name: type,
+          type,
+          externalIdentity: `creator-${type}`,
+          status: 'enabled',
+        },
+        limit: 1,
+        runner: {
+          async discover() {
+            return {
+              providerId: `provider-${type}`,
+              items: [
+                {
+                  externalId: id,
+                  platformIdentity: `${type}:${id}`,
+                  description: '独立正文',
+                  content: {
+                    kind: type === 'douyin' ? 'video' : 'image_post',
+                    canonicalUrl: `https://example.com/${type}/${id}`,
+                    title,
+                  },
+                },
+              ],
+            }
+          },
+        },
+      })
+    }
+    expect(runtime.listContents().map(({ id }) => id)).toEqual([
+      'douyin:video-1',
+      'xiaohongshu:note-1',
+    ])
+    expect(runtime.listRelatedContents()).toHaveLength(1)
+    await runtime.close()
+  })
+
+  it('does not advance discovery progress when automatic relation persistence fails', async () => {
+    const runtime = await repository()
+    const title = '关联写入失败时必须重试当前发现页面'
+    const discover = async (type: 'douyin' | 'xiaohongshu', id: string) =>
+      runPlatformDiscovery({
+        repository: runtime,
+        source: {
+          id: `relation-failure-${type}`,
+          slug: `relation-failure-${type}`,
+          name: type,
+          type,
+          externalIdentity: `creator-${type}`,
+          status: 'enabled',
+        },
+        limit: 1,
+        runner: {
+          async discover() {
+            return {
+              providerId: `provider-${type}`,
+              nextCursor: 'next-page',
+              items: [
+                {
+                  externalId: id,
+                  platformIdentity: `${type}:${id}`,
+                  description: '独立正文',
+                  content: {
+                    kind: type === 'douyin' ? 'video' : 'image_post',
+                    canonicalUrl: `https://example.com/${type}/${id}`,
+                    title,
+                  },
+                },
+              ],
+            }
+          },
+        },
+      })
+    await discover('douyin', 'video-1')
+    runtime.linkRelatedContents = async () => {
+      throw new Error('simulated relation write failure')
+    }
+    await expect(discover('xiaohongshu', 'note-1')).rejects.toThrow(
+      'simulated relation write failure'
+    )
+    expect(runtime.getProgress('relation-failure-xiaohongshu')).toBeUndefined()
+    await runtime.close()
+  })
+
+  it('transcribes platform videos independently and preserves failed siblings', async () => {
+    const runtime = await repository()
+    await runtime.commitDiscoveryBatch({
+      sourceId: 'media-source',
+      contents: ['good', 'bad'].map((id) => ({
+        id: `douyin:${id}`,
+        title: id,
+        body: '',
+        canonicalUrl: `https://www.douyin.com/video/${id}`,
+        kind: 'video',
+        enrichmentStatus: 'waiting-manual-transcription' as const,
+        video: {
+          durationSeconds: 60,
+          mediaUrl: `https://media.example/${id}.mp4`,
+        },
+      })),
+      discoveries: ['good', 'bad'].map((id) => ({
+        id: `media-source:${id}`,
+        sourceId: 'media-source',
+        contentId: `douyin:${id}`,
+        discoveredAt: '2026-09-14T08:00:00.000Z',
+      })),
+    })
+    const seenUrls: string[] = []
+    const result = await enrichPlatformVideosIndependently({
+      repository: runtime,
+      contentIds: ['douyin:good', 'douyin:bad'],
+      autoTranscribe: true,
+      transcriber: {
+        providerId: 'real-transcriber',
+        async transcribe(input) {
+          seenUrls.push(input.mediaUrl ?? '')
+          return input.videoId === 'good' ? '真实完整转写' : ''
+        },
+      },
+    })
+    expect(result).toEqual([
+      { contentId: 'douyin:good', status: 'succeeded' },
+      {
+        contentId: 'douyin:bad',
+        status: 'failed',
+        error: 'Automatic transcription returned empty text',
+      },
+    ])
+    expect(seenUrls).toEqual([
+      'https://media.example/good.mp4',
+      'https://media.example/bad.mp4',
+    ])
+    expect(runtime.getContent('douyin:good')?.enrichmentStatus).toBe(
+      'succeeded'
+    )
+    expect(runtime.getContent('douyin:bad')).toMatchObject({
+      body: '',
+      enrichmentStatus: 'waiting-manual-transcription',
+    })
+
+    await expect(
+      enrichPlatformVideoContent({
+        repository: runtime,
+        contentId: 'douyin:bad',
+        transcriber: {
+          providerId: 'real-transcriber',
+          async transcribe() {
+            return 'should not run'
+          },
+        },
+        maxDurationSeconds: 30,
+      })
+    ).resolves.toMatchObject({ status: 'waiting-manual-transcription' })
+    await runtime.close()
+  })
+
+  it('requires complete keyframe recognition when the video policy requests it', async () => {
+    const runtime = await repository()
+    await runtime.commitDiscoveryBatch({
+      sourceId: 'visual-video-source',
+      contents: [
+        {
+          id: 'wechat_channels:visual-video',
+          title: '画面承载关键信息的视频',
+          body: '',
+          canonicalUrl: 'https://weixin.qq.com/sph/visual-video',
+          kind: 'video',
+          enrichmentStatus: 'waiting-manual-transcription',
+          video: {
+            durationSeconds: 60,
+            mediaUrl: 'https://media.example/visual.mp4',
+          },
+        },
+      ],
+      discoveries: [
+        {
+          id: 'visual-video-source:visual-video',
+          sourceId: 'visual-video-source',
+          contentId: 'wechat_channels:visual-video',
+          discoveredAt: '2026-09-14T08:00:00.000Z',
+        },
+      ],
+    })
+    const transcriber = {
+      providerId: 'transcriber',
+      async transcribe() {
+        return '完整语音转写'
+      },
+    }
+    await expect(
+      enrichPlatformVideoContent({
+        repository: runtime,
+        contentId: 'wechat_channels:visual-video',
+        transcriber,
+        manual: true,
+        requireKeyframes: true,
+      })
+    ).rejects.toThrow('requires keyframe recognition')
+
+    await enrichPlatformVideoContent({
+      repository: runtime,
+      contentId: 'wechat_channels:visual-video',
+      transcriber,
+      manual: true,
+      requireKeyframes: true,
+      keyframeRecognizer: {
+        providerId: 'vision',
+        async recognizeKeyframes() {
+          return [
+            { atSeconds: 10, recognizedText: '第二张关键画面' },
+            { atSeconds: 2, recognizedText: '第一张关键画面' },
+          ]
+        },
+      },
+    })
+    expect(runtime.getContent('wechat_channels:visual-video')).toMatchObject({
+      enrichmentStatus: 'succeeded',
+      body: expect.stringContaining('关键画面 2.0 秒'),
+      media: {
+        keyframeProviderId: 'vision',
+        keyframes: [
+          { atSeconds: 2, recognizedText: '第一张关键画面' },
+          { atSeconds: 10, recognizedText: '第二张关键画面' },
+        ],
+      },
     })
     await runtime.close()
   })

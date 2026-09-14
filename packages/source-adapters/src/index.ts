@@ -18,12 +18,16 @@ export interface DiscoveredItem {
   publishedAt?: string
   platformIdentity?: string
   description?: string
+  enrichmentError?: string
   interaction?: InteractionSnapshot
   evidence?: ContentEvidence
   video?: {
     scope: 'normal' | 'short' | 'live-replay' | 'live'
     durationSeconds?: number
+    mediaUrl?: string
+    providerReference?: string
   }
+  images?: Array<{ order: number; url: string }>
   thread?: {
     conversationId: string
     complete: boolean
@@ -100,7 +104,13 @@ export interface InteractionSnapshot {
 export interface ContentEvidence {
   discoveryUrl: string
   carrier:
-    'youtube' | 'x-article' | 'external-article' | 'x-native-video' | 'x-short'
+    | 'youtube'
+    | 'x-article'
+    | 'external-article'
+    | 'x-native-video'
+    | 'x-short'
+    | 'platform-video'
+    | 'platform-image-post'
   sourceText?: string
   transcriptStatus?: 'available' | 'missing'
 }
@@ -129,7 +139,7 @@ export function providerCursor(
   }
 }
 
-function updateProviderCursor(
+export function updateProviderCursor(
   cursor: string | undefined,
   providerId: string,
   next: string | undefined
@@ -361,21 +371,21 @@ export function createProviderRouter(
   }
 }
 
-function record(value: unknown): Record<string, unknown> {
+export function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {}
 }
 
-function array(value: unknown): unknown[] {
+export function array(value: unknown): unknown[] {
   return Array.isArray(value) ? value : []
 }
 
-function text(value: unknown): string | undefined {
+export function text(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }
 
-function numberOrNull(value: unknown): number | null {
+export function numberOrNull(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value)) return value
   if (typeof value === 'string') {
     const compact = value.trim().match(/^([0-9]+(?:\.[0-9]+)?)\s*([KMB])\b/iu)
@@ -391,7 +401,7 @@ function numberOrNull(value: unknown): number | null {
   return null
 }
 
-function assertTikHubSuccess(payload: Record<string, unknown>): void {
+export function assertTikHubSuccess(payload: Record<string, unknown>): void {
   const code = numberOrNull(payload.code)
   if (code === 200) return
   if (code === null) {
@@ -408,14 +418,14 @@ function assertTikHubSuccess(payload: Record<string, unknown>): void {
   )
 }
 
-function isoDate(value: unknown): string | undefined {
+export function isoDate(value: unknown): string | undefined {
   const candidate = text(value)
   if (!candidate) return undefined
   const date = new Date(candidate)
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString()
 }
 
-function titleFrom(value: string, fallback: string): string {
+export function titleFrom(value: string, fallback: string): string {
   const normalized = value.replace(/\s+/gu, ' ').trim()
   return normalized ? normalized.slice(0, 160) : fallback
 }
@@ -521,7 +531,7 @@ function classifyStatus(status: number, body: string): ProviderErrorClass {
   return 'invalid-request'
 }
 
-async function fetchJson(
+export async function fetchJson(
   fetcher: typeof fetch,
   url: URL,
   init: RequestInit,
@@ -1249,7 +1259,20 @@ export interface VideoTranscriptProvider {
 
 export interface VideoTranscriber {
   providerId: string
-  transcribe(input: { videoId: string; canonicalUrl: string }): Promise<string>
+  transcribe(input: {
+    videoId: string
+    canonicalUrl: string
+    mediaUrl?: string
+    providerReference?: string
+  }): Promise<string>
+}
+
+export interface ImagePostDetailProvider {
+  providerId: string
+  fetchDetail(input: { contentId: string; canonicalUrl: string }): Promise<{
+    sourceText: string
+    images: Array<{ order: number; url: string }>
+  }>
 }
 
 export function createTikHubYouTubeTranscriptProvider(options: {
@@ -1368,3 +1391,15 @@ export function defineSourceAdapter(
     },
   }
 }
+
+export {
+  createTikHubDouyinProvider,
+  createTikHubXiaohongshuDetailProvider,
+  fetchTikHubWechatChannelsMedia,
+  createTikHubWechatChannelsProvider,
+  createTikHubXiaohongshuProvider,
+} from './chinese-platforms.js'
+export {
+  createGetBijiDouyinProvider,
+  createGetBijiDouyinTranscriber,
+} from './getbiji.js'

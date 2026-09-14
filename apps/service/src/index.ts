@@ -14,6 +14,16 @@ interface FeedItem {
   totalScore: number
   recommendation: 'core' | 'explore' | 'none'
   analyzedAt: string
+  kind?: 'short_post' | 'video' | 'image_post' | 'article'
+}
+
+function feedContentKind(value: unknown): FeedItem['kind'] {
+  return value === 'short_post' ||
+    value === 'video' ||
+    value === 'image_post' ||
+    value === 'article'
+    ? value
+    : undefined
 }
 
 function feedItems(repository: RuntimeRepository): FeedItem[] {
@@ -58,6 +68,7 @@ function feedItems(repository: RuntimeRepository): FeedItem[] {
             typeof result.totalScore === 'number' ? result.totalScore : 0,
           recommendation: acceptedRecommendation,
           analyzedAt: analysis.createdAt,
+          kind: feedContentKind(content.kind),
         },
       ]
     })

@@ -604,6 +604,7 @@ describe('deterministic runtime repository', () => {
         Authorization: 'Bearer secret',
         data: {
           token: 'secret',
+          decode_key: 'media-decryption-material',
           ok: 1,
           message:
             'Authorization: Basic dXNlcjpwYXNz\nCookie: session=cookie-secret',
@@ -614,6 +615,7 @@ describe('deterministic runtime repository', () => {
     expect(redactedRaw).not.toContain('secret')
     expect(redactedRaw).not.toContain('dXNlcjpwYXNz')
     expect(redactedRaw).not.toContain('session=')
+    expect(redactedRaw).not.toContain('media-decryption-material')
     expect(await repository.getAudit('audit-1')).toMatchObject({ succeeded: 1 })
 
     expect(
@@ -735,6 +737,69 @@ describe('enriched content and analysis records', () => {
     expect(repository.listAnalysisCalls('content-1')).toEqual([
       expect.objectContaining({ id: 'call-1', status: 'succeeded' }),
     ])
+    await repository.close()
+  })
+})
+
+describe('cross-platform related content', () => {
+  it('links distinct platform records without merging their identities and rebuilds from Markdown', async () => {
+    const root = await temporaryRoot()
+    let repository = await RuntimeRepository.open(root)
+    await repository.commitDiscoveryBatch({
+      sourceId: 'cross-platform',
+      contents: [
+        {
+          id: 'douyin:work-1',
+          title: 'Douyin upload',
+          body: 'douyin transcript',
+          enrichmentStatus: 'succeeded',
+        },
+        {
+          id: 'xiaohongshu:work-2',
+          title: 'XHS upload',
+          body: 'xiaohongshu transcript',
+          enrichmentStatus: 'succeeded',
+        },
+      ],
+      discoveries: [
+        {
+          id: 'cross-platform:douyin',
+          sourceId: 'cross-platform',
+          contentId: 'douyin:work-1',
+          discoveredAt: '2026-09-14T08:00:00.000Z',
+        },
+        {
+          id: 'cross-platform:xhs',
+          sourceId: 'cross-platform',
+          contentId: 'xiaohongshu:work-2',
+          discoveredAt: '2026-09-14T08:00:00.000Z',
+        },
+      ],
+    })
+    const relation = await repository.linkRelatedContents({
+      id: 'relation-1',
+      contentIds: ['douyin:work-1', 'xiaohongshu:work-2'],
+      reason: '同一作品的跨平台上传',
+      createdAt: '2026-09-14T08:01:00.000Z',
+    })
+    expect(relation.contentIds).toEqual(['douyin:work-1', 'xiaohongshu:work-2'])
+    expect(repository.indexedContentCount()).toBe(2)
+    expect(repository.listRelatedContents('douyin:work-1')).toEqual([relation])
+    await expect(
+      repository.linkRelatedContents({
+        id: 'invalid-self',
+        contentIds: ['douyin:work-1', 'douyin:work-1'],
+        reason: 'invalid',
+        createdAt: '2026-09-14T08:01:00.000Z',
+      })
+    ).rejects.toThrow('distinct')
+    await repository.close()
+
+    repository = await RuntimeRepository.open(root)
+    expect(repository.listRelatedContents('xiaohongshu:work-2')).toEqual([
+      relation,
+    ])
+    expect(repository.indexedContentCount()).toBe(2)
     await repository.close()
   })
 })

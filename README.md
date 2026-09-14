@@ -1,12 +1,27 @@
-# AI Radar Web 原型
+# AI Radar
 
-这是 Issue #12 的一次性响应式交互原型，基于 `satnaing/shadcn-admin` v2.2.1（MIT）修改。
+AI Radar 的正式 TypeScript 工程。Web 外壳以 `satnaing/shadcn-admin` v2.2.1（MIT）为固定源码基座，已移除登录、Clerk 和模板演示业务。
 
-它只用于确认页面、信息层级和交互，不接真实采集接口，不保存正式数据，也不能直接作为生产实现发布。
+## 开发环境
+
+- Node.js 24.21.0 LTS
+- pnpm 10.34.1
 
 ```bash
 pnpm install
-pnpm dev
+pnpm check
+pnpm dev              # Web
+pnpm dev:cli status   # CLI
+pnpm dev:service      # 后台服务
 ```
 
-原型页面：每日精选、全部内容、信源、运行状态、配置中心。
+工作区边界：
+
+- `apps/cli`：本机命令入口
+- `apps/service`：后台 HTTP 服务外壳
+- `apps/web`：不接触密钥的 Web 界面
+- `packages/domain`：领域契约
+- `packages/config`：本机密钥读取及安全状态
+- `packages/source-adapters`：供应商适配接口
+
+密钥默认放在 `~/.airadar/secrets.env`，macOS 文件权限必须为 `600`；也可用 `AIRADAR_SECRET_FILE` 指向其他本机文件。CLI 和 Web 只输出是否已配置及掩码，不输出原值。

@@ -1,13 +1,12 @@
 {
   "files": [],
   "references": [
-    { "path": "./tsconfig.app.json" },
-    { "path": "./tsconfig.node.json" }
-  ],
-  "compilerOptions": {
-    "baseUrl": ".",
-    "paths": {
-      "@/*": ["./src/*"]
-    }
-  }
+    { "path": "./packages/domain" },
+    { "path": "./packages/config" },
+    { "path": "./packages/source-adapters" },
+    { "path": "./apps/service" },
+    { "path": "./apps/cli" },
+    { "path": "./apps/web/tsconfig.app.json" },
+    { "path": "./apps/web/tsconfig.node.json" }
+  ]
 }

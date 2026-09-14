@@ -1,0 +1,30 @@
+name: Windows source smoke
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/windows-source-smoke.yml
+      - .node-version
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - tsconfig*.json
+      - apps/**
+      - packages/**
+      - scripts/**
+
+jobs:
+  source-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10.34.1
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.21.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check

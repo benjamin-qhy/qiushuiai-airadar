@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noUncheckedIndexedAccess": true,
+    "outDir": "dist",
+    "paths": {
+      "@airadar/config": ["./packages/config/src/index.ts"],
+      "@airadar/domain": ["./packages/domain/src/index.ts"],
+      "@airadar/service": ["./apps/service/src/index.ts"],
+      "@airadar/source-adapters": ["./packages/source-adapters/src/index.ts"]
+    },
+    "skipLibCheck": true,
+    "strict": true,
+    "target": "ES2024",
+    "types": ["node"]
+  }
+}

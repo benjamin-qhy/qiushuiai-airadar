@@ -58,6 +58,7 @@ describe('background service shell', () => {
           body: 'Complete body',
           canonicalUrl: 'https://example.com/core',
           enrichmentStatus: 'succeeded',
+          kind: 'image_post',
         },
         {
           id: 'content-none',
@@ -121,7 +122,7 @@ describe('background service shell', () => {
     const address = await service.start({ host: '127.0.0.1', port: 0 })
     const base = `http://${address.host}:${address.port}`
     const all = (await (await fetch(`${base}/api/contents`)).json()) as {
-      items: Array<{ id: string }>
+      items: Array<{ id: string; kind?: string }>
     }
     const daily = (await (await fetch(`${base}/api/daily`)).json()) as {
       items: Array<{ id: string }>
@@ -130,6 +131,7 @@ describe('background service shell', () => {
       'content-core',
       'content-none',
     ])
+    expect(all.items[0]?.kind).toBe('image_post')
     expect(daily.items.map((item) => item.id)).toEqual(['content-core'])
   })
 })

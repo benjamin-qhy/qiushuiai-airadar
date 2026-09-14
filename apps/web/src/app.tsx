@@ -10,7 +10,7 @@ import {
 } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
-interface FeedItem {
+export interface FeedItem {
   id: string
   title: string
   url?: string
@@ -18,6 +18,65 @@ interface FeedItem {
   topics: string[]
   totalScore: number
   recommendation: 'core' | 'explore' | 'none'
+  kind?: 'short_post' | 'video' | 'image_post' | 'article'
+}
+
+const kindLabels: Record<NonNullable<FeedItem['kind']>, string> = {
+  short_post: '短文',
+  video: '视频',
+  image_post: '图文',
+  article: '文章',
+}
+
+export function ContentCard({ item }: { item: FeedItem }) {
+  return (
+    <Card>
+      <CardHeader className='gap-2'>
+        <div className='flex flex-wrap items-center gap-2'>
+          <Badge
+            variant={item.recommendation === 'core' ? 'default' : 'secondary'}
+          >
+            {item.recommendation === 'core'
+              ? '核心推荐'
+              : item.recommendation === 'explore'
+                ? '探索推荐'
+                : '未推荐'}
+          </Badge>
+          {item.kind && (
+            <Badge variant='outline'>{kindLabels[item.kind]}</Badge>
+          )}
+          <span className='text-muted-foreground text-xs'>
+            {item.totalScore} 分
+          </span>
+        </div>
+        <CardTitle className='text-lg'>
+          {item.url ? (
+            <a
+              className='hover:underline'
+              href={item.url}
+              rel='noreferrer'
+              target='_blank'
+            >
+              {item.title}{' '}
+              <ExternalLink aria-hidden='true' className='inline size-4' />
+            </a>
+          ) : (
+            item.title
+          )}
+        </CardTitle>
+        <CardDescription className='leading-6'>{item.summary}</CardDescription>
+      </CardHeader>
+      {item.topics.length > 0 && (
+        <CardContent className='flex flex-wrap gap-2'>
+          {item.topics.map((topic) => (
+            <Badge key={topic} variant='outline'>
+              {topic}
+            </Badge>
+          ))}
+        </CardContent>
+      )}
+    </Card>
+  )
 }
 
 function Feed({ endpoint }: { endpoint: string }) {
@@ -26,7 +85,7 @@ function Feed({ endpoint }: { endpoint: string }) {
 
   useEffect(() => {
     const controller = new AbortController()
-    void fetch(`http://127.0.0.1:43110${endpoint}`, {
+    void fetch(endpoint, {
       signal: controller.signal,
     })
       .then(async (response) => {
@@ -56,53 +115,7 @@ function Feed({ endpoint }: { endpoint: string }) {
   return (
     <div className='grid gap-4'>
       {items.map((item) => (
-        <Card key={item.id}>
-          <CardHeader className='gap-2'>
-            <div className='flex flex-wrap items-center gap-2'>
-              <Badge
-                variant={
-                  item.recommendation === 'core' ? 'default' : 'secondary'
-                }
-              >
-                {item.recommendation === 'core'
-                  ? '核心推荐'
-                  : item.recommendation === 'explore'
-                    ? '探索推荐'
-                    : '未推荐'}
-              </Badge>
-              <span className='text-muted-foreground text-xs'>
-                {item.totalScore} 分
-              </span>
-            </div>
-            <CardTitle className='text-lg'>
-              {item.url ? (
-                <a
-                  className='hover:underline'
-                  href={item.url}
-                  rel='noreferrer'
-                  target='_blank'
-                >
-                  {item.title}{' '}
-                  <ExternalLink aria-hidden='true' className='inline size-4' />
-                </a>
-              ) : (
-                item.title
-              )}
-            </CardTitle>
-            <CardDescription className='leading-6'>
-              {item.summary}
-            </CardDescription>
-          </CardHeader>
-          {item.topics.length > 0 && (
-            <CardContent className='flex flex-wrap gap-2'>
-              {item.topics.map((topic) => (
-                <Badge key={topic} variant='outline'>
-                  {topic}
-                </Badge>
-              ))}
-            </CardContent>
-          )}
-        </Card>
+        <ContentCard key={item.id} item={item} />
       ))}
     </div>
   )

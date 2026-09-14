@@ -182,6 +182,15 @@ const interactionSnapshotSchema = z
   })
   .strict()
 
+const relatedContentSchema = z
+  .object({
+    id: z.string().min(1),
+    contentIds: z.tuple([z.string().min(1), z.string().min(1)]),
+    reason: z.string().min(1),
+    createdAt: timestampSchema,
+  })
+  .strict()
+
 const usageSchema = z
   .object({
     inputTokens: z.number().int().nonnegative(),
@@ -234,6 +243,7 @@ export type RuntimeAudit = z.infer<typeof auditSchema>
 export type ProviderAttempt = z.infer<typeof providerAttemptSchema>
 export type ProviderHealthRecord = z.infer<typeof providerHealthSchema>
 export type InteractionSnapshot = z.infer<typeof interactionSnapshotSchema>
+export type RelatedContent = z.infer<typeof relatedContentSchema>
 export type ContentRecord = z.infer<typeof contentRecordSchema>
 export type AnalysisRecord = z.infer<typeof analysisRecordSchema>
 export type AnalysisCall = z.infer<typeof analysisCallSchema>
@@ -282,7 +292,7 @@ export interface DiscoveryCommitHooks {
 const markdownStart = '<!-- airadar-record:start -->\n```json\n'
 const markdownEnd = '\n```\n<!-- airadar-record:end -->\n'
 const sensitiveKey =
-  /(?:apikey|accesskey(?:id)?|token|secret|password|passphrase|authorization|auth|cookie|privatekey|credentials?|bearer|signingkey)$/iu
+  /(?:apikey|accesskey(?:id)?|token|secret|password|passphrase|authorization|auth|cookie|privatekey|credentials?|bearer|signingkey|decodekey)$/iu
 const secretReferenceSchema = z
   .object({ secretRef: z.string().regex(/^[A-Z][A-Z0-9_]*$/u) })
   .strict()
@@ -608,6 +618,12 @@ export class RuntimeRepository {
         captured_at TEXT NOT NULL,
         record_json TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS content_relations (
+        id TEXT PRIMARY KEY,
+        left_content_id TEXT NOT NULL,
+        right_content_id TEXT NOT NULL,
+        record_json TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS analyses (
         id TEXT PRIMARY KEY,
         content_id TEXT NOT NULL,
@@ -720,6 +736,7 @@ export class RuntimeRepository {
       DELETE FROM provider_attempts;
       DELETE FROM provider_health;
       DELETE FROM interaction_snapshots;
+      DELETE FROM content_relations;
       DELETE FROM analyses;
       DELETE FROM analysis_calls;
     `)
@@ -757,6 +774,13 @@ export class RuntimeRepository {
       interactionSnapshotSchema,
       (record) => {
         this.upsertInteractionSnapshot(record)
+      }
+    )
+    await this.rebuildFolder(
+      'content-relations',
+      relatedContentSchema,
+      (record) => {
+        this.upsertRelatedContent(record)
       }
     )
     await this.rebuildFolder('analyses', analysisRecordSchema, (record) => {
@@ -1201,6 +1225,11 @@ export class RuntimeRepository {
               ...(typeof existing.video === 'object' ? existing.video : {}),
               ...(typeof content.video === 'object' ? content.video : {}),
             },
+            images:
+              Array.isArray(content.images) && content.images.length
+                ? content.images
+                : existing.images,
+            sourceText: content.sourceText ?? existing.sourceText,
           })
         : content
       await atomicWriteFile(
@@ -1278,9 +1307,59 @@ export class RuntimeRepository {
       .filter((record): record is ContentRecord => Boolean(record))
   }
 
+  async linkRelatedContents(
+    input: z.input<typeof relatedContentSchema>
+  ): Promise<RelatedContent> {
+    return this.serializeMutation(async () => {
+      const relation = relatedContentSchema.parse(input)
+      const [left, right] = relation.contentIds
+      if (left === right) throw new Error('Related contents must be distinct')
+      if (!this.getContent(left) || !this.getContent(right)) {
+        throw new Error('Related contents must both exist')
+      }
+      if (left.split(':', 1)[0] === right.split(':', 1)[0]) {
+        throw new Error('Related contents must use distinct platforms')
+      }
+      if (this.hasRecord('content_relations', relation.id)) {
+        throw new Error(`Content relation ${relation.id} is immutable`)
+      }
+      await this.writeRecord(
+        'content-relations',
+        relation.id,
+        'content relation',
+        relation
+      )
+      this.upsertRelatedContent(relation)
+      return relation
+    })
+  }
+
+  listRelatedContents(contentId?: string): RelatedContent[] {
+    const rows = contentId
+      ? this.database
+          .prepare(
+            `SELECT record_json FROM content_relations
+             WHERE left_content_id = ? OR right_content_id = ?
+             ORDER BY id`
+          )
+          .all(contentId, contentId)
+      : this.database
+          .prepare('SELECT record_json FROM content_relations ORDER BY id')
+          .all()
+    return rows
+      .map((row) => rowRecord(row, relatedContentSchema))
+      .filter((record): record is RelatedContent => Boolean(record))
+  }
+
   async completeContentEnrichment(
     id: string,
-    input: { body: string; canonicalUrl?: string }
+    input: {
+      body: string
+      canonicalUrl?: string
+      media?: Record<string, unknown>
+      images?: Array<{ order: number; url: string }>
+      sourceText?: string
+    }
   ): Promise<ContentRecord> {
     return this.serializeMutation(async () => {
       const content = this.getContent(id)
@@ -1291,7 +1370,11 @@ export class RuntimeRepository {
       if (!input.body.trim()) throw new Error('Completed content body is empty')
       const completed = contentRecordSchema.parse({
         ...content,
-        ...input,
+        body: input.body,
+        canonicalUrl: input.canonicalUrl ?? content.canonicalUrl,
+        media: input.media ?? content.media,
+        images: input.images ?? content.images,
+        sourceText: input.sourceText ?? content.sourceText,
         enrichmentStatus: 'succeeded',
         enrichmentError: undefined,
       })
@@ -1776,7 +1859,12 @@ export class RuntimeRepository {
 
   private hasRecord(
     table:
-      'analyses' | 'analysis_calls' | 'audits' | 'contents' | 'discoveries',
+      | 'analyses'
+      | 'analysis_calls'
+      | 'audits'
+      | 'content_relations'
+      | 'contents'
+      | 'discoveries',
     id: string
   ): boolean {
     return Boolean(
@@ -1936,6 +2024,21 @@ export class RuntimeRepository {
         snapshot.sourceId,
         snapshot.capturedAt,
         JSON.stringify(snapshot)
+      )
+  }
+
+  private upsertRelatedContent(relation: RelatedContent): void {
+    this.database
+      .prepare(
+        `INSERT INTO content_relations
+          (id, left_content_id, right_content_id, record_json)
+         VALUES (?, ?, ?, ?)`
+      )
+      .run(
+        relation.id,
+        relation.contentIds[0],
+        relation.contentIds[1],
+        JSON.stringify(relation)
       )
   }
 

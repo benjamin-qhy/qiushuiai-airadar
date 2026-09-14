@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { lookup } from 'node:dns/promises'
 import { readFile } from 'node:fs/promises'
+import { isIP } from 'node:net'
 
 import { Readability } from '@mozilla/readability'
 import {
@@ -21,6 +23,7 @@ import { canonicalizeContentUrl, type Source } from '@airadar/domain'
 import type { AnalysisRecord, RuntimeRepository } from '@airadar/runtime'
 import {
   decideVideoEnrichment,
+  type ImagePostDetailProvider,
   normalizeYouTubeIdentity,
   type DiscoveredItem,
   type DiscoveryBatch,
@@ -61,8 +64,11 @@ export async function runPlatformDiscovery(input: {
     }
     let body = ''
     let enrichmentStatus:
-      'pending' | 'waiting-manual-transcription' | 'succeeded' = 'pending'
-    if (
+      'pending' | 'waiting-manual-transcription' | 'succeeded' | 'failed' =
+      'pending'
+    if (item.enrichmentError) {
+      enrichmentStatus = 'failed'
+    } else if (
       item.content.kind === 'short_post' &&
       item.description?.trim() &&
       item.thread?.complete !== false
@@ -99,13 +105,16 @@ export async function runPlatformDiscovery(input: {
       publishedAt: item.publishedAt,
       discoveredAt,
       enrichmentStatus,
+      enrichmentError: item.enrichmentError,
       kind: item.content.kind,
       evidence: item.evidence,
       video: item.video,
+      images: item.images,
+      sourceText: item.description,
       threadParts: item.thread?.parts,
       threadComplete: item.thread?.complete,
       mergePlatformMetadata:
-        input.source.type === 'youtube' && item.content.kind === 'video',
+        item.content.kind === 'video' || item.content.kind === 'image_post',
       mergeThreadParts:
         input.source.type === 'x' &&
         item.content.kind === 'short_post' &&
@@ -181,12 +190,19 @@ export async function runPlatformDiscovery(input: {
           mode:
             item.content.kind === 'video'
               ? 'auto-transcription'
-              : 'article-enrichment',
+              : item.content.kind === 'image_post'
+                ? 'image-post-enrichment'
+                : 'article-enrichment',
           durationSeconds: item.video?.durationSeconds,
         },
       })
     }
   }
+
+  await relateSameWorkAcrossPlatforms({
+    repository: input.repository,
+    contentIds: prepared.map(({ item }) => item.platformIdentity as string),
+  })
 
   await input.repository.advanceProgress(input.source.id, batch.nextCursor, {
     clearCursor: batch.nextCursor === undefined,
@@ -201,6 +217,510 @@ export async function runPlatformDiscovery(input: {
       ({ enrichmentStatus }) => enrichmentStatus !== 'succeeded'
     ).length,
   }
+}
+
+function normalizedWorkTitle(value: string): string {
+  return value
+    .normalize('NFKC')
+    .toLocaleLowerCase('zh-CN')
+    .replace(/[\p{P}\p{S}\s]/gu, '')
+}
+
+export async function relateSameWorkAcrossPlatforms(input: {
+  repository: RuntimeRepository
+  contentIds?: string[]
+}): Promise<string[]> {
+  const contents = input.repository.listContents()
+  const candidates = new Set(input.contentIds ?? contents.map(({ id }) => id))
+  const existing = new Set(
+    input.repository.listRelatedContents().map(({ id }) => id)
+  )
+  const created: string[] = []
+  for (const candidate of contents.filter(({ id }) => candidates.has(id))) {
+    const title = normalizedWorkTitle(candidate.title)
+    if (title.length < 8) continue
+    for (const other of contents) {
+      if (
+        candidate.id === other.id ||
+        candidate.id.split(':', 1)[0] === other.id.split(':', 1)[0] ||
+        normalizedWorkTitle(other.title) !== title
+      ) {
+        continue
+      }
+      const contentIds = [candidate.id, other.id].toSorted() as [string, string]
+      const id = `related-${sha256(contentIds.join('\n')).slice(0, 32)}`
+      if (existing.has(id)) continue
+      await input.repository.linkRelatedContents({
+        id,
+        contentIds,
+        reason: '跨平台标题完全一致，标记为相关作品但保留独立内容',
+        createdAt: new Date().toISOString(),
+      })
+      existing.add(id)
+      created.push(id)
+    }
+  }
+  return created
+}
+
+export interface ImageRecognizer {
+  providerId: string
+  recognize(input: {
+    contentId: string
+    order: number
+    sourceUrl: string
+    bytes: Uint8Array
+    mimeType: string
+  }): Promise<string>
+}
+
+export interface VideoKeyframeRecognizer {
+  providerId: string
+  recognizeKeyframes(input: {
+    contentId: string
+    videoId: string
+    canonicalUrl: string
+    mediaUrl?: string
+    providerReference?: string
+  }): Promise<Array<{ atSeconds: number; recognizedText: string }>>
+}
+
+const maximumImageBytes = 20 * 1024 * 1024
+
+function isPrivateAddress(address: string): boolean {
+  const normalized = address.toLowerCase()
+  if (isIP(normalized) === 4) {
+    const [first = 0, second = 0] = normalized.split('.').map(Number)
+    return (
+      first === 0 ||
+      first === 10 ||
+      first === 127 ||
+      (first === 100 && second >= 64 && second <= 127) ||
+      (first === 169 && second === 254) ||
+      (first === 172 && second >= 16 && second <= 31) ||
+      (first === 192 && second === 168) ||
+      first >= 224
+    )
+  }
+  if (isIP(normalized) === 6) {
+    if (normalized.startsWith('::ffff:')) {
+      const mapped = normalized.slice('::ffff:'.length)
+      if (isIP(mapped) === 4) return isPrivateAddress(mapped)
+      const [high, low] = mapped.split(':')
+      if (high && low) {
+        const value =
+          Number.parseInt(high, 16) * 65_536 + Number.parseInt(low, 16)
+        if (Number.isFinite(value)) {
+          return isPrivateAddress(
+            [24, 16, 8, 0].map((shift) => (value >>> shift) & 255).join('.')
+          )
+        }
+      }
+    }
+    return (
+      normalized === '::' ||
+      normalized === '::1' ||
+      normalized.startsWith('fc') ||
+      normalized.startsWith('fd') ||
+      /^fe[89ab]/u.test(normalized) ||
+      normalized.startsWith('ff')
+    )
+  }
+  return true
+}
+
+async function assertPublicMediaUrl(value: string): Promise<URL> {
+  const url = new URL(value)
+  if (
+    (url.protocol !== 'https:' && url.protocol !== 'http:') ||
+    url.username ||
+    url.password
+  ) {
+    throw new Error('Image URL is not a safe HTTP URL')
+  }
+  const hostname = url.hostname.toLowerCase()
+  if (
+    isIP(hostname) !== 0 ||
+    !['rednotecdn.com', 'xhscdn.com'].some(
+      (domain) => hostname === domain || hostname.endsWith(`.${domain}`)
+    )
+  ) {
+    throw new Error('Image URL is not on a trusted media CDN')
+  }
+  const addresses = await lookup(hostname, { all: true })
+  if (
+    !addresses.length ||
+    addresses.some(({ address }) => isPrivateAddress(address))
+  ) {
+    throw new Error('Image URL resolves to a private or unsafe address')
+  }
+  return url
+}
+
+async function downloadImage(input: {
+  sourceUrl: string
+  fetcher: Fetcher
+  enforceNetworkBoundary: boolean
+}): Promise<{ bytes: Uint8Array; mimeType: string }> {
+  let current = new URL(input.sourceUrl)
+  if (current.protocol !== 'https:' && current.protocol !== 'http:') {
+    throw new Error('Image URL is not a safe HTTP URL')
+  }
+  for (let redirect = 0; redirect <= 3; redirect += 1) {
+    if (input.enforceNetworkBoundary) {
+      current = await assertPublicMediaUrl(current.toString())
+    }
+    const response = await input.fetcher(current, {
+      redirect: 'manual',
+      signal: AbortSignal.timeout(30_000),
+    })
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get('location')
+      if (!location || redirect === 3) {
+        throw new Error('Image redirect is missing or exceeds the limit')
+      }
+      current = new URL(location, current)
+      continue
+    }
+    if (!response.ok) {
+      throw new Error(`Image request failed with HTTP ${response.status}`)
+    }
+    const mimeType = (response.headers.get('content-type') ?? '')
+      .split(';', 1)[0]!
+      .trim()
+      .toLowerCase()
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(mimeType)) {
+      throw new Error('Image response has an invalid content type')
+    }
+    const declaredLength = Number(response.headers.get('content-length'))
+    if (Number.isFinite(declaredLength) && declaredLength > maximumImageBytes) {
+      throw new Error('Image response exceeds the size limit')
+    }
+    if (!response.body) throw new Error('Image response has no body')
+    const reader = response.body.getReader()
+    const chunks: Uint8Array[] = []
+    let size = 0
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      size += value.byteLength
+      if (size > maximumImageBytes) {
+        await reader.cancel()
+        throw new Error('Image response exceeds the size limit')
+      }
+      chunks.push(value)
+    }
+    const bytes = new Uint8Array(size)
+    let offset = 0
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+    return { bytes, mimeType }
+  }
+  throw new Error('Image redirect loop exhausted')
+}
+
+function imageExtension(mimeType: string): string {
+  const extensions: Record<string, string> = {
+    'image/jpeg': 'jpg',
+    'image/png': 'png',
+    'image/webp': 'webp',
+  }
+  const extension = extensions[mimeType]
+  if (!extension) throw new Error(`Unsupported image type: ${mimeType}`)
+  return extension
+}
+
+export async function enrichImagePostContent(input: {
+  repository: RuntimeRepository
+  contentId: string
+  recognizer: ImageRecognizer
+  detailProvider?: ImagePostDetailProvider
+  fetch?: Fetcher
+}): Promise<{ status: 'succeeded'; providerId: string }> {
+  const content = input.repository.getContent(input.contentId)
+  if (!content) throw new Error(`Content does not exist: ${input.contentId}`)
+  if (content.body.trim() && content.enrichmentStatus === 'succeeded') {
+    return { status: 'succeeded', providerId: input.recognizer.providerId }
+  }
+  if (content.kind !== 'image_post') {
+    throw new Error(`Content is not an image post: ${input.contentId}`)
+  }
+  const detail = input.detailProvider
+    ? await input.detailProvider.fetchDetail({
+        contentId: input.contentId,
+        canonicalUrl: content.canonicalUrl ?? '',
+      })
+    : undefined
+  const images = detail
+    ? detail.images
+    : Array.isArray(content.images)
+      ? (content.images as Array<{ order?: unknown; url?: unknown }>)
+      : []
+  if (!images.length) throw new Error('Image post has no images')
+  const ordered = images
+    .map((image) => ({
+      order: typeof image.order === 'number' ? image.order : -1,
+      url: typeof image.url === 'string' ? image.url : '',
+    }))
+    .sort((left, right) => left.order - right.order)
+  if (
+    ordered.some(
+      (image, index) => image.order !== index || !image.url.startsWith('http')
+    )
+  ) {
+    throw new Error('Image post has incomplete or unordered image evidence')
+  }
+  const fetcher = input.fetch ?? fetch
+  const media: Array<{
+    order: number
+    fileName: string
+    recognizedText: string
+  }> = []
+  for (const image of ordered) {
+    let downloaded: Awaited<ReturnType<typeof downloadImage>>
+    try {
+      downloaded = await downloadImage({
+        sourceUrl: image.url,
+        fetcher,
+        enforceNetworkBoundary: input.fetch === undefined,
+      })
+    } catch (error) {
+      throw new Error(`Failed to fetch image ${image.order + 1}`, {
+        cause: error,
+      })
+    }
+    const { bytes, mimeType } = downloaded
+    const fileName = `image-${String(image.order + 1).padStart(3, '0')}.${imageExtension(mimeType)}`
+    await input.repository.saveContentMedia(input.contentId, fileName, bytes)
+    const recognizedText = (
+      await input.recognizer.recognize({
+        contentId: input.contentId,
+        order: image.order,
+        sourceUrl: image.url,
+        bytes,
+        mimeType,
+      })
+    ).trim()
+    if (!recognizedText) {
+      throw new Error(
+        `Image ${image.order + 1} recognition returned empty text`
+      )
+    }
+    media.push({ order: image.order, fileName, recognizedText })
+  }
+  const sourceText =
+    detail?.sourceText.trim() ??
+    (typeof content.sourceText === 'string' ? content.sourceText.trim() : '')
+  const body = [
+    sourceText,
+    ...media.map(
+      (image) => `第 ${image.order + 1} 张图：\n${image.recognizedText}`
+    ),
+  ]
+    .filter(Boolean)
+    .join('\n\n')
+  await input.repository.completeContentEnrichment(input.contentId, {
+    body,
+    canonicalUrl: content.canonicalUrl,
+    media: { images: media },
+    images: ordered,
+    sourceText,
+  })
+  return { status: 'succeeded', providerId: input.recognizer.providerId }
+}
+
+export async function enrichImagePostsIndependently(input: {
+  repository: RuntimeRepository
+  contentIds: string[]
+  recognizer: ImageRecognizer
+  detailProvider?: ImagePostDetailProvider
+  fetch?: Fetcher
+}): Promise<
+  Array<
+    | { contentId: string; status: 'succeeded' }
+    | { contentId: string; status: 'failed'; error: string }
+  >
+> {
+  const results: Array<
+    | { contentId: string; status: 'succeeded' }
+    | { contentId: string; status: 'failed'; error: string }
+  > = []
+  for (const contentId of input.contentIds) {
+    try {
+      await enrichImagePostContent({
+        repository: input.repository,
+        contentId,
+        recognizer: input.recognizer,
+        detailProvider: input.detailProvider,
+        fetch: input.fetch,
+      })
+      results.push({ contentId, status: 'succeeded' })
+    } catch (error) {
+      await input.repository.failContentEnrichment(
+        contentId,
+        error instanceof Error ? error.message : String(error)
+      )
+      results.push({
+        contentId,
+        status: 'failed',
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+  return results
+}
+
+export async function enrichPlatformVideoContent(input: {
+  repository: RuntimeRepository
+  contentId: string
+  transcriber: VideoTranscriber
+  maxDurationSeconds?: number
+  autoTranscribe?: boolean
+  manual?: boolean
+  requireKeyframes?: boolean
+  keyframeRecognizer?: VideoKeyframeRecognizer
+}): Promise<{
+  status: 'succeeded' | 'waiting-manual-transcription'
+  providerId: string
+}> {
+  const content = input.repository.getContent(input.contentId)
+  if (!content) throw new Error(`Content does not exist: ${input.contentId}`)
+  if (content.body.trim() && content.enrichmentStatus === 'succeeded') {
+    return { status: 'succeeded', providerId: input.transcriber.providerId }
+  }
+  if (content.kind !== 'video' || !content.canonicalUrl) {
+    throw new Error(`Content is not a platform video: ${input.contentId}`)
+  }
+  const video =
+    content.video && typeof content.video === 'object'
+      ? (content.video as {
+          durationSeconds?: number
+          mediaUrl?: string
+          providerReference?: string
+        })
+      : {}
+  const maximum = input.maxDurationSeconds ?? 7_200
+  if (
+    !input.manual &&
+    (!input.autoTranscribe ||
+      video.durationSeconds === undefined ||
+      video.durationSeconds > maximum)
+  ) {
+    await input.repository.waitForManualTranscription(input.contentId)
+    return {
+      status: 'waiting-manual-transcription',
+      providerId: input.transcriber.providerId,
+    }
+  }
+  if (input.requireKeyframes && !input.keyframeRecognizer) {
+    throw new Error('Video requires keyframe recognition before completion')
+  }
+  const separator = input.contentId.indexOf(':')
+  const videoId =
+    separator >= 0 ? input.contentId.slice(separator + 1) : input.contentId
+  const body = await input.transcriber.transcribe({
+    videoId,
+    canonicalUrl: content.canonicalUrl,
+    mediaUrl: video.mediaUrl,
+    providerReference: video.providerReference,
+  })
+  if (!body.trim()) {
+    throw new Error('Automatic transcription returned empty text')
+  }
+  const keyframes = input.requireKeyframes
+    ? await input.keyframeRecognizer!.recognizeKeyframes({
+        contentId: input.contentId,
+        videoId,
+        canonicalUrl: content.canonicalUrl,
+        mediaUrl: video.mediaUrl,
+        providerReference: video.providerReference,
+      })
+    : []
+  if (
+    input.requireKeyframes &&
+    (!keyframes.length ||
+      keyframes.some(
+        (frame) =>
+          !Number.isFinite(frame.atSeconds) ||
+          frame.atSeconds < 0 ||
+          !frame.recognizedText.trim()
+      ))
+  ) {
+    throw new Error('Required keyframe recognition is incomplete')
+  }
+  const normalizedKeyframes = keyframes
+    .map((frame) => ({
+      atSeconds: frame.atSeconds,
+      recognizedText: frame.recognizedText.trim(),
+    }))
+    .toSorted((left, right) => left.atSeconds - right.atSeconds)
+  const completedBody = [
+    body.trim(),
+    ...normalizedKeyframes.map(
+      (frame) =>
+        `关键画面 ${frame.atSeconds.toFixed(1)} 秒：\n${frame.recognizedText}`
+    ),
+  ].join('\n\n')
+  await input.repository.completeContentEnrichment(input.contentId, {
+    body: completedBody,
+    canonicalUrl: content.canonicalUrl,
+    media: normalizedKeyframes.length
+      ? {
+          ...(content.media && typeof content.media === 'object'
+            ? content.media
+            : {}),
+          keyframes: normalizedKeyframes,
+          keyframeProviderId: input.keyframeRecognizer?.providerId,
+        }
+      : undefined,
+  })
+  return { status: 'succeeded', providerId: input.transcriber.providerId }
+}
+
+export async function enrichPlatformVideosIndependently(input: {
+  repository: RuntimeRepository
+  contentIds: string[]
+  transcriber: VideoTranscriber
+  autoTranscribe?: boolean
+  manual?: boolean
+  requireKeyframes?: boolean
+  keyframeRecognizer?: VideoKeyframeRecognizer
+}): Promise<
+  Array<
+    | { contentId: string; status: 'succeeded' }
+    | { contentId: string; status: 'failed'; error: string }
+  >
+> {
+  const results: Array<
+    | { contentId: string; status: 'succeeded' }
+    | { contentId: string; status: 'failed'; error: string }
+  > = []
+  for (const contentId of input.contentIds) {
+    try {
+      const result = await enrichPlatformVideoContent({
+        repository: input.repository,
+        contentId,
+        transcriber: input.transcriber,
+        autoTranscribe: input.autoTranscribe,
+        manual: input.manual,
+        requireKeyframes: input.requireKeyframes,
+        keyframeRecognizer: input.keyframeRecognizer,
+      })
+      if (result.status !== 'succeeded') {
+        throw new Error('Video is waiting for manual transcription')
+      }
+      results.push({ contentId, status: 'succeeded' })
+    } catch (error) {
+      results.push({
+        contentId,
+        status: 'failed',
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+  return results
 }
 
 export async function enrichYouTubeContent(input: {

@@ -183,6 +183,9 @@ importers:
       '@airadar/runtime':
         specifier: workspace:*
         version: link:../runtime
+      '@airadar/source-adapters':
+        specifier: workspace:*
+        version: link:../source-adapters
       '@earendil-works/pi-ai':
         specifier: 0.85.1
         version: 0.85.1(ws@8.21.3)(zod@4.1.12)

@@ -18,7 +18,9 @@ import {
   createPiModelGateway,
   createReadOnlyCodexCredentialStore,
   enrichArticle,
+  enrichYouTubeContent,
   RssAdapter,
+  runPlatformDiscovery,
   runRssPipeline,
   analyzeStoredContent,
 } from './index.js'
@@ -35,6 +37,442 @@ afterEach(async () => {
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true }))
   )
+})
+
+describe('X and YouTube discovery gate', () => {
+  it('clears a persisted provider cursor after reaching the last page', async () => {
+    const runtime = await repository()
+    await runtime.advanceProgress('x-last-page', 'old-page')
+    await runPlatformDiscovery({
+      repository: runtime,
+      source: {
+        id: 'x-last-page',
+        slug: 'x-last-page',
+        name: 'X last page',
+        type: 'x',
+        externalIdentity: 'example',
+        status: 'enabled',
+      },
+      cursor: 'old-page',
+      limit: 1,
+      runner: {
+        async discover() {
+          return { providerId: 'provider-1', items: [] }
+        },
+      },
+    })
+    expect(runtime.getProgress('x-last-page')).toMatchObject({
+      sourceId: 'x-last-page',
+    })
+    expect(runtime.getProgress('x-last-page')?.cursor).toBeUndefined()
+    await runtime.close()
+  })
+
+  it('merges self-reply thread parts that arrive on later pages', async () => {
+    const runtime = await repository()
+    const source = {
+      id: 'x-thread',
+      slug: 'x-thread',
+      name: 'X thread',
+      type: 'x' as const,
+      externalIdentity: 'example',
+      status: 'enabled' as const,
+    }
+    let page = 0
+    const runner = {
+      async discover() {
+        page += 1
+        const isRoot = page === 2
+        return {
+          providerId: 'provider-1',
+          nextCursor: isRoot ? undefined : 'page-2',
+          items: [
+            {
+              externalId: isRoot ? 'root-1' : 'reply-1',
+              platformIdentity: 'x:root-1',
+              description: isRoot ? 'part one' : 'part two',
+              content: {
+                kind: 'short_post' as const,
+                canonicalUrl: 'https://x.com/i/status/root-1',
+                title: isRoot ? 'part one' : 'part two',
+              },
+              thread: {
+                conversationId: 'root-1',
+                complete: isRoot,
+                parts: [
+                  {
+                    id: isRoot ? 'root-1' : 'reply-1',
+                    text: isRoot ? 'part one' : 'part two',
+                    publishedAt: isRoot
+                      ? '2026-09-14T08:00:00.000Z'
+                      : '2026-09-14T08:01:00.000Z',
+                  },
+                ],
+              },
+            },
+          ],
+        }
+      },
+    }
+    await runPlatformDiscovery({
+      repository: runtime,
+      source,
+      limit: 1,
+      runner,
+    })
+    expect(runtime.getContent('x:root-1')).toMatchObject({
+      body: '',
+      enrichmentStatus: 'pending',
+    })
+    expect(runtime.indexedTaskCount()).toBe(0)
+    await runPlatformDiscovery({
+      repository: runtime,
+      source,
+      cursor: 'page-2',
+      limit: 1,
+      runner,
+    })
+    await runPlatformDiscovery({
+      repository: runtime,
+      source,
+      limit: 1,
+      runner: {
+        async discover() {
+          return {
+            providerId: 'provider-1',
+            items: [
+              {
+                externalId: 'retweet-1',
+                platformIdentity: 'x:root-1',
+                description: 'retweet carrier evidence',
+                content: {
+                  kind: 'short_post',
+                  canonicalUrl: 'https://x.com/i/status/root-1',
+                  title: 'Retweet evidence',
+                },
+              },
+            ],
+          }
+        },
+      },
+    })
+    expect(runtime.getContent('x:root-1')).toMatchObject({
+      body: 'part one\n\npart two',
+      threadParts: [
+        { id: 'root-1', text: 'part one' },
+        { id: 'reply-1', text: 'part two' },
+      ],
+    })
+    expect(runtime.indexedContentCount()).toBe(1)
+    expect(runtime.indexedDiscoveryCount()).toBe(3)
+    await runtime.close()
+  })
+
+  it('persists every same-batch X discovery with matching evidence', async () => {
+    const runtime = await repository()
+    await runPlatformDiscovery({
+      repository: runtime,
+      source: {
+        id: 'x-shared-video',
+        slug: 'x-shared-video',
+        name: 'X shared video',
+        type: 'x',
+        externalIdentity: 'example',
+        status: 'enabled',
+      },
+      limit: 2,
+      runner: {
+        async discover() {
+          return {
+            providerId: 'provider-1',
+            items: [
+              {
+                externalId: 'post-1',
+                platformIdentity: 'youtube:dQw4w9WgXcQ',
+                content: {
+                  kind: 'video',
+                  canonicalUrl: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+                  title: 'Shared video',
+                },
+                evidence: {
+                  carrier: 'youtube',
+                  discoveryUrl: 'https://x.com/i/status/post-1',
+                },
+                discoveryParts: ['post-1', 'post-2'].map((externalId) => ({
+                  externalId,
+                  discoveryUrl: `https://x.com/i/status/${externalId}`,
+                  sourceText: `evidence ${externalId}`,
+                  interaction: {
+                    capturedAt: '2026-09-14T08:00:00.000Z',
+                    views: externalId === 'post-1' ? 10 : 20,
+                    likes: null,
+                    comments: null,
+                    shares: null,
+                    saves: null,
+                  },
+                })),
+              },
+            ],
+          }
+        },
+      },
+    })
+    const discoveries = runtime.listDiscoveries('x-shared-video')
+    expect(discoveries).toHaveLength(2)
+    for (const discovery of discoveries) {
+      expect(discovery.evidence).toMatchObject({
+        discoveryUrl: discovery.discoveryUrl,
+        sourceText: discovery.sourceText,
+      })
+    }
+    expect(
+      runtime
+        .listInteractionSnapshots('youtube:dQw4w9WgXcQ')
+        .map((snapshot) => [snapshot.externalId, snapshot.views])
+        .sort()
+    ).toEqual([
+      ['post-1', 10],
+      ['post-2', 20],
+    ])
+    await runtime.close()
+  })
+
+  it('does not advance the cursor when a snapshot side effect fails', async () => {
+    const runtime = await repository()
+    runtime.saveInteractionSnapshot = async () => {
+      throw new Error('forced snapshot failure')
+    }
+    await expect(
+      runPlatformDiscovery({
+        repository: runtime,
+        source: {
+          id: 'x-cursor',
+          slug: 'x-cursor',
+          name: 'X cursor',
+          type: 'x',
+          externalIdentity: 'example',
+          status: 'enabled',
+        },
+        limit: 1,
+        runner: {
+          async discover() {
+            return {
+              providerId: 'provider-1',
+              nextCursor: 'next-page',
+              items: [
+                {
+                  externalId: 'short-1',
+                  platformIdentity: 'x:short-1',
+                  description: 'complete short',
+                  content: {
+                    kind: 'short_post',
+                    canonicalUrl: 'https://x.com/i/status/short-1',
+                    title: 'Short',
+                  },
+                  interaction: {
+                    capturedAt: '2026-09-14T08:00:00.000Z',
+                    views: 1,
+                    likes: null,
+                    comments: null,
+                    shares: null,
+                    saves: null,
+                  },
+                },
+              ],
+            }
+          },
+        },
+      })
+    ).rejects.toThrow('forced snapshot failure')
+    expect(runtime.getProgress('x-cursor')).toBeUndefined()
+    await runtime.close()
+  })
+
+  it('persists short/article/video evidence and blocks incomplete video analysis', async () => {
+    const runtime = await repository()
+    const source = {
+      id: 'x-source',
+      slug: 'x-source',
+      name: 'X source',
+      type: 'x' as const,
+      externalIdentity: 'example',
+      status: 'enabled' as const,
+    }
+    const interaction = {
+      capturedAt: '2026-09-14T08:00:00.000Z',
+      views: 10,
+      likes: 2,
+      comments: null,
+      shares: null,
+      saves: null,
+    }
+    const result = await runPlatformDiscovery({
+      repository: runtime,
+      source,
+      limit: 10,
+      runner: {
+        async discover() {
+          return {
+            providerId: 'test-provider',
+            items: [
+              {
+                externalId: 'short-1',
+                platformIdentity: 'x:short-1',
+                description: 'complete short text',
+                content: {
+                  kind: 'short_post',
+                  canonicalUrl: 'https://x.com/i/status/short-1',
+                  title: 'Short',
+                },
+                evidence: {
+                  discoveryUrl: 'https://x.com/i/status/short-1',
+                  carrier: 'x-short',
+                  sourceText: 'complete short text',
+                },
+                interaction,
+              },
+              {
+                externalId: 'article-1',
+                platformIdentity: 'url:https://example.com/article',
+                description: 'link context only',
+                content: {
+                  kind: 'article',
+                  canonicalUrl: 'https://example.com/article',
+                  title: 'Article',
+                },
+                evidence: {
+                  discoveryUrl: 'https://x.com/i/status/article-1',
+                  carrier: 'external-article',
+                  sourceText: 'link context only',
+                },
+                interaction,
+              },
+              {
+                externalId: 'video-1',
+                platformIdentity: 'youtube:dQw4w9WgXcQ',
+                content: {
+                  kind: 'video',
+                  canonicalUrl: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+                  title: 'Video',
+                },
+                evidence: {
+                  discoveryUrl: 'https://x.com/i/status/video-1',
+                  carrier: 'youtube',
+                  transcriptStatus: 'missing',
+                },
+                video: { scope: 'normal', durationSeconds: 600 },
+                interaction,
+              },
+            ],
+          }
+        },
+      },
+    })
+    expect(result).toMatchObject({ analyzeReady: 1, blocked: 2 })
+    expect(runtime.getContent('x:short-1')).toMatchObject({
+      enrichmentStatus: 'succeeded',
+      body: 'complete short text',
+    })
+    expect(runtime.getContent('url:https://example.com/article')).toMatchObject(
+      { enrichmentStatus: 'pending', body: '' }
+    )
+    expect(runtime.getContent('youtube:dQw4w9WgXcQ')).toMatchObject({
+      enrichmentStatus: 'waiting-manual-transcription',
+      body: '',
+    })
+
+    await runPlatformDiscovery({
+      repository: runtime,
+      source: {
+        id: 'youtube-source',
+        slug: 'youtube-source',
+        name: 'YouTube source',
+        type: 'youtube',
+        externalIdentity: '@example',
+        status: 'enabled',
+      },
+      limit: 10,
+      runner: {
+        async discover() {
+          return {
+            providerId: 'youtube-data-api',
+            items: [
+              {
+                externalId: 'dQw4w9WgXcQ',
+                platformIdentity: 'youtube:dQw4w9WgXcQ',
+                content: {
+                  kind: 'video',
+                  canonicalUrl: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+                  title: 'Authoritative YouTube title',
+                },
+                evidence: {
+                  discoveryUrl: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+                  carrier: 'youtube',
+                },
+                video: { scope: 'normal', durationSeconds: 601 },
+              },
+            ],
+          }
+        },
+      },
+    })
+    expect(runtime.getContent('youtube:dQw4w9WgXcQ')).toMatchObject({
+      externalId: 'dQw4w9WgXcQ',
+      title: 'Authoritative YouTube title',
+      video: { scope: 'normal', durationSeconds: 601 },
+    })
+    await expect(
+      runtime.saveAnalysis({
+        id: 'forbidden-analysis',
+        contentId: 'youtube:dQw4w9WgXcQ',
+        fingerprint: 'f',
+        version: 1,
+        manual: false,
+        provider: 'test',
+        model: 'gpt-5.3-codex-spark',
+        promptVersion: 'p1',
+        profileVersionId: 'profile-1',
+        ruleVersion: 'r1',
+        createdAt: '2026-09-14T08:01:00.000Z',
+        durationMs: 1,
+        usage: {
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          costUsd: 0,
+        },
+        result: {},
+      })
+    ).rejects.toThrow('Only completely enriched content can be analyzed')
+    let transcribedVideoId = ''
+    await expect(
+      enrichYouTubeContent({
+        repository: runtime,
+        contentId: 'youtube:dQw4w9WgXcQ',
+        transcriptProvider: {
+          providerId: 'caption-provider',
+          async fetchTranscript() {
+            return { status: 'missing' }
+          },
+        },
+        autoTranscribe: true,
+        transcriber: {
+          providerId: 'speech-to-text',
+          async transcribe(request) {
+            transcribedVideoId = request.videoId
+            return 'complete automatic transcription'
+          },
+        },
+      })
+    ).resolves.toEqual({ status: 'succeeded', providerId: 'speech-to-text' })
+    expect(transcribedVideoId).toBe('dQw4w9WgXcQ')
+    expect(runtime.getContent('youtube:dQw4w9WgXcQ')).toMatchObject({
+      enrichmentStatus: 'succeeded',
+      body: 'complete automatic transcription',
+    })
+    await runtime.close()
+  })
 })
 
 const analysisArguments = {

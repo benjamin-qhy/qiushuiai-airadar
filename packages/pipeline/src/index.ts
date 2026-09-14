@@ -17,9 +17,263 @@ import { XMLParser } from 'fast-xml-parser'
 import { parseHTML } from 'linkedom'
 import { z } from 'zod'
 
+import { canonicalizeContentUrl, type Source } from '@airadar/domain'
 import type { AnalysisRecord, RuntimeRepository } from '@airadar/runtime'
+import {
+  decideVideoEnrichment,
+  normalizeYouTubeIdentity,
+  type DiscoveredItem,
+  type DiscoveryBatch,
+  type DiscoveryRequest,
+  type VideoTranscriptProvider,
+  type VideoTranscriber,
+} from '@airadar/source-adapters'
 
 type Fetcher = typeof globalThis.fetch
+
+export interface PlatformDiscoveryRunner {
+  discover(request: DiscoveryRequest): Promise<DiscoveryBatch>
+}
+
+export async function runPlatformDiscovery(input: {
+  repository: RuntimeRepository
+  runner: PlatformDiscoveryRunner
+  source: Source
+  cursor?: string
+  limit: number
+  autoTranscribe?: boolean
+}): Promise<{
+  items: DiscoveredItem[]
+  analyzeReady: number
+  blocked: number
+}> {
+  const batch = await input.runner.discover({
+    source: input.source,
+    cursor: input.cursor,
+    limit: input.limit,
+  })
+  const discoveredAt = new Date().toISOString()
+  const prepared = batch.items.map((item) => {
+    if (!item.platformIdentity) {
+      throw new Error(
+        `Provider item ${item.externalId} has no platform identity`
+      )
+    }
+    let body = ''
+    let enrichmentStatus:
+      'pending' | 'waiting-manual-transcription' | 'succeeded' = 'pending'
+    if (
+      item.content.kind === 'short_post' &&
+      item.description?.trim() &&
+      item.thread?.complete !== false
+    ) {
+      body = item.description.trim()
+      enrichmentStatus = 'succeeded'
+    } else if (item.content.kind === 'video') {
+      const decision = decideVideoEnrichment({
+        hasTranscript: Boolean(
+          item.description && item.evidence?.transcriptStatus === 'available'
+        ),
+        durationSeconds: item.video?.durationSeconds,
+        autoTranscribe: input.autoTranscribe ?? false,
+      })
+      if (decision.status === 'ready') {
+        body = item.description?.trim() ?? ''
+        enrichmentStatus = 'succeeded'
+      } else if (decision.status === 'waiting-manual-transcription') {
+        enrichmentStatus = 'waiting-manual-transcription'
+      }
+    }
+    return { item, body, enrichmentStatus }
+  })
+
+  await input.repository.commitDiscoveryBatch({
+    sourceId: input.source.id,
+    contents: prepared.map(({ item, body, enrichmentStatus }) => ({
+      id: item.platformIdentity as string,
+      title: item.content.title,
+      body,
+      canonicalUrl: item.content.canonicalUrl,
+      sourceId: input.source.id,
+      externalId: item.externalId,
+      publishedAt: item.publishedAt,
+      discoveredAt,
+      enrichmentStatus,
+      kind: item.content.kind,
+      evidence: item.evidence,
+      video: item.video,
+      threadParts: item.thread?.parts,
+      threadComplete: item.thread?.complete,
+      mergePlatformMetadata:
+        input.source.type === 'youtube' && item.content.kind === 'video',
+      mergeThreadParts:
+        input.source.type === 'x' &&
+        item.content.kind === 'short_post' &&
+        Boolean(item.thread?.parts.length),
+    })),
+    discoveries: prepared.flatMap(({ item }) =>
+      (item.discoveryParts?.length
+        ? item.discoveryParts
+        : [
+            {
+              externalId: item.externalId,
+              discoveryUrl: item.evidence?.discoveryUrl,
+              sourceText: item.description,
+            },
+          ]
+      ).map((part) => ({
+        id: `${input.source.id}:${part.externalId}`,
+        sourceId: input.source.id,
+        contentId: item.platformIdentity as string,
+        externalId: part.externalId,
+        discoveredAt,
+        discoveryUrl: part.discoveryUrl,
+        evidence: item.evidence
+          ? {
+              ...item.evidence,
+              discoveryUrl: part.discoveryUrl ?? item.evidence.discoveryUrl,
+              sourceText: part.sourceText ?? item.evidence.sourceText,
+            }
+          : undefined,
+        sourceText: part.sourceText,
+      }))
+    ),
+  })
+
+  for (const { item, enrichmentStatus } of prepared) {
+    const partInteractions =
+      item.discoveryParts
+        ?.filter(
+          (
+            part
+          ): part is typeof part & {
+            interaction: NonNullable<typeof part.interaction>
+          } => Boolean(part.interaction)
+        )
+        .map((part) => ({
+          externalId: part.externalId,
+          interaction: part.interaction,
+        })) ?? []
+    const interactions = partInteractions.length
+      ? partInteractions
+      : item.interaction
+        ? [{ externalId: item.externalId, interaction: item.interaction }]
+        : []
+    for (const entry of interactions) {
+      await input.repository.saveInteractionSnapshot({
+        id: randomUUID(),
+        contentId: item.platformIdentity as string,
+        sourceId: input.source.id,
+        providerId: batch.providerId,
+        externalId: entry.externalId,
+        ...entry.interaction,
+      })
+    }
+    if (enrichmentStatus === 'pending' && item.thread?.complete !== false) {
+      await input.repository.enqueueTask({
+        id: randomUUID(),
+        type: 'enrich',
+        sourceId: input.source.id,
+        sourceType: input.source.type,
+        idempotencyKey: `enrich:${item.platformIdentity}`,
+        payload: {
+          contentId: item.platformIdentity,
+          mode:
+            item.content.kind === 'video'
+              ? 'auto-transcription'
+              : 'article-enrichment',
+          durationSeconds: item.video?.durationSeconds,
+        },
+      })
+    }
+  }
+
+  await input.repository.advanceProgress(input.source.id, batch.nextCursor, {
+    clearCursor: batch.nextCursor === undefined,
+  })
+
+  return {
+    items: batch.items,
+    analyzeReady: prepared.filter(
+      ({ enrichmentStatus }) => enrichmentStatus === 'succeeded'
+    ).length,
+    blocked: prepared.filter(
+      ({ enrichmentStatus }) => enrichmentStatus !== 'succeeded'
+    ).length,
+  }
+}
+
+export async function enrichYouTubeContent(input: {
+  repository: RuntimeRepository
+  contentId: string
+  transcriptProvider: VideoTranscriptProvider
+  autoTranscribe?: boolean
+  transcriber?: VideoTranscriber
+}): Promise<{
+  status: 'succeeded' | 'waiting-manual-transcription' | 'processing'
+  providerId: string
+}> {
+  const content = input.repository.getContent(input.contentId)
+  if (!content) throw new Error(`Content does not exist: ${input.contentId}`)
+  if (content.enrichmentStatus === 'succeeded' && content.body.trim()) {
+    return {
+      status: 'succeeded',
+      providerId: input.transcriptProvider.providerId,
+    }
+  }
+  const video =
+    content.video && typeof content.video === 'object'
+      ? (content.video as { durationSeconds?: number })
+      : {}
+  const videoId = input.contentId.startsWith('youtube:')
+    ? input.contentId.slice('youtube:'.length)
+    : content.canonicalUrl
+      ? normalizeYouTubeIdentity(content.canonicalUrl).videoId
+      : undefined
+  if (!videoId)
+    throw new Error(`Content is not a YouTube video: ${input.contentId}`)
+  const transcript = await input.transcriptProvider.fetchTranscript(videoId)
+  if (transcript.status === 'available' && transcript.text?.trim()) {
+    await input.repository.completeContentEnrichment(input.contentId, {
+      body: transcript.text.trim(),
+      canonicalUrl: content.canonicalUrl,
+    })
+    return {
+      status: 'succeeded',
+      providerId: input.transcriptProvider.providerId,
+    }
+  }
+  if (transcript.status === 'processing') {
+    return {
+      status: 'processing',
+      providerId: input.transcriptProvider.providerId,
+    }
+  }
+  if (
+    input.autoTranscribe &&
+    input.transcriber &&
+    video.durationSeconds !== undefined &&
+    video.durationSeconds <= 7_200 &&
+    content.canonicalUrl
+  ) {
+    const body = await input.transcriber.transcribe({
+      videoId,
+      canonicalUrl: content.canonicalUrl,
+    })
+    if (!body.trim())
+      throw new Error('Automatic transcription returned empty text')
+    await input.repository.completeContentEnrichment(input.contentId, {
+      body: body.trim(),
+      canonicalUrl: content.canonicalUrl,
+    })
+    return { status: 'succeeded', providerId: input.transcriber.providerId }
+  }
+  await input.repository.waitForManualTranscription(input.contentId)
+  return {
+    status: 'waiting-manual-transcription',
+    providerId: input.transcriptProvider.providerId,
+  }
+}
 
 const levelSchema = z.number().int().min(1).max(5)
 const scoreSchema = z
@@ -199,34 +453,12 @@ export function createCodexPiGateway(
   return createPiModelGateway(models, model)
 }
 
-const trackingParameters = new Set([
-  'fbclid',
-  'gclid',
-  'mc_cid',
-  'mc_eid',
-  'ref',
-])
-
 function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex')
 }
 
 export function canonicalizeArticleUrl(value: string): string {
-  const url = new URL(value)
-  url.hash = ''
-  for (const key of [...url.searchParams.keys()]) {
-    const normalizedKey = key.toLowerCase()
-    if (
-      normalizedKey.startsWith('utm_') ||
-      trackingParameters.has(normalizedKey)
-    ) {
-      url.searchParams.delete(key)
-    }
-  }
-  url.searchParams.sort()
-  url.hostname = url.hostname.toLowerCase()
-  if (url.pathname !== '/') url.pathname = url.pathname.replace(/\/+$/u, '')
-  return url.toString().replace(/\?$/u, '').replace(/\/$/u, '')
+  return canonicalizeContentUrl(value)
 }
 
 function scalar(value: unknown): string | undefined {

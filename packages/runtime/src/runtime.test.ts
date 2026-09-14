@@ -101,6 +101,68 @@ describe('atomic Markdown storage', () => {
 })
 
 describe('deterministic runtime repository', () => {
+  it('persists immutable provider attempts and append-only interaction snapshots', async () => {
+    const root = await temporaryRoot()
+    let repository = await RuntimeRepository.open(root)
+    await repository.saveProviderAttempt({
+      id: 'attempt-1',
+      providerId: 'twitterapi.io',
+      sourceId: 'x-openai',
+      startedAt: '2026-09-14T08:00:00.000Z',
+      finishedAt: '2026-09-14T08:00:01.000Z',
+      durationMs: 1_000,
+      status: 'failed',
+      itemCount: 0,
+      errorClass: 'credential',
+      error: 'Authorization: Bearer private-value',
+    })
+    await repository.saveInteractionSnapshot({
+      id: 'snapshot-1',
+      contentId: 'youtube:dQw4w9WgXcQ',
+      sourceId: 'youtube-openai',
+      providerId: 'youtube-data-api',
+      capturedAt: '2026-09-14T08:00:02.000Z',
+      views: 100,
+      likes: 9,
+      comments: 2,
+      shares: null,
+      saves: null,
+    })
+    await repository.saveProviderHealth({
+      providerId: 'twitterapi.io',
+      state: 'manual-recovery',
+      errorClass: 'credential',
+    })
+    await repository.close()
+
+    repository = await RuntimeRepository.open(root)
+    expect(repository.listProviderAttempts('x-openai')).toMatchObject([
+      { id: 'attempt-1', error: 'Authorization: [REDACTED]' },
+    ])
+    expect(
+      repository.listInteractionSnapshots('youtube:dQw4w9WgXcQ')
+    ).toMatchObject([{ id: 'snapshot-1', views: 100, shares: null }])
+    expect(repository.getProviderHealth('twitterapi.io')).toMatchObject({
+      state: 'manual-recovery',
+      errorClass: 'credential',
+    })
+    await expect(
+      repository.saveInteractionSnapshot({
+        id: 'snapshot-1',
+        contentId: 'youtube:dQw4w9WgXcQ',
+        sourceId: 'youtube-openai',
+        providerId: 'youtube-data-api',
+        capturedAt: '2026-09-14T08:00:03.000Z',
+        views: 101,
+        likes: 9,
+        comments: 2,
+        shares: null,
+        saves: null,
+      })
+    ).rejects.toThrow('immutable')
+    await repository.close()
+  })
+
   it('uses WAL and rebuilds its disposable SQLite index from Markdown', async () => {
     const root = await temporaryRoot()
     const repository = await RuntimeRepository.open(root)

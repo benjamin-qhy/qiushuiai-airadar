@@ -3,13 +3,67 @@ import { mkdir, open, readFile, readdir, rename, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { DatabaseSync, type StatementResultingChanges } from 'node:sqlite'
 
-import { sourceTypeSchema, type SourceType } from '@airadar/domain'
+import {
+  sourceSchema,
+  sourceTypeSchema,
+  type Source,
+  type SourceType,
+} from '@airadar/domain'
 import { z } from 'zod'
 
 const timestampSchema = z.iso.datetime()
 const taskTypeSchema = z.enum(['discover', 'enrich', 'analyze'])
 const taskStatusSchema = z.enum(['pending', 'running', 'succeeded', 'failed'])
 const jsonObjectSchema = z.record(z.string(), z.unknown())
+const managedSourceSchema = sourceSchema.extend({
+  sortOrder: z.number().int().nonnegative().optional(),
+})
+const utilizationActionSchema = z.enum([
+  'favorite',
+  'card',
+  'video',
+  'article',
+  'project',
+])
+const junkReasonSchema = z.enum([
+  'advertising',
+  'engagement-bait',
+  'no-substance',
+  'clickbait',
+  'low-quality-copy',
+  'incorrect',
+  'other',
+])
+const manualJunkSchema = z
+  .object({
+    isJunk: z.boolean(),
+    reason: junkReasonSchema.optional(),
+    note: z.string().max(500).optional(),
+    updatedAt: timestampSchema,
+  })
+  .strict()
+const contentUserStateSchema = z
+  .object({
+    contentId: z.string().min(1),
+    read: z.boolean(),
+    utilizationActions: z.array(utilizationActionSchema),
+    manualJunk: manualJunkSchema.optional(),
+    junkHistory: z.array(manualJunkSchema),
+    updatedAt: timestampSchema,
+  })
+  .strict()
+const junkSampleSchema = z
+  .object({
+    id: z.string().min(1),
+    contentId: z.string().min(1),
+    decision: manualJunkSchema,
+    stateSnapshot: contentUserStateSchema.optional(),
+    contentSnapshot: jsonObjectSchema,
+    scoringSnapshot: jsonObjectSchema,
+    modelSnapshot: jsonObjectSchema.optional(),
+    createdAt: timestampSchema,
+  })
+  .strict()
 
 const parameterScopeSchema = z.discriminatedUnion('level', [
   z.object({ level: z.literal('global') }).strict(),
@@ -61,6 +115,121 @@ const parameterVersionSchema = z
     createdAt: timestampSchema,
   })
   .strict()
+
+const scoringWeightsSchema = z
+  .object({
+    topicMatch: z.number().min(0).max(100),
+    substance: z.number().min(0).max(100),
+    credibility: z.number().min(0).max(100),
+    novelty: z.number().min(0).max(100),
+    actionability: z.number().min(0).max(100),
+    workValue: z.number().min(0).max(100),
+    clarity: z.number().min(0).max(100),
+  })
+  .strict()
+  .refine(
+    (weights) =>
+      Math.abs(
+        Object.values(weights).reduce((sum, value) => sum + value, 0) - 100
+      ) < 0.001,
+    'Scoring weights must total 100'
+  )
+
+function validCronField(
+  value: string,
+  minimum: number,
+  maximum: number
+): boolean {
+  const numberInRange = (part: string) => {
+    const parsed = Number(part)
+    return Number.isInteger(parsed) && parsed >= minimum && parsed <= maximum
+  }
+  return value.split(',').every((entry) => {
+    const [range, step, ...extra] = entry.split('/')
+    if (extra.length || !range) return false
+    if (step !== undefined && (!/^\d+$/u.test(step) || Number(step) < 1))
+      return false
+    if (range === '*') return true
+    const boundaries = range.split('-')
+    if (boundaries.length === 1) return numberInRange(boundaries[0]!)
+    return (
+      boundaries.length === 2 &&
+      numberInRange(boundaries[0]!) &&
+      numberInRange(boundaries[1]!) &&
+      Number(boundaries[0]) <= Number(boundaries[1])
+    )
+  })
+}
+
+function validFiveFieldCron(value: string): boolean {
+  const fields = value.trim().split(/\s+/u)
+  const ranges = [
+    [0, 59],
+    [0, 23],
+    [1, 31],
+    [1, 12],
+    [0, 7],
+  ] as const
+  return (
+    fields.length === 5 &&
+    fields.every((field, index) =>
+      validCronField(field, ranges[index]![0], ranges[index]![1])
+    )
+  )
+}
+
+const runtimeParametersSchema = z
+  .object({
+    collection: z
+      .object({
+        schedule: z
+          .string()
+          .min(1)
+          .refine(validFiveFieldCron, 'Invalid cron schedule'),
+        batchLimit: z.number().int().min(1).max(100),
+        initialLookbackDays: z.number().int().min(0).max(3650),
+        initialLimit: z.number().int().min(1).max(20),
+        retryLimit: z.number().int().min(0).max(3),
+        providerCooldownMinutes: z.number().int().min(0).max(1440),
+      })
+      .strict()
+      .optional(),
+    transcription: z
+      .object({ auto: z.boolean(), maximumMinutes: z.number().min(1).max(120) })
+      .strict()
+      .optional(),
+    storage: z
+      .object({ rawResponseRetentionDays: z.number().int().min(1).max(3650) })
+      .strict()
+      .optional(),
+    profile: z
+      .object({
+        background: z.string().max(5000),
+        interests: z.array(z.string().min(1).max(200)).max(100),
+        exclusions: z.array(z.string().min(1).max(200)).max(100),
+      })
+      .strict()
+      .optional(),
+    scoring: z
+      .object({
+        weights: scoringWeightsSchema,
+        coreThreshold: z.number().min(0).max(100),
+        exploreThreshold: z.number().min(0).max(100),
+      })
+      .strict()
+      .refine(
+        (scoring) => scoring.coreThreshold >= scoring.exploreThreshold,
+        'Core threshold must not be lower than explore threshold'
+      )
+      .optional(),
+  })
+  .strict()
+
+export function validateRuntimeParameters(
+  values: Record<string, unknown>
+): Record<string, unknown> {
+  return runtimeParametersSchema.parse(values)
+}
 
 const threadPartSchema = z
   .object({
@@ -247,6 +416,10 @@ export type RelatedContent = z.infer<typeof relatedContentSchema>
 export type ContentRecord = z.infer<typeof contentRecordSchema>
 export type AnalysisRecord = z.infer<typeof analysisRecordSchema>
 export type AnalysisCall = z.infer<typeof analysisCallSchema>
+export type ManagedSource = z.infer<typeof managedSourceSchema>
+export type UtilizationAction = z.infer<typeof utilizationActionSchema>
+export type JunkReason = z.infer<typeof junkReasonSchema>
+export type ContentUserState = z.infer<typeof contentUserStateSchema>
 
 export interface EnqueueTaskInput {
   id: string
@@ -585,6 +758,21 @@ export class RuntimeRepository {
         id TEXT PRIMARY KEY,
         record_json TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS sources (
+        id TEXT PRIMARY KEY,
+        sort_order INTEGER NOT NULL,
+        record_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS content_user_states (
+        content_id TEXT PRIMARY KEY,
+        record_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS junk_samples (
+        id TEXT PRIMARY KEY,
+        content_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        record_json TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS discoveries (
         id TEXT PRIMARY KEY,
         source_id TEXT NOT NULL,
@@ -730,6 +918,9 @@ export class RuntimeRepository {
       DELETE FROM tasks;
       DELETE FROM parameters;
       DELETE FROM contents;
+      DELETE FROM sources;
+      DELETE FROM content_user_states;
+      DELETE FROM junk_samples;
       DELETE FROM discoveries;
       DELETE FROM progress;
       DELETE FROM audits;
@@ -746,6 +937,24 @@ export class RuntimeRepository {
       this.upsertParameter(record)
     })
     await this.rebuildContents()
+    await this.rebuildFolder('sources', managedSourceSchema, (record) => {
+      this.upsertSource(record)
+    })
+    await this.rebuildFolder(
+      'content-user-states',
+      contentUserStateSchema,
+      (record) => {
+        this.upsertContentUserState(record)
+      }
+    )
+    await this.rebuildFolder('junk-samples', junkSampleSchema, (record) => {
+      this.upsertJunkSample(record)
+      const snapshot = record.stateSnapshot
+      const current = this.getContentUserState(record.contentId)
+      if (snapshot && (!current || current.updatedAt <= snapshot.updatedAt)) {
+        this.upsertContentUserState(snapshot)
+      }
+    })
     await this.rebuildFolder('discoveries', discoveryRecordSchema, (record) => {
       this.upsertDiscovery(record)
     })
@@ -906,6 +1115,16 @@ export class RuntimeRepository {
     )
   }
 
+  listTasks(): RuntimeTask[] {
+    return this.database
+      .prepare(
+        'SELECT record_json FROM tasks ORDER BY created_at DESC, id DESC'
+      )
+      .all()
+      .map((row) => rowRecord(row, runtimeTaskSchema))
+      .filter((task): task is RuntimeTask => Boolean(task))
+  }
+
   async claimNextTask(
     workerId: string,
     at = nowIso()
@@ -937,11 +1156,24 @@ export class RuntimeRepository {
               ids: pending.parameterVersionIds,
               values: pending.parameterSnapshot,
             }
+        const collection = parameters.values.collection
+        const retryLimit =
+          collection &&
+          typeof collection === 'object' &&
+          'retryLimit' in collection &&
+          typeof collection.retryLimit === 'number'
+            ? collection.retryLimit
+            : pending.maxAttempts
         const running = runtimeTaskSchema.parse({
           ...pending,
           status: 'running',
           attempt: pending.attempt + 1,
           workerId,
+          maxAttempts: pending.parametersResolved
+            ? pending.maxAttempts
+            : pending.payload.providerRouterOwnsBudget === true
+              ? 1
+              : Math.max(1, Math.min(3, retryLimit)),
           parameterVersionIds: parameters.ids,
           parameterSnapshot: parameters.values,
           parametersResolved: true,
@@ -1049,6 +1281,23 @@ export class RuntimeRepository {
     input: SaveParameterVersionInput
   ): Promise<RuntimeParameterVersion> {
     return this.serializeMutation(() => this.saveParameterVersionLocked(input))
+  }
+
+  listParameterVersions(scope?: ParameterScope): RuntimeParameterVersion[] {
+    const rows = scope
+      ? this.database
+          .prepare(
+            'SELECT record_json FROM parameters WHERE scope_key = ? ORDER BY created_at DESC, id DESC'
+          )
+          .all(scopeKey(scope))
+      : this.database
+          .prepare(
+            'SELECT record_json FROM parameters ORDER BY created_at DESC, id DESC'
+          )
+          .all()
+    return rows
+      .map((row) => rowRecord(row, parameterVersionSchema))
+      .filter((version): version is RuntimeParameterVersion => Boolean(version))
   }
 
   private async saveParameterVersionLocked(
@@ -1305,6 +1554,231 @@ export class RuntimeRepository {
       .all()
       .map((row) => rowRecord(row, contentRecordSchema))
       .filter((record): record is ContentRecord => Boolean(record))
+  }
+
+  async importSources(
+    sources: Array<Source & { sortOrder?: number }>
+  ): Promise<void> {
+    await this.serializeMutation(async () => {
+      for (const source of sources) {
+        const parsed = managedSourceSchema.parse(source)
+        if (this.getSource(parsed.id)) continue
+        await this.writeRecord('sources', parsed.id, 'source', parsed)
+        this.upsertSource(parsed)
+      }
+    })
+  }
+
+  getSource(id: string): ManagedSource | undefined {
+    return rowRecord(
+      this.database
+        .prepare('SELECT record_json FROM sources WHERE id = ?')
+        .get(id),
+      managedSourceSchema
+    )
+  }
+
+  listSources(): ManagedSource[] {
+    return this.database
+      .prepare(
+        'SELECT record_json FROM sources ORDER BY sort_order ASC, id ASC'
+      )
+      .all()
+      .map((row) => rowRecord(row, managedSourceSchema))
+      .filter((source): source is ManagedSource => Boolean(source))
+  }
+
+  async updateSourceStatus(
+    id: string,
+    status: ManagedSource['status']
+  ): Promise<ManagedSource> {
+    return this.serializeMutation(async () => {
+      const source = this.getSource(id)
+      if (!source) throw new Error(`Source does not exist: ${id}`)
+      const updated = managedSourceSchema.parse({ ...source, status })
+      await this.writeRecord('sources', id, 'source', updated)
+      this.upsertSource(updated)
+      return updated
+    })
+  }
+
+  getContentUserState(contentId: string): ContentUserState | undefined {
+    if (!this.getContent(contentId)) return undefined
+    return (
+      rowRecord(
+        this.database
+          .prepare(
+            'SELECT record_json FROM content_user_states WHERE content_id = ?'
+          )
+          .get(contentId),
+        contentUserStateSchema
+      ) ??
+      contentUserStateSchema.parse({
+        contentId,
+        read: false,
+        utilizationActions: [],
+        junkHistory: [],
+        updatedAt: nowIso(),
+      })
+    )
+  }
+
+  listContentUserStates(): ContentUserState[] {
+    return this.database
+      .prepare(
+        'SELECT record_json FROM content_user_states ORDER BY content_id'
+      )
+      .all()
+      .map((row) => rowRecord(row, contentUserStateSchema))
+      .filter((state): state is ContentUserState => Boolean(state))
+  }
+
+  async setContentRead(
+    contentId: string,
+    read: boolean
+  ): Promise<ContentUserState> {
+    return this.updateContentUserState(contentId, (state) => ({
+      ...state,
+      read,
+      updatedAt: nowIso(),
+    }))
+  }
+
+  async setUtilizationActions(
+    contentId: string,
+    actions: UtilizationAction[]
+  ): Promise<ContentUserState> {
+    const unique = [...new Set(actions)]
+    return this.updateContentUserState(contentId, (state) => {
+      if (state.manualJunk?.isJunk && unique.length) {
+        throw new Error('Junk content cannot have utilization actions')
+      }
+      return { ...state, utilizationActions: unique, updatedAt: nowIso() }
+    })
+  }
+
+  async setManualJunk(
+    contentId: string,
+    input: { isJunk: boolean; reason?: JunkReason; note?: string }
+  ): Promise<ContentUserState> {
+    if (input.isJunk && !input.reason) {
+      throw new Error('A junk reason is required')
+    }
+    return this.serializeMutation(async () => {
+      const current = this.getContentUserState(contentId)
+      if (!current) throw new Error(`Content does not exist: ${contentId}`)
+      const decision = manualJunkSchema.parse({ ...input, updatedAt: nowIso() })
+      const state = contentUserStateSchema.parse({
+        ...current,
+        utilizationActions: decision.isJunk ? [] : current.utilizationActions,
+        manualJunk: decision,
+        junkHistory: [...current.junkHistory, decision],
+        updatedAt: decision.updatedAt,
+      })
+      const content = this.getContent(contentId)
+      if (!content) throw new Error(`Content does not exist: ${contentId}`)
+      const analysis = this.listAnalyses(contentId)[0]
+      const sample = junkSampleSchema.parse({
+        id: randomUUID(),
+        contentId,
+        decision: state.manualJunk,
+        stateSnapshot: state,
+        contentSnapshot: { ...content },
+        scoringSnapshot: analysis
+          ? {
+              result: analysis.result,
+              rule: {
+                version: analysis.ruleVersion,
+                promptVersion: analysis.promptVersion,
+                configuredRule: (analysis.result as Record<string, unknown>)
+                  .scoringRule ?? {
+                  weights: {
+                    topicMatch: 20,
+                    substance: 15,
+                    credibility: 15,
+                    novelty: 10,
+                    actionability: 15,
+                    workValue: 15,
+                    clarity: 10,
+                  },
+                  coreThreshold: 80,
+                  exploreThreshold: 60,
+                },
+                scale: [0, 25, 50, 75, 100],
+                gates: {
+                  core: { topicMatch: 5, substance: 3, credibility: 3 },
+                  explore: {
+                    topicMatch: 4,
+                    substance: 3,
+                    credibility: 3,
+                  },
+                },
+                exclusions: ['profile-exclusion', 'effective-junk'],
+              },
+            }
+          : {},
+        modelSnapshot: analysis
+          ? {
+              provider: analysis.provider,
+              model: analysis.model,
+              durationMs: analysis.durationMs,
+              usage: analysis.usage,
+            }
+          : undefined,
+        createdAt: state.updatedAt,
+      })
+      // The immutable sample is the single durable commit record for the feedback.
+      // Its state snapshot rebuilds the query index after an interrupted write.
+      await this.writeRecord('junk-samples', sample.id, 'junk sample', sample)
+      this.database.exec('BEGIN IMMEDIATE')
+      try {
+        this.upsertJunkSample(sample)
+        this.upsertContentUserState(state)
+        this.database.exec('COMMIT')
+      } catch (error) {
+        this.database.exec('ROLLBACK')
+        throw error
+      }
+      return state
+    })
+  }
+
+  listJunkSamples(contentId?: string): Array<z.infer<typeof junkSampleSchema>> {
+    const rows = contentId
+      ? this.database
+          .prepare(
+            'SELECT record_json FROM junk_samples WHERE content_id = ? ORDER BY created_at, id'
+          )
+          .all(contentId)
+      : this.database
+          .prepare(
+            'SELECT record_json FROM junk_samples ORDER BY created_at, id'
+          )
+          .all()
+    return rows
+      .map((row) => rowRecord(row, junkSampleSchema))
+      .filter((sample): sample is z.infer<typeof junkSampleSchema> =>
+        Boolean(sample)
+      )
+  }
+
+  private async updateContentUserState(
+    contentId: string,
+    update: (state: ContentUserState) => ContentUserState
+  ): Promise<ContentUserState> {
+    return this.serializeMutation(async () => {
+      const current = this.getContentUserState(contentId)
+      if (!current) throw new Error(`Content does not exist: ${contentId}`)
+      const state = contentUserStateSchema.parse(update(current))
+      await this.writeRecord(
+        'content-user-states',
+        contentId,
+        'content user state',
+        state
+      )
+      this.upsertContentUserState(state)
+      return state
+    })
   }
 
   async linkRelatedContents(
@@ -1675,6 +2149,14 @@ export class RuntimeRepository {
     )
   }
 
+  listAudits(): RuntimeAudit[] {
+    return this.database
+      .prepare('SELECT record_json FROM audits ORDER BY id DESC')
+      .all()
+      .map((row) => rowRecord(row, auditSchema))
+      .filter((audit): audit is RuntimeAudit => Boolean(audit))
+  }
+
   async saveProviderAttempt(
     input: z.input<typeof providerAttemptSchema>
   ): Promise<ProviderAttempt> {
@@ -1947,6 +2429,39 @@ export class RuntimeRepository {
          ON CONFLICT(id) DO UPDATE SET record_json = excluded.record_json`
       )
       .run(content.id, JSON.stringify(content))
+  }
+
+  private upsertSource(source: ManagedSource): void {
+    this.database
+      .prepare(
+        `INSERT INTO sources (id, sort_order, record_json) VALUES (?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+          sort_order = excluded.sort_order,
+          record_json = excluded.record_json`
+      )
+      .run(source.id, source.sortOrder ?? 999_999, JSON.stringify(source))
+  }
+
+  private upsertContentUserState(state: ContentUserState): void {
+    this.database
+      .prepare(
+        `INSERT INTO content_user_states (content_id, record_json) VALUES (?, ?)
+         ON CONFLICT(content_id) DO UPDATE SET record_json = excluded.record_json`
+      )
+      .run(state.contentId, JSON.stringify(state))
+  }
+
+  private upsertJunkSample(sample: z.infer<typeof junkSampleSchema>): void {
+    this.database
+      .prepare(
+        'INSERT INTO junk_samples (id, content_id, created_at, record_json) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO NOTHING'
+      )
+      .run(
+        sample.id,
+        sample.contentId,
+        sample.createdAt,
+        JSON.stringify(sample)
+      )
   }
 
   private upsertDiscovery(

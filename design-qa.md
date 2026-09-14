@@ -1,74 +1,45 @@
-# Design QA — Web 页面与交互原型
+# Design QA — Issue #23 完整 Web
 
-## Metadata
+## 验收范围
 
-- Reference: `https://shadcn-admin.netlify.app/`
-- Implementation: `http://localhost:4174/`
-- Reference screenshot: `design-evidence/reference-shadcn-admin-desktop.png`
-- Implementation screenshots:
-  - `design-evidence/implementation-desktop-closed.png`
-  - `design-evidence/implementation-desktop-open.png`
-  - `design-evidence/implementation-mobile-open.png`
-  - `design-evidence/source-config-variant-a.png`
-  - `design-evidence/source-platform-providers.png`
-- Combined comparison: `design-evidence/comparison-desktop.jpg`
-- Viewports checked: desktop 1280 × 720, mobile 390 × 844
-- Checked on: 2026-09-13
+- 设计依据：Issue #12 已确认的 shadcn-admin 原型截图。
+- 实现地址：`http://192.168.3.108:5173/`，连接真实本机服务与持久化数据。
+- 桌面截图：`design-evidence/issue-23-desktop-open.png`、`issue-23-sources.png`。
+- 移动截图：`design-evidence/issue-23-mobile-closed.png`、`issue-23-mobile-open.png`。
+- 同画面对照：`design-evidence/issue-23-qa-content.png`、`issue-23-qa-sources.png`。
+- 视口：桌面 1281 × 986；移动 390 × 844。
 
-## Comparison
+## 对照结论
 
-| Surface | Result | Notes |
+| 检查面 | 结果 | 证据 |
 | --- | --- | --- |
-| Typography | Pass | Reuses the reference project font stack, heading scale, and text hierarchy. |
-| Spacing and layout | Pass | Keeps the reference sidebar/header rhythm; content workspace uses the approved resizable master-detail layout. |
-| Colors and tokens | Pass | Reuses the reference shadcn/Tailwind tokens; green score and red junk action are intentional semantic accents. |
-| Images and media | Pass | Video cover is constrained and does not cause layout shift; text-only content does not invent imagery. |
-| Copy and states | Pass | Chinese labels reflect AI Radar terminology and include completed, waiting, failed, deleted, junk, and utilization states. |
-| Responsive behavior | Pass | Desktop opens a draggable split; mobile opens a full-screen detail and keeps all six actions visible with text labels. |
+| 字体与层级 | 通过 | 标题、辅助信息、标签和正文层级与原型一致；真实长英文标题被截断，不撑破列表。 |
+| 间距与布局 | 通过 | 保留 240px 侧栏、顶部栏、卡片列表及 38/62 主从详情；信源页维持列表/详情结构。 |
+| 色彩与表面 | 通过 | 沿用 shadcn 中性灰、细边框和低阴影；仅连接、垃圾等状态使用语义色。 |
+| 图像与素材 | 通过 | 本界面不要求装饰图，不伪造缩略图；真实图文内容用类型标签表达。 |
+| 文案与状态 | 通过 | 五个主页面、处理/阅读/垃圾筛选、AI/人工垃圾来源、加载/空/错误状态均有明确中文。 |
+| 交互 | 通过 | 初始关闭详情，桌面可调分栏；Esc、返回、前后篇、J/K；内容利用、试抓、配置预览和回退均接真实接口。 |
+| 响应式 | 通过 | 390px 无横向页面溢出；移动详情全屏，六个底部操作固定同屏可见。 |
+| 可访问性 | 通过 | 主要输入有名称，按钮为语义控件，键盘可关闭和切换内容，焦点样式沿用组件规范。 |
 
-## Interaction checks
+## 发现与修复
 
-- Detail is closed on initial entry.
-- Selecting a content card opens detail; close button and `Esc` restore the full list.
-- Desktop split has two panels and a draggable separator; saved width is restored.
-- Previous/next buttons and arrow or `J`/`K` navigation switch content.
-- Score exposes the total directly and the score breakdown through the detail analysis area.
-- Mobile detail keeps 收藏、卡片、视频、文章、项目、垃圾 actions fixed at the bottom.
-- All Content supports per-item selection and safe batch actions; batch delete is absent.
-
-## Findings and resolution history
-
-| Priority | Finding | Resolution |
+| 优先级 | 发现 | 修复与复验 |
 | --- | --- | --- |
-| P2 | Template developer tools were visible in the prototype shell. | Removed from the AI Radar root layout and regenerated evidence. |
-| P2 | Mobile bottom actions originally used icons without enough visible meaning. | Added compact Chinese text labels and verified at 390 × 844. |
-| P3 | Production bundle still contains unused template demo routes. | Accepted for this throwaway prototype; production implementation will remove them. |
+| P1 | 配置页首稿把 scope 发成错误字段，并且只能编辑全局层。 | 改为 `level` 协议，增加全局、平台类型、单个信源三级选择；真实接口预览影响数量后再保存。 |
+| P1 | 真实验收数据的临时 sourceId 与导入后的正式信源 ID 不同，列表显示“未知信源”。 | 服务层加入验收别名映射和安全兜底，复验显示 X / OpenAI、小红书 / iTechTokAI。 |
+| P2 | 390px 移动端底部六个操作需要横向滑动。 | 改为固定六列紧凑按钮；CDP 实测六个按钮范围都在 12–378px 内。 |
+| P2 | 首次移动截图受 Chrome 最小窗口宽度影响，误报横向裁切。 | 使用设备指标仿真复验，`innerWidth=390`、`scrollWidth=390`。 |
 
-## Source and configuration prototype
+## 功能证据
 
-- Three structural variants were compared on `/sources?variant=A|B|C`: master-detail workspace, platform health board, and parameter inheritance tree.
-- The confirmed direction uses variant A as the shell and incorporates variant C's explicit effective-value and inheritance-source display.
-- Source management and platform-wide provider routing are separate tabs so a provider order cannot be mistaken for a single-source setting.
-- Source detail exposes overview, effective capture parameters, effective provider route, version history, test-fetch preview, and enable state.
-- Provider secrets remain masked; the prototype offers replacement and connection testing without revealing stored values.
-- Configuration save opens a change comparison and creates a new version; operational actions report results without creating parameter versions.
-- Batch configuration, source status, fixed-rule read-only state, and audit entry points remain visible in the same workspace.
-
-### Source configuration findings
-
-| Priority | Finding | Resolution |
-| --- | --- | --- |
-| P2 | The first draft placed editable provider ordering inside a selected source, implying source ownership. | Split platform providers into a dedicated tab and left only the effective route in source detail. |
-| P2 | The first draft saved directly without showing the affected scope. | Added a pre-save comparison with changed value, affected source count, and new version. |
-| P3 | The three-way variant switcher appears only in development. | Intentional prototype behavior; the production build cannot accidentally expose it. |
-
-## Verification
-
-- `pnpm lint`: passed
-- `pnpm build`: passed
-- Browser interaction and visual checks: passed
-- Known non-blocking warning: Vite reports large inherited template chunks; production implementation should remove unused demo modules and split routes.
+- 真实内容详情的已读和收藏写入后刷新仍保留。
+- 真实分析记录模型为 `gpt-5.3-codex-spark`。
+- 全部内容提供已读、未读、重试三种安全批量操作，没有批量删除。
+- 已导入 36 个信源定义，其中 33 个来自旧配置；六类信源各启用一个。
+- 凭据只展示配置状态和掩码；固定规则仅只读展示。
+- Node `24.21.0` + pnpm `10.34.1` 下执行 `pnpm check`：116 个测试、类型检查、构建和三组 smoke 全部通过。
 
 ## Final result
 
-**passed** — no unresolved P0, P1, or P2 findings.
+final result: passed

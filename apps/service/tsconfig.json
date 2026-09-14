@@ -5,6 +5,10 @@
     "outDir": "dist",
     "tsBuildInfoFile": "../../node_modules/.tmp/service.tsbuildinfo"
   },
-  "references": [{ "path": "../../packages/runtime" }],
+  "references": [
+    { "path": "../../packages/runtime" },
+    { "path": "../../packages/pipeline" },
+    { "path": "../../packages/source-adapters" }
+  ],
   "include": ["src"]
 }

@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { runCli } from './index.js'
+import {
+  createLaunchdDefinition,
+  createWindowsServiceDefinition,
+  parseWinswStatus,
+} from './service-manager.js'
 
 function outputBuffer() {
   let value = ''
@@ -63,5 +68,99 @@ describe('airadar CLI', () => {
       })
     ).toBe(0)
     expect(executeTasks).toBe(true)
+  })
+
+  it('routes managed service commands without starting the foreground server', async () => {
+    const stdout = outputBuffer()
+    const calls: string[] = []
+    expect(
+      await runCli(['service', 'install', '--host', '0.0.0.0'], {
+        stdout,
+        serviceManager: {
+          async execute(command, options) {
+            calls.push(`${command}:${options.host}:${options.port}`)
+            return { service: 'airadar', status: 'installed' }
+          },
+        },
+      })
+    ).toBe(0)
+    expect(calls).toEqual(['install:0.0.0.0:43110'])
+    expect(JSON.parse(stdout.value())).toEqual({
+      service: 'airadar',
+      status: 'installed',
+    })
+  })
+
+  it('keeps service run as the foreground entry used by service wrappers', async () => {
+    const stdout = outputBuffer()
+    let executeTasks = false
+    expect(
+      await runCli(['service', 'run', '--port', '0'], {
+        stdout,
+        serviceFactory(options) {
+          executeTasks = options?.executeTasks === true
+          return {
+            async start({ host, port }) {
+              return { host, port }
+            },
+            async stop() {},
+          }
+        },
+      })
+    ).toBe(0)
+    expect(executeTasks).toBe(true)
+  })
+})
+
+describe('service definitions', () => {
+  it('creates a launchd agent with startup and crash restart enabled', () => {
+    const definition = createLaunchdDefinition({
+      nodePath: '/opt/node/bin/node',
+      cliPath: '/opt/airadar/cli.js',
+      dataRoot: '/Users/test/.airadar/data',
+      logRoot: '/Users/test/.airadar/logs',
+      host: '0.0.0.0',
+      port: 43110,
+      runtimeEnvironment: {
+        CODEX_AUTH_PATH: '/Users/test/.codex/auth.json',
+      },
+    })
+    expect(definition).toContain('<key>RunAtLoad</key>')
+    expect(definition).toContain('<key>KeepAlive</key>')
+    expect(definition).toContain('/opt/airadar/cli.js')
+    expect(definition).toContain('AIRADAR_DATA_ROOT')
+    expect(definition).toContain('CODEX_AUTH_PATH')
+    expect(definition).toContain('/Users/test/.codex/auth.json')
+    expect(definition).toContain('0.0.0.0')
+  })
+
+  it('creates a WinSW definition with restart, explicit paths, and no secret values', () => {
+    const definition = createWindowsServiceDefinition({
+      nodePath: 'C:\\Program Files\\nodejs\\node.exe',
+      cliPath: 'C:\\airadar\\cli.js',
+      dataRoot: 'C:\\Users\\test\\.airadar\\data',
+      logRoot: 'C:\\Users\\test\\.airadar\\logs',
+      host: '0.0.0.0',
+      port: 43110,
+      runtimeEnvironment: {
+        CODEX_AUTH_PATH: 'C:\\Users\\test\\.codex\\auth.json',
+      },
+    })
+    expect(definition).toContain('<onfailure action="restart"')
+    expect(definition).toContain('<startmode>Automatic</startmode>')
+    expect(definition).toContain('C:\\airadar\\cli.js')
+    expect(definition).toContain('AIRADAR_DATA_ROOT')
+    expect(definition).toContain('<username>LocalSystem</username>')
+    expect(definition).toContain('CODEX_AUTH_PATH')
+    expect(definition).toContain('C:\\Users\\test\\.codex\\auth.json')
+    expect(definition).not.toMatch(/api.?key|token|secret=/iu)
+  })
+
+  it('distinguishes running and stopped WinSW states', () => {
+    expect(parseWinswStatus('Active (running)')).toBe('running')
+    expect(parseWinswStatus('Started')).toBe('running')
+    expect(parseWinswStatus('Inactive (stopped)')).toBe('stopped')
+    expect(parseWinswStatus('Stopped')).toBe('stopped')
+    expect(parseWinswStatus('NonExistent')).toBe('not-installed')
   })
 })

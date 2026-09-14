@@ -28,3 +28,6 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
+      - name: Verify installed Windows Service lifecycle
+        shell: pwsh
+        run: ./scripts/accept-windows-service.ps1

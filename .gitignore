@@ -10,6 +10,7 @@ lerna-debug.log*
 node_modules
 .tmp
 dist
+apps/cli/web
 dist-ssr
 *.local
 

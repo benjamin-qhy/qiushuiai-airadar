@@ -1,5 +1,11 @@
 import type { SecretStatusReader } from '@airadar/config'
 import { createServiceApp } from '@airadar/service'
+import { fileURLToPath } from 'node:url'
+import {
+  createSystemServiceManager,
+  type ManagedServiceCommand,
+  type ServiceManager,
+} from './service-manager.js'
 
 interface Output {
   write(chunk: string): void
@@ -10,6 +16,7 @@ interface CliDependencies {
   stderr?: Output
   secretStatusReader?: SecretStatusReader
   serviceFactory?: typeof createServiceApp
+  serviceManager?: ServiceManager
 }
 
 const help = `AI Radar command line
@@ -17,7 +24,8 @@ const help = `AI Radar command line
 Usage:
   airadar status
   airadar secrets status <NAME>
-  airadar service [--host <HOST>] [--port <PORT>]
+  airadar service run [--host <HOST>] [--port <PORT>]
+  airadar service <install|start|stop|restart|status|uninstall> [--host <HOST>] [--port <PORT>]
 `
 
 function writeJson(output: Output, value: unknown): void {
@@ -63,8 +71,36 @@ export async function runCli(
     if (!host || !Number.isInteger(port) || port < 0 || port > 65535) {
       throw new Error('service requires a valid --host and --port')
     }
+    const managedCommands = new Set<ManagedServiceCommand>([
+      'install',
+      'start',
+      'stop',
+      'restart',
+      'status',
+      'uninstall',
+    ])
+    if (managedCommands.has(subcommand as ManagedServiceCommand)) {
+      const manager =
+        dependencies.serviceManager ??
+        createSystemServiceManager({
+          nodePath: process.execPath,
+          cliPath: process.argv[1] ?? '',
+        })
+      writeJson(
+        dependencies.stdout,
+        await manager.execute(subcommand as ManagedServiceCommand, {
+          host,
+          port,
+        })
+      )
+      return 0
+    }
+    if (subcommand && subcommand !== 'run' && !subcommand.startsWith('--')) {
+      throw new Error(`Unknown service command: ${subcommand}`)
+    }
     const address = await (dependencies.serviceFactory ?? createServiceApp)({
       executeTasks: true,
+      webRoot: fileURLToPath(new URL('../web', import.meta.url)),
     }).start({ host, port })
     writeJson(dependencies.stdout, {
       service: 'airadar',

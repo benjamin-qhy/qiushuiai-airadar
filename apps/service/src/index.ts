@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
 import {
   createServer,
   type IncomingMessage,
@@ -1103,7 +1104,8 @@ async function handleRequest(
   request: IncomingMessage,
   response: ServerResponse,
   repository: RuntimeRepository,
-  scheduleTasks: () => void
+  scheduleTasks: () => void,
+  webRoot?: string
 ): Promise<void> {
   const url = new URL(request.url ?? '/', 'http://127.0.0.1')
   const method = request.method ?? 'GET'
@@ -1402,6 +1404,47 @@ async function handleRequest(
     return send(response, 201, { version })
   }
 
+  if (
+    webRoot &&
+    (method === 'GET' || method === 'HEAD') &&
+    !url.pathname.startsWith('/api/')
+  ) {
+    const requestedPath = decodeURIComponent(url.pathname)
+    const hasExtension = path.posix.basename(requestedPath).includes('.')
+    const relativePath = hasExtension
+      ? requestedPath.replace(/^\/+/, '')
+      : 'index.html'
+    const root = path.resolve(webRoot)
+    const filePath = path.resolve(root, relativePath)
+    if (filePath === root || filePath.startsWith(`${root}${path.sep}`)) {
+      try {
+        const body = await readFile(filePath)
+        const extension = path.extname(filePath).toLowerCase()
+        const contentTypes: Record<string, string> = {
+          '.css': 'text/css; charset=utf-8',
+          '.html': 'text/html; charset=utf-8',
+          '.ico': 'image/x-icon',
+          '.js': 'text/javascript; charset=utf-8',
+          '.json': 'application/json; charset=utf-8',
+          '.png': 'image/png',
+          '.svg': 'image/svg+xml',
+          '.webp': 'image/webp',
+          '.woff2': 'font/woff2',
+        }
+        response.statusCode = 200
+        response.setHeader(
+          'content-type',
+          contentTypes[extension] ?? 'application/octet-stream'
+        )
+        response.setHeader('x-content-type-options', 'nosniff')
+        response.end(method === 'HEAD' ? undefined : body)
+        return
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      }
+    }
+  }
+
   send(response, method === 'DELETE' ? 405 : 404, { error: 'not_found' })
 }
 
@@ -1420,6 +1463,7 @@ export function createServiceApp(
     dataRoot?: string
     executeTasks?: boolean
     taskIntervalMs?: number
+    webRoot?: string
   } = {}
 ): ServiceApp {
   let server: Server | undefined
@@ -1500,15 +1544,19 @@ export function createServiceApp(
           response.setHeader('access-control-allow-origin', allowedOrigin)
           response.setHeader('vary', 'origin')
         }
-        void handleRequest(request, response, repository!, scheduleTasks).catch(
-          () => {
-            if (!response.headersSent) {
-              send(response, 400, { error: 'request_failed' })
-            } else {
-              response.end()
-            }
+        void handleRequest(
+          request,
+          response,
+          repository!,
+          scheduleTasks,
+          options.webRoot
+        ).catch(() => {
+          if (!response.headersSent) {
+            send(response, 400, { error: 'request_failed' })
+          } else {
+            response.end()
           }
-        )
+        })
       })
       try {
         await new Promise<void>((resolve, reject) => {

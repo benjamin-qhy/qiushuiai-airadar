@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -45,6 +45,32 @@ describe('background service shell', () => {
     )
 
     expect(response.status).toBe(404)
+  })
+
+  it('serves the built Web app and keeps API routes separate', async () => {
+    const webRoot = path.join(dataRoot, 'web')
+    await mkdir(path.join(webRoot, 'assets'), { recursive: true })
+    await writeFile(
+      path.join(webRoot, 'index.html'),
+      '<!doctype html><title>AI Radar installed</title>'
+    )
+    await writeFile(path.join(webRoot, 'assets', 'app.js'), 'window.airadar=1')
+    service = createServiceApp({ dataRoot, webRoot })
+    const address = await service.start({ host: '127.0.0.1', port: 0 })
+    const origin = `http://${address.host}:${address.port}`
+
+    const page = await fetch(`${origin}/daily`)
+    expect(page.status).toBe(200)
+    expect(page.headers.get('content-type')).toContain('text/html')
+    expect(await page.text()).toContain('AI Radar installed')
+
+    const asset = await fetch(`${origin}/assets/app.js`)
+    expect(asset.headers.get('content-type')).toContain('text/javascript')
+    expect(await asset.text()).toBe('window.airadar=1')
+
+    const api = await fetch(`${origin}/api/missing`)
+    expect(api.status).toBe(404)
+    expect(await api.json()).toEqual({ error: 'not_found' })
   })
 
   it('rejects cross-site and non-JSON mutation requests', async () => {

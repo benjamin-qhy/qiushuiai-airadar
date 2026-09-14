@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "tsBuildInfoFile": "../../node_modules/.tmp/pipeline.tsbuildinfo"
+  },
+  "references": [{ "path": "../domain" }, { "path": "../runtime" }],
+  "include": ["src"]
+}

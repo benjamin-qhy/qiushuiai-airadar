@@ -1,0 +1,30 @@
+{
+  "name": "@airadar/pipeline",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@airadar/domain": "workspace:*",
+    "@airadar/runtime": "workspace:*",
+    "@earendil-works/pi-ai": "0.85.1",
+    "@mozilla/readability": "0.6.0",
+    "fast-xml-parser": "5.11.1",
+    "linkedom": "0.18.13",
+    "zod": "^4.1.12"
+  }
+}

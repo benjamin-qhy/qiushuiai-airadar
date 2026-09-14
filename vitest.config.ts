@@ -20,6 +20,10 @@ export default defineConfig({
         import.meta.dirname,
         'packages/runtime/src/index.ts'
       ),
+      '@airadar/pipeline': path.resolve(
+        import.meta.dirname,
+        'packages/pipeline/src/index.ts'
+      ),
       '@airadar/service': path.resolve(
         import.meta.dirname,
         'apps/service/src/index.ts'

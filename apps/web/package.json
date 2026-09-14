@@ -1,0 +1,51 @@
+{
+  "name": "@airadar/web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "airadar": {
+    "shadcnAdminBase": "satnaing/shadcn-admin@v2.2.1"
+  },
+  "scripts": {
+    "build": "tsc -b && vite build",
+    "dev": "vite",
+    "preview": "vite preview",
+    "typecheck": "tsc -b --pretty false"
+  },
+  "dependencies": {
+    "@radix-ui/react-alert-dialog": "^1.1.15",
+    "@radix-ui/react-avatar": "^1.1.10",
+    "@radix-ui/react-checkbox": "^1.3.3",
+    "@radix-ui/react-collapsible": "^1.1.12",
+    "@radix-ui/react-dialog": "^1.1.15",
+    "@radix-ui/react-dropdown-menu": "^2.1.16",
+    "@radix-ui/react-label": "^2.1.7",
+    "@radix-ui/react-popover": "^1.1.15",
+    "@radix-ui/react-radio-group": "^1.3.8",
+    "@radix-ui/react-scroll-area": "^1.2.10",
+    "@radix-ui/react-select": "^2.2.6",
+    "@radix-ui/react-separator": "^1.1.7",
+    "@radix-ui/react-slot": "^1.2.3",
+    "@radix-ui/react-switch": "^1.2.6",
+    "@radix-ui/react-tabs": "^1.1.13",
+    "@radix-ui/react-tooltip": "^1.2.8",
+    "@tailwindcss/vite": "4.3.3",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "cmdk": "1.1.1",
+    "input-otp": "^1.4.2",
+    "lucide-react": "^0.545.0",
+    "react": "^19.2.0",
+    "react-day-picker": "9.11.1",
+    "react-dom": "^19.2.0",
+    "react-hook-form": "^7.64.0",
+    "react-resizable-panels": "^4.12.4",
+    "tailwind-merge": "^3.3.1",
+    "tailwindcss": "4.3.3",
+    "tw-animate-css": "^1.4.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "6.1.1",
+    "vite": "^8.3.0"
+  }
+}

@@ -8,7 +8,7 @@ import {
   rm,
   writeFile,
 } from 'node:fs/promises'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 
 const execute = promisify(execFile)
@@ -26,18 +26,26 @@ const previousSource = join(target, 'previous-release')
 await mkdir(packRoot, { recursive: true })
 await mkdir(previousSource, { recursive: true })
 
-function npmCommand(): string {
-  return process.platform === 'win32' ? 'npm.cmd' : 'npm'
-}
-
 async function installPackage(tarball: string): Promise<void> {
-  await execute(npmCommand(), [
+  const args = [
     'install',
     '--prefix',
     installRoot,
     '--ignore-scripts',
     tarball,
-  ])
+  ]
+  if (process.platform === 'win32') {
+    const npmCli = join(
+      dirname(process.execPath),
+      'node_modules',
+      'npm',
+      'bin',
+      'npm-cli.js'
+    )
+    await execute(process.execPath, [npmCli, ...args])
+    return
+  }
+  await execute('npm', args)
 }
 
 async function startService(

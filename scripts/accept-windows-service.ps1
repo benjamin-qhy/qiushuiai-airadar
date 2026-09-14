@@ -1,4 +1,5 @@
 $ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $true
 
 if (-not $IsWindows) {
   throw 'Windows Service acceptance must run on Windows'
@@ -48,7 +49,7 @@ git archive --format=tar "--output=$archive" $previousReleaseCommit
 tar -xf $archive -C $previousSource
 Push-Location $previousSource
 try {
-  pnpm install --offline --frozen-lockfile | Out-Host
+  pnpm install --frozen-lockfile | Out-Host
   pnpm build | Out-Host
 } finally {
   Pop-Location
@@ -60,7 +61,9 @@ $previousProcess = Start-Process -FilePath 'node' -ArgumentList @(
 try {
   Wait-Health
 } finally {
-  Stop-Process -Id $previousProcess.Id -Force
+  if (-not $previousProcess.HasExited) {
+    Stop-Process -Id $previousProcess.Id -Force
+  }
   $previousProcess.WaitForExit()
 }
 if ((Get-ChildItem -Path (Join-Path $dataRoot 'sources') -File).Count -lt 36) {

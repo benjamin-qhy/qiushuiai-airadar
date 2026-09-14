@@ -25,6 +25,7 @@ import {
   enrichYouTubeContent,
   RssAdapter,
   runPlatformDiscovery,
+  runRssDiscovery,
   runRssPipeline,
   analyzeStoredContent,
 } from './index.js'
@@ -1194,6 +1195,27 @@ describe('RSS discovery and enrichment', () => {
     expect(batch.items.at(-1)?.externalId).toBe('item-19')
   })
 
+  it('keeps RSS discovery separate from per-item enrichment and analysis', async () => {
+    const runtime = await repository()
+    const feed = `<rss><channel><item><guid>one</guid><title>One</title><link>https://example.com/one</link><pubDate>Mon, 14 Sep 2026 06:00:00 GMT</pubDate></item></channel></rss>`
+    await runRssDiscovery({
+      repository: runtime,
+      source: { id: 'rss-one', feedUrl: 'https://example.com/rss.xml' },
+      limit: 20,
+      now: new Date('2026-09-14T12:00:00Z'),
+      fetcher: async () =>
+        new Response(feed, { headers: { 'content-type': 'application/xml' } }),
+    })
+    expect(runtime.listContents()).toMatchObject([
+      { enrichmentStatus: 'pending', body: '' },
+    ])
+    expect(runtime.listTasks()).toMatchObject([
+      { type: 'enrich', status: 'pending' },
+    ])
+    expect(runtime.listAnalyses()).toHaveLength(0)
+    await runtime.close()
+  })
+
   it('rejects an article whose extracted body is incomplete', async () => {
     await expect(
       enrichArticle(
@@ -1204,6 +1226,12 @@ describe('RSS discovery and enrichment', () => {
           })
       )
     ).rejects.toThrow(/complete article body/i)
+  })
+
+  it('rejects private article targets before making a request', async () => {
+    await expect(enrichArticle('http://127.0.0.1/private')).rejects.toThrow(
+      /safe public HTTP URL/i
+    )
   })
 })
 
@@ -1250,6 +1278,21 @@ describe('analysis and end-to-end orchestration', () => {
         spam: { isSpam: false, reason: null },
       }).recommendation
     ).toBe('core')
+    expect(
+      calculateRecommendation(analysisArguments, {
+        weights: {
+          topicMatch: 10,
+          substance: 10,
+          credibility: 10,
+          novelty: 10,
+          actionability: 10,
+          workValue: 10,
+          clarity: 40,
+        },
+        coreThreshold: 90,
+        exploreThreshold: 85,
+      }).recommendation
+    ).toBe('none')
   })
 
   it('uses Pi structured output, reuses a fingerprint, and versions manual reanalysis', async () => {

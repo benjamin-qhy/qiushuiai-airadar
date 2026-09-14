@@ -44,4 +44,24 @@ describe('airadar CLI', () => {
       maskedValue: 'su••••••••••••••ue',
     })
   })
+
+  it('starts the formal service with its task worker enabled', async () => {
+    const stdout = outputBuffer()
+    let executeTasks = false
+    expect(
+      await runCli(['service', '--port', '0'], {
+        stdout,
+        serviceFactory(options) {
+          executeTasks = options?.executeTasks === true
+          return {
+            async start({ host, port }) {
+              return { host, port }
+            },
+            async stop() {},
+          }
+        },
+      })
+    ).toBe(0)
+    expect(executeTasks).toBe(true)
+  })
 })

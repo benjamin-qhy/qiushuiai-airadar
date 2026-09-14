@@ -804,5 +804,101 @@ describe('cross-platform related content', () => {
   })
 })
 
+describe('Web operations persistence', () => {
+  it('imports source definitions idempotently and persists status changes', async () => {
+    const root = await temporaryRoot()
+    let repository = await RuntimeRepository.open(root)
+    const sources = [
+      {
+        id: 'x_openai',
+        slug: 'x_openai',
+        name: 'X / OpenAI',
+        type: 'x' as const,
+        externalIdentity: 'OpenAI',
+        status: 'enabled' as const,
+        sortOrder: 0,
+      },
+      {
+        id: 'x_anthropic',
+        slug: 'x_anthropic',
+        name: 'X / Anthropic',
+        type: 'x' as const,
+        externalIdentity: 'AnthropicAI',
+        status: 'disabled' as const,
+        sortOrder: 1,
+      },
+    ]
+    await repository.importSources(sources)
+    await repository.importSources(sources)
+    expect(repository.listSources()).toEqual(sources)
+    await repository.updateSourceStatus('x_anthropic', 'enabled')
+    await repository.close()
+
+    repository = await RuntimeRepository.open(root)
+    expect(repository.listSources()).toEqual([
+      sources[0],
+      { ...sources[1], status: 'enabled' },
+    ])
+    await repository.close()
+  })
+
+  it('clears utilization actions on junk and never restores them on undo', async () => {
+    const root = await temporaryRoot()
+    let repository = await RuntimeRepository.open(root)
+    await repository.commitDiscoveryBatch({
+      sourceId: 'x_openai',
+      contents: [
+        {
+          id: 'x:item-1',
+          title: '真实内容',
+          body: '完整正文',
+          enrichmentStatus: 'succeeded',
+        },
+      ],
+      discoveries: [
+        {
+          id: 'x_openai:item-1',
+          sourceId: 'x_openai',
+          contentId: 'x:item-1',
+          discoveredAt: '2026-09-14T08:00:00.000Z',
+        },
+      ],
+    })
+    await repository.setContentRead('x:item-1', true)
+    await repository.setUtilizationActions('x:item-1', [
+      'favorite',
+      'card',
+      'project',
+    ])
+    await repository.setManualJunk('x:item-1', {
+      isJunk: true,
+      reason: 'advertising',
+      note: '人工确认',
+    })
+    expect(repository.getContentUserState('x:item-1')).toMatchObject({
+      read: true,
+      utilizationActions: [],
+      manualJunk: { isJunk: true, reason: 'advertising' },
+    })
+    expect(repository.listJunkSamples('x:item-1')).toMatchObject([
+      {
+        decision: { isJunk: true, reason: 'advertising' },
+        contentSnapshot: { title: '真实内容', body: '完整正文' },
+      },
+    ])
+    await repository.setManualJunk('x:item-1', { isJunk: false })
+    await repository.close()
+
+    repository = await RuntimeRepository.open(root)
+    expect(repository.getContentUserState('x:item-1')).toMatchObject({
+      read: true,
+      utilizationActions: [],
+      manualJunk: { isJunk: false },
+    })
+    expect(repository.listJunkSamples('x:item-1')).toHaveLength(2)
+    await repository.close()
+  })
+})
+
 function assertTask(_task: RuntimeTask): void {}
 void assertTask

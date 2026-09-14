@@ -9,6 +9,7 @@ interface CliDependencies {
   stdout: Output
   stderr?: Output
   secretStatusReader?: SecretStatusReader
+  serviceFactory?: typeof createServiceApp
 }
 
 const help = `AI Radar command line
@@ -62,7 +63,9 @@ export async function runCli(
     if (!host || !Number.isInteger(port) || port < 0 || port > 65535) {
       throw new Error('service requires a valid --host and --port')
     }
-    const address = await createServiceApp().start({ host, port })
+    const address = await (dependencies.serviceFactory ?? createServiceApp)({
+      executeTasks: true,
+    }).start({ host, port })
     writeJson(dependencies.stdout, {
       service: 'airadar',
       status: 'ready',

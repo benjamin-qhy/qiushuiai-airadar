@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
 import { readFile } from 'node:fs/promises'
+import { request as httpRequest } from 'node:http'
+import { request as httpsRequest } from 'node:https'
 import { isIP } from 'node:net'
 
 import { Readability } from '@mozilla/readability'
@@ -45,6 +47,7 @@ export async function runPlatformDiscovery(input: {
   cursor?: string
   limit: number
   autoTranscribe?: boolean
+  publishedAfter?: string
 }): Promise<{
   items: DiscoveredItem[]
   analyzeReady: number
@@ -55,8 +58,16 @@ export async function runPlatformDiscovery(input: {
     cursor: input.cursor,
     limit: input.limit,
   })
+  const items = input.publishedAfter
+    ? batch.items.filter(
+        (item) =>
+          Boolean(item.publishedAt) &&
+          !Number.isNaN(Date.parse(item.publishedAt!)) &&
+          Date.parse(item.publishedAt!) >= Date.parse(input.publishedAfter!)
+      )
+    : batch.items
   const discoveredAt = new Date().toISOString()
-  const prepared = batch.items.map((item) => {
+  const prepared = items.map((item) => {
     if (!item.platformIdentity) {
       throw new Error(
         `Provider item ${item.externalId} has no platform identity`
@@ -209,7 +220,7 @@ export async function runPlatformDiscovery(input: {
   })
 
   return {
-    items: batch.items,
+    items,
     analyzeReady: prepared.filter(
       ({ enrichmentStatus }) => enrichmentStatus === 'succeeded'
     ).length,
@@ -973,6 +984,56 @@ export function createCodexPiGateway(
   return createPiModelGateway(models, model)
 }
 
+export function createCodexImageRecognizer(
+  authPath: string,
+  modelId = rssAcceptanceModel
+): ImageRecognizer {
+  const models = createModels({
+    credentials: createReadOnlyCodexCredentialStore(authPath),
+  })
+  models.setProvider(openaiCodexProvider())
+  const model = models.getModel(codexProviderId, modelId)
+  if (!model) throw new Error(`Pi model is unavailable: ${modelId}`)
+  return {
+    providerId: `openai-codex:${modelId}`,
+    async recognize(input) {
+      const message = await models.completeSimple(
+        model,
+        {
+          messages: [
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'text',
+                  text: '完整识别图片中的文字并描述承载信息。只返回忠实的中文纯文本，不推测看不清的内容。',
+                },
+                {
+                  type: 'image',
+                  data: Buffer.from(input.bytes).toString('base64'),
+                  mimeType: input.mimeType,
+                },
+              ],
+              timestamp: 0,
+            },
+          ],
+        },
+        { reasoning: 'low', maxTokens: 2_000, maxRetries: 0 }
+      )
+      if (message.stopReason === 'error') {
+        throw new Error(message.errorMessage || 'Image recognition failed')
+      }
+      const text = message.content
+        .filter((block) => block.type === 'text')
+        .map((block) => (block.type === 'text' ? block.text : ''))
+        .join('\n')
+        .trim()
+      if (!text) throw new Error('Image recognition returned no text')
+      return text
+    },
+  }
+}
+
 function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex')
 }
@@ -1006,6 +1067,7 @@ export class RssAdapter {
     cursor?: string
     limit: number
     now?: Date
+    initialLookbackDays?: number
     incremental?: boolean
     isSeen?: (externalId: string, canonicalUrl: string) => boolean
     isHistoricalRetry?: (externalId: string) => boolean
@@ -1074,7 +1136,8 @@ export class RssAdapter {
         !input.isHistoricalRetry?.(externalId) &&
         (!publishedAt ||
           Date.parse(publishedAt) <
-            (input.now ?? new Date()).valueOf() - 7 * 24 * 60 * 60 * 1_000)
+            (input.now ?? new Date()).valueOf() -
+              (input.initialLookbackDays ?? 7) * 24 * 60 * 60 * 1_000)
       ) {
         continue
       }
@@ -1112,22 +1175,134 @@ export async function enrichArticle(
   url: string,
   fetcher: Fetcher = globalThis.fetch
 ): Promise<{ title: string; body: string; canonicalUrl: string }> {
-  const response = await fetcher(url, {
-    headers: {
-      accept: 'text/html,application/xhtml+xml',
-      'user-agent': 'AI-Radar/0.1 (+personal content reader)',
-    },
-    redirect: 'follow',
-  })
-  if (!response.ok) {
-    throw new Error(`Article request failed with HTTP ${response.status}`)
+  const readResponse = async (response: Response): Promise<string> => {
+    if (!response.body) throw new Error('Article response has no body')
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let text = ''
+    let size = 0
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      size += value.byteLength
+      if (size > 5 * 1024 * 1024) {
+        await reader.cancel()
+        throw new Error('Article response exceeds the size limit')
+      }
+      text += decoder.decode(value, { stream: true })
+    }
+    return text + decoder.decode()
   }
-  const contentType = response.headers.get('content-type') ?? ''
+  let current = new URL(url)
+  let html = ''
+  let contentType = ''
+  let status = 0
+  let finalUrl = current.toString()
+  for (let redirect = 0; redirect <= 3; redirect += 1) {
+    let location: string | undefined
+    if (fetcher !== globalThis.fetch) {
+      const response = await fetcher(current, {
+        headers: {
+          accept: 'text/html,application/xhtml+xml',
+          'user-agent': 'AI-Radar/0.1 (+personal content reader)',
+        },
+        redirect: 'follow',
+        signal: AbortSignal.timeout(30_000),
+      })
+      status = response.status
+      contentType = response.headers.get('content-type') ?? ''
+      html = await readResponse(response)
+      finalUrl = response.url || current.toString()
+    } else {
+      if (
+        !['http:', 'https:'].includes(current.protocol) ||
+        current.username ||
+        current.password ||
+        isIP(current.hostname) !== 0
+      ) {
+        throw new Error('Article URL is not a safe public HTTP URL')
+      }
+      const addresses = await lookup(current.hostname, { all: true })
+      if (
+        !addresses.length ||
+        addresses.some(({ address }) => isPrivateAddress(address))
+      ) {
+        throw new Error('Article URL resolves to a private or unsafe address')
+      }
+      const selected = addresses[0]!
+      const result = await new Promise<{
+        status: number
+        contentType: string
+        location?: string
+        body: string
+      }>((resolve, reject) => {
+        const request = (
+          current.protocol === 'https:' ? httpsRequest : httpRequest
+        )(
+          {
+            hostname: selected.address,
+            family: selected.family,
+            port: current.port || undefined,
+            path: `${current.pathname}${current.search}`,
+            method: 'GET',
+            servername: current.hostname,
+            headers: {
+              host: current.host,
+              accept: 'text/html,application/xhtml+xml',
+              'user-agent': 'AI-Radar/0.1 (+personal content reader)',
+            },
+          },
+          (response) => {
+            const chunks: Buffer[] = []
+            let size = 0
+            response.on('data', (chunk: Buffer) => {
+              size += chunk.length
+              if (size > 5 * 1024 * 1024) {
+                response.destroy(
+                  new Error('Article response exceeds the size limit')
+                )
+                return
+              }
+              chunks.push(chunk)
+            })
+            response.once('error', reject)
+            response.once('end', () =>
+              resolve({
+                status: response.statusCode ?? 0,
+                contentType: String(response.headers['content-type'] ?? ''),
+                location:
+                  typeof response.headers.location === 'string'
+                    ? response.headers.location
+                    : undefined,
+                body: Buffer.concat(chunks).toString('utf8'),
+              })
+            )
+          }
+        )
+        request.setTimeout(30_000, () =>
+          request.destroy(new Error('Article request timed out'))
+        )
+        request.once('error', reject)
+        request.end()
+      })
+      status = result.status
+      contentType = result.contentType
+      location = result.location
+      html = result.body
+      finalUrl = current.toString()
+    }
+    if (status < 300 || status >= 400) break
+    if (!location || redirect === 3) {
+      throw new Error('Article redirect is missing or exceeds the limit')
+    }
+    current = new URL(location, current)
+  }
+  if (status < 200 || status >= 300) {
+    throw new Error(`Article request failed with HTTP ${status}`)
+  }
   if (contentType && !contentType.includes('html')) {
     throw new Error(`Article response is not HTML: ${contentType}`)
   }
-  const html = await response.text()
-  const finalUrl = response.url || url
   const { document } = parseHTML(html)
   const article = new Readability(document as unknown as Document, {
     charThreshold: 200,
@@ -1145,27 +1320,39 @@ export async function enrichArticle(
 }
 
 const scoreWeights = {
-  topicMatch: 0.2,
-  substance: 0.15,
-  credibility: 0.15,
-  novelty: 0.1,
-  actionability: 0.15,
-  workValue: 0.15,
-  clarity: 0.1,
+  topicMatch: 20,
+  substance: 15,
+  credibility: 15,
+  novelty: 10,
+  actionability: 15,
+  workValue: 15,
+  clarity: 10,
 } as const
 
-export function calculateRecommendation(input: unknown): {
+export interface ScoringRule {
+  weights: Record<keyof typeof scoreWeights, number>
+  coreThreshold: number
+  exploreThreshold: number
+}
+
+const defaultScoringRule: ScoringRule = {
+  weights: scoreWeights,
+  coreThreshold: 80,
+  exploreThreshold: 60,
+}
+
+export function calculateRecommendation(
+  input: unknown,
+  rule: ScoringRule = defaultScoringRule
+): {
   totalScore: number
   recommendation: Recommendation
 } {
   const result = analysisResultSchema.parse(input)
   const totalScore = Math.round(
-    Object.entries(scoreWeights).reduce(
-      (total, [key, weight]) =>
-        total +
-        (result.scores[key as keyof typeof scoreWeights].level - 1) *
-          25 *
-          weight,
+    (Object.keys(scoreWeights) as Array<keyof typeof scoreWeights>).reduce(
+      (total, key) =>
+        total + (result.scores[key].level - 1) * 25 * (rule.weights[key] / 100),
       0
     )
   )
@@ -1173,14 +1360,14 @@ export function calculateRecommendation(input: unknown): {
   let recommendation: Recommendation = 'none'
   if (!result.spam.isSpam) {
     if (
-      totalScore >= 80 &&
+      totalScore >= rule.coreThreshold &&
       scores.topicMatch.level === 5 &&
       scores.substance.level >= 3 &&
       scores.credibility.level >= 3
     ) {
       recommendation = 'core'
     } else if (
-      totalScore >= 60 &&
+      totalScore >= rule.exploreThreshold &&
       scores.topicMatch.level >= 4 &&
       scores.substance.level >= 3 &&
       scores.credibility.level >= 3
@@ -1341,6 +1528,7 @@ function analysisFingerprint(input: {
   body: string
   profileVersionId: string
   ruleVersion: string
+  scoringRule?: ScoringRule
   modelRouteVersion: string
   promptVersion: string
 }): string {
@@ -1376,6 +1564,8 @@ export async function analyzeStoredContent(
     profile: string
     profileVersionId: string
     ruleVersion: string
+    scoringRule?: ScoringRule
+    rawResponseRetentionDays?: number
     modelRouteVersion: string
     manual: boolean
   }
@@ -1393,6 +1583,8 @@ async function analyzeStoredContentUnlocked(
     profile: string
     profileVersionId: string
     ruleVersion: string
+    scoringRule?: ScoringRule
+    rawResponseRetentionDays?: number
     modelRouteVersion: string
     manual: boolean
   }
@@ -1425,6 +1617,7 @@ async function analyzeStoredContentUnlocked(
     id: rawRecordId,
     providerId: options.modelGateway.provider,
     receivedAt: startedAt,
+    retentionDays: options.rawResponseRetentionDays,
     payload: { request: auditedRequest, status: 'started' },
   })
   try {
@@ -1434,9 +1627,11 @@ async function analyzeStoredContentUnlocked(
       id: rawRecordId,
       providerId: evidence.provider,
       receivedAt: new Date().toISOString(),
+      retentionDays: options.rawResponseRetentionDays,
       payload: { request: auditedRequest, response: rawResponse ?? result },
     })
-    const scored = calculateRecommendation(result)
+    const scoringRule = options.scoringRule ?? defaultScoringRule
+    const scored = calculateRecommendation(result, scoringRule)
     const analysisId = `analysis-${randomUUID()}`
     const analysis = await repository.saveAnalysis({
       id: analysisId,
@@ -1452,7 +1647,7 @@ async function analyzeStoredContentUnlocked(
       createdAt: new Date().toISOString(),
       durationMs: evidence.durationMs,
       usage: evidence.usage,
-      result: { ...result, ...scored },
+      result: { ...result, ...scored, scoringRule },
     })
     await repository.saveAnalysisCall({
       id: callId,
@@ -1475,6 +1670,7 @@ async function analyzeStoredContentUnlocked(
       id: rawRecordId,
       providerId: evidence?.provider ?? options.modelGateway.provider,
       receivedAt: finishedAt,
+      retentionDays: options.rawResponseRetentionDays,
       payload: {
         request: auditedRequest,
         ...(error instanceof ModelGatewayError &&
@@ -1510,11 +1706,105 @@ export interface RssPipelineOptions {
   profile: string
   profileVersionId: string
   ruleVersion: string
+  scoringRule?: ScoringRule
+  rawResponseRetentionDays?: number
   modelRouteVersion: string
   limit: number
   cursor?: string
   manualReanalysisContentId?: string
   now?: Date
+  initialLookbackDays?: number
+}
+
+export async function runRssDiscovery(options: {
+  repository: RuntimeRepository
+  source: { id: string; feedUrl: string }
+  fetcher?: Fetcher
+  limit: number
+  cursor?: string
+  now?: Date
+  initialLookbackDays?: number
+  rawResponseRetentionDays?: number
+}): Promise<{ contentIds: string[]; discovered: number }> {
+  const storedProgress = options.repository.getProgress(options.source.id)
+  const cursor = options.cursor ?? storedProgress?.cursor
+  const startedAt = new Date().toISOString()
+  const batch = await new RssAdapter(options.fetcher).discover({
+    feedUrl: options.source.feedUrl,
+    cursor,
+    limit: options.limit,
+    now: options.now,
+    initialLookbackDays: options.initialLookbackDays,
+    incremental: Boolean(storedProgress || cursor),
+    isSeen: (externalId) =>
+      Boolean(
+        options.repository.getDiscovery(
+          discoveryId(options.source.id, externalId)
+        )
+      ),
+  })
+  await options.repository.saveRawResponse({
+    id: `rss-${options.source.id}-${randomUUID()}`,
+    providerId: 'native-rss',
+    receivedAt: new Date().toISOString(),
+    retentionDays: options.rawResponseRetentionDays,
+    payload: { xml: batch.rawResponse },
+  })
+  const discoveredAt = new Date().toISOString()
+  const contentIds = batch.items.map((item) => contentId(item.canonicalUrl))
+  await options.repository.commitDiscoveryBatch({
+    sourceId: options.source.id,
+    baselineExternalIds: storedProgress ? undefined : batch.observedExternalIds,
+    contents: batch.items.map((item, index) => ({
+      id: contentIds[index]!,
+      title: item.title,
+      body: '',
+      canonicalUrl: item.canonicalUrl,
+      sourceId: options.source.id,
+      externalId: item.externalId,
+      publishedAt: item.publishedAt,
+      discoveredAt,
+      enrichmentStatus: 'pending',
+      kind: 'article',
+    })),
+    discoveries: batch.items.map((item, index) => ({
+      id: discoveryId(options.source.id, item.externalId),
+      sourceId: options.source.id,
+      contentId: contentIds[index]!,
+      discoveredAt,
+    })),
+  })
+  for (const id of contentIds) {
+    await options.repository.enqueueTask({
+      id: randomUUID(),
+      type: 'enrich',
+      sourceId: options.source.id,
+      sourceType: 'rss',
+      idempotencyKey: `enrich:${id}`,
+      payload: { contentId: id, mode: 'article-enrichment' },
+    })
+  }
+  await options.repository.advanceProgress(
+    options.source.id,
+    batch.nextCursor,
+    {
+      clearCursor: batch.nextCursor === undefined,
+    }
+  )
+  const finishedAt = new Date().toISOString()
+  await options.repository.saveAudit({
+    id: `rss-discovery-audit-${randomUUID()}`,
+    sourceId: options.source.id,
+    providerId: 'native-rss',
+    startedAt,
+    finishedAt,
+    succeeded: contentIds.length,
+    failed: 0,
+    retries: 0,
+    cursorBefore: cursor,
+    cursorAfter: batch.nextCursor,
+  })
+  return { contentIds, discovered: contentIds.length }
 }
 
 async function canonicalContentAfterEnrichment(
@@ -1558,6 +1848,7 @@ export async function runRssPipeline(options: RssPipelineOptions): Promise<{
     cursor,
     limit: options.limit,
     now: options.now,
+    initialLookbackDays: options.initialLookbackDays,
     incremental: Boolean(storedProgress || options.cursor),
     isSeen: (externalId) => {
       const discovery = options.repository.getDiscovery(
@@ -1590,6 +1881,7 @@ export async function runRssPipeline(options: RssPipelineOptions): Promise<{
     id: `rss-${options.source.id}-${randomUUID()}`,
     providerId: 'native-rss',
     receivedAt: new Date().toISOString(),
+    retentionDays: options.rawResponseRetentionDays,
     payload: { xml: batch.rawResponse },
   })
   await options.repository.commitDiscoveryBatch({

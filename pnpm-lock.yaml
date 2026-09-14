@@ -63,9 +63,15 @@ importers:
 
   apps/service:
     dependencies:
+      '@airadar/pipeline':
+        specifier: workspace:*
+        version: link:../../packages/pipeline
       '@airadar/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime
+      '@airadar/source-adapters':
+        specifier: workspace:*
+        version: link:../../packages/source-adapters
 
   apps/web:
     dependencies:

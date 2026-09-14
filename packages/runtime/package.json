@@ -1,5 +1,5 @@
 {
-  "name": "@airadar/service",
+  "name": "@airadar/runtime",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -16,10 +16,10 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "dev": "tsx src/service.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@airadar/runtime": "workspace:*"
+    "@airadar/domain": "workspace:*",
+    "zod": "^4.1.12"
   }
 }

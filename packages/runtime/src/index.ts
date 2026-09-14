@@ -62,6 +62,14 @@ const parameterVersionSchema = z
   })
   .strict()
 
+const threadPartSchema = z
+  .object({
+    id: z.string().min(1),
+    text: z.string().min(1),
+    publishedAt: timestampSchema.optional(),
+  })
+  .strict()
+
 const contentRecordSchema = z
   .object({
     id: z.string().min(1),
@@ -72,8 +80,12 @@ const contentRecordSchema = z
     externalId: z.string().min(1).optional(),
     publishedAt: timestampSchema.optional(),
     discoveredAt: timestampSchema.optional(),
-    enrichmentStatus: z.enum(['pending', 'succeeded', 'failed']).optional(),
+    enrichmentStatus: z
+      .enum(['pending', 'waiting-manual-transcription', 'succeeded', 'failed'])
+      .optional(),
     enrichmentError: z.string().optional(),
+    threadParts: z.array(threadPartSchema).optional(),
+    threadComplete: z.boolean().optional(),
   })
   .passthrough()
 
@@ -108,6 +120,65 @@ const auditSchema = z
     cursorAfter: z.string().optional(),
     retries: z.number().int().nonnegative(),
     error: z.string().optional(),
+  })
+  .strict()
+
+const providerAttemptSchema = z
+  .object({
+    id: z.string().min(1),
+    providerId: z.string().min(1),
+    sourceId: z.string().min(1),
+    startedAt: timestampSchema,
+    finishedAt: timestampSchema,
+    durationMs: z.number().int().nonnegative(),
+    status: z.enum(['succeeded', 'failed', 'skipped']),
+    itemCount: z.number().int().nonnegative(),
+    errorClass: z
+      .enum([
+        'temporary',
+        'rate-limit',
+        'credential',
+        'balance',
+        'invalid-request',
+        'invalid-response',
+      ])
+      .optional(),
+    error: z.string().optional(),
+  })
+  .strict()
+
+const providerHealthSchema = z
+  .object({
+    providerId: z.string().min(1),
+    state: z.enum(['healthy', 'cooldown', 'manual-recovery']),
+    retryAt: timestampSchema.optional(),
+    errorClass: z
+      .enum([
+        'temporary',
+        'rate-limit',
+        'credential',
+        'balance',
+        'invalid-request',
+        'invalid-response',
+      ])
+      .optional(),
+    updatedAt: timestampSchema,
+  })
+  .strict()
+
+const interactionSnapshotSchema = z
+  .object({
+    id: z.string().min(1),
+    contentId: z.string().min(1),
+    sourceId: z.string().min(1),
+    providerId: z.string().min(1),
+    externalId: z.string().min(1).optional(),
+    capturedAt: timestampSchema,
+    views: z.number().int().nonnegative().nullable(),
+    likes: z.number().int().nonnegative().nullable(),
+    comments: z.number().int().nonnegative().nullable(),
+    shares: z.number().int().nonnegative().nullable(),
+    saves: z.number().int().nonnegative().nullable(),
   })
   .strict()
 
@@ -160,6 +231,9 @@ export type RuntimeTask = z.infer<typeof runtimeTaskSchema>
 export type ParameterScope = z.infer<typeof parameterScopeSchema>
 export type RuntimeParameterVersion = z.infer<typeof parameterVersionSchema>
 export type RuntimeAudit = z.infer<typeof auditSchema>
+export type ProviderAttempt = z.infer<typeof providerAttemptSchema>
+export type ProviderHealthRecord = z.infer<typeof providerHealthSchema>
+export type InteractionSnapshot = z.infer<typeof interactionSnapshotSchema>
 export type ContentRecord = z.infer<typeof contentRecordSchema>
 export type AnalysisRecord = z.infer<typeof analysisRecordSchema>
 export type AnalysisCall = z.infer<typeof analysisCallSchema>
@@ -187,7 +261,12 @@ export interface DiscoveryBatchInput {
   sourceId: string
   nextCursor?: string
   baselineExternalIds?: string[]
-  contents: Array<z.input<typeof contentRecordSchema>>
+  contents: Array<
+    z.input<typeof contentRecordSchema> & {
+      mergePlatformMetadata?: boolean
+      mergeThreadParts?: boolean
+    }
+  >
   discoveries: Array<z.input<typeof discoveryRecordSchema>>
 }
 
@@ -512,6 +591,23 @@ export class RuntimeRepository {
         source_id TEXT NOT NULL,
         record_json TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS provider_attempts (
+        id TEXT PRIMARY KEY,
+        source_id TEXT NOT NULL,
+        provider_id TEXT NOT NULL,
+        record_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS provider_health (
+        provider_id TEXT PRIMARY KEY,
+        record_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS interaction_snapshots (
+        id TEXT PRIMARY KEY,
+        content_id TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        captured_at TEXT NOT NULL,
+        record_json TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS analyses (
         id TEXT PRIMARY KEY,
         content_id TEXT NOT NULL,
@@ -621,6 +717,9 @@ export class RuntimeRepository {
       DELETE FROM discoveries;
       DELETE FROM progress;
       DELETE FROM audits;
+      DELETE FROM provider_attempts;
+      DELETE FROM provider_health;
+      DELETE FROM interaction_snapshots;
       DELETE FROM analyses;
       DELETE FROM analysis_calls;
     `)
@@ -639,6 +738,27 @@ export class RuntimeRepository {
     await this.rebuildFolder('audits', auditSchema, (record) => {
       this.upsertAudit(record)
     })
+    await this.rebuildFolder(
+      'provider-attempts',
+      providerAttemptSchema,
+      (record) => {
+        this.upsertProviderAttempt(record)
+      }
+    )
+    await this.rebuildFolder(
+      'provider-health',
+      providerHealthSchema,
+      (record) => {
+        this.upsertProviderHealth(record)
+      }
+    )
+    await this.rebuildFolder(
+      'interaction-snapshots',
+      interactionSnapshotSchema,
+      (record) => {
+        this.upsertInteractionSnapshot(record)
+      }
+    )
     await this.rebuildFolder('analyses', analysisRecordSchema, (record) => {
       this.upsertAnalysis(record)
     })
@@ -988,19 +1108,28 @@ export class RuntimeRepository {
     input: DiscoveryBatchInput,
     hooks: DiscoveryCommitHooks
   ): Promise<void> {
-    const contents = input.contents.map((content) =>
-      contentRecordSchema.parse(content)
-    )
+    const contents = input.contents.map((content) => {
+      const {
+        mergePlatformMetadata = false,
+        mergeThreadParts = false,
+        ...record
+      } = content
+      return {
+        record: contentRecordSchema.parse(record),
+        mergePlatformMetadata,
+        mergeThreadParts,
+      }
+    })
     const discoveries = input.discoveries.map((discovery) =>
       discoveryRecordSchema.parse(discovery)
     )
     if (
-      contents.some(containsSensitiveKey) ||
+      contents.some(({ record }) => containsSensitiveKey(record)) ||
       discoveries.some(containsSensitiveKey)
     ) {
       throw new Error('Content and discovery records cannot contain secrets')
     }
-    const batchContentIds = new Set(contents.map((content) => content.id))
+    const batchContentIds = new Set(contents.map(({ record }) => record.id))
     for (const discovery of discoveries) {
       if (discovery.sourceId !== input.sourceId) {
         throw new Error('Discovery source must match the committed source')
@@ -1014,13 +1143,71 @@ export class RuntimeRepository {
         )
       }
     }
-    for (const content of contents) {
-      if (this.hasRecord('contents', content.id)) continue
-      await atomicWriteFile(
-        this.contentMarkdownPath(content.id),
-        recordMarkdown('content', content)
+    for (const {
+      record: content,
+      mergePlatformMetadata,
+      mergeThreadParts,
+    } of contents) {
+      const existing = this.getContent(content.id)
+      const hasThreadPartIncrement =
+        mergeThreadParts && Boolean(content.threadParts?.length)
+      const existingBodyFrozen = Boolean(
+        existing?.body.trim() && existing.enrichmentStatus === 'succeeded'
       )
-      this.upsertContent(content)
+      const canMergeThreadParts = hasThreadPartIncrement && !existingBodyFrozen
+      if (existing && !mergePlatformMetadata && !canMergeThreadParts) continue
+      const threadParts = canMergeThreadParts
+        ? [
+            ...new Map(
+              [
+                ...(existing?.threadParts ?? []),
+                ...(content.threadParts ?? []),
+              ].map((part) => [part.id, part])
+            ).values(),
+          ].sort((left, right) =>
+            (left.publishedAt ?? '').localeCompare(right.publishedAt ?? '')
+          )
+        : existing?.threadParts
+      const stored = existing
+        ? contentRecordSchema.parse({
+            ...existing,
+            title:
+              mergePlatformMetadata ||
+              (canMergeThreadParts && content.threadComplete)
+                ? content.title
+                : existing.title,
+            canonicalUrl: content.canonicalUrl ?? existing.canonicalUrl,
+            externalId: content.externalId ?? existing.externalId,
+            publishedAt: content.publishedAt ?? existing.publishedAt,
+            kind: content.kind ?? existing.kind,
+            body:
+              canMergeThreadParts && content.threadComplete
+                ? threadParts?.map((part) => part.text).join('\n\n')
+                : existing.body,
+            enrichmentStatus:
+              canMergeThreadParts && content.threadComplete
+                ? 'succeeded'
+                : existing.enrichmentStatus,
+            threadParts,
+            threadComplete:
+              existing.threadComplete || content.threadComplete || undefined,
+            evidence: {
+              ...(typeof existing.evidence === 'object'
+                ? existing.evidence
+                : {}),
+              ...(typeof content.evidence === 'object' ? content.evidence : {}),
+            },
+            video: {
+              ...(typeof existing.video === 'object' ? existing.video : {}),
+              ...(typeof content.video === 'object' ? content.video : {}),
+            },
+          })
+        : content
+      await atomicWriteFile(
+        this.contentMarkdownPath(stored.id),
+        recordMarkdown('content', stored)
+      )
+      this.upsertContent(stored)
     }
     for (const discovery of discoveries) {
       if (this.hasRecord('discoveries', discovery.id)) continue
@@ -1044,23 +1231,29 @@ export class RuntimeRepository {
 
   async advanceProgress(
     sourceId: string,
-    cursor: string,
-    options: { baselineExternalIds?: string[] } = {}
+    cursor: string | undefined,
+    options: { baselineExternalIds?: string[]; clearCursor?: boolean } = {}
   ): Promise<void> {
     await this.serializeMutation(() =>
-      this.writeProgress(sourceId, cursor, options.baselineExternalIds)
+      this.writeProgress(
+        sourceId,
+        cursor,
+        options.baselineExternalIds,
+        options.clearCursor
+      )
     )
   }
 
   private async writeProgress(
     sourceId: string,
     cursor: string | undefined,
-    baselineExternalIds?: string[]
+    baselineExternalIds?: string[],
+    clearCursor = false
   ): Promise<void> {
     const previous = this.getProgress(sourceId)
     const progress = progressSchema.parse({
       sourceId,
-      cursor: cursor ?? previous?.cursor,
+      cursor: clearCursor ? undefined : (cursor ?? previous?.cursor),
       baselineExternalIds: baselineExternalIds ?? previous?.baselineExternalIds,
       updatedAt: nowIso(),
     })
@@ -1108,6 +1301,27 @@ export class RuntimeRepository {
       )
       this.upsertContent(completed)
       return completed
+    })
+  }
+
+  async waitForManualTranscription(id: string): Promise<ContentRecord> {
+    return this.serializeMutation(async () => {
+      const content = this.getContent(id)
+      if (!content) throw new Error(`Content does not exist: ${id}`)
+      if (content.body.trim() && content.enrichmentStatus === 'succeeded') {
+        return content
+      }
+      const waiting = contentRecordSchema.parse({
+        ...content,
+        enrichmentStatus: 'waiting-manual-transcription',
+        enrichmentError: undefined,
+      })
+      await atomicWriteFile(
+        this.contentMarkdownPath(id),
+        recordMarkdown('content', waiting)
+      )
+      this.upsertContent(waiting)
+      return waiting
     })
   }
 
@@ -1378,6 +1592,119 @@ export class RuntimeRepository {
     )
   }
 
+  async saveProviderAttempt(
+    input: z.input<typeof providerAttemptSchema>
+  ): Promise<ProviderAttempt> {
+    return this.serializeMutation(async () => {
+      const attempt = providerAttemptSchema.parse({
+        ...input,
+        error: input.error ? redactText(input.error) : undefined,
+      })
+      if (
+        this.database
+          .prepare('SELECT 1 FROM provider_attempts WHERE id = ?')
+          .get(attempt.id)
+      ) {
+        throw new Error(`Provider attempt ${attempt.id} is immutable`)
+      }
+      await this.writeRecord(
+        'provider-attempts',
+        attempt.id,
+        'provider attempt',
+        attempt
+      )
+      this.upsertProviderAttempt(attempt)
+      return attempt
+    })
+  }
+
+  listProviderAttempts(sourceId?: string): ProviderAttempt[] {
+    const rows = sourceId
+      ? this.database
+          .prepare(
+            'SELECT record_json FROM provider_attempts WHERE source_id = ? ORDER BY id'
+          )
+          .all(sourceId)
+      : this.database
+          .prepare('SELECT record_json FROM provider_attempts ORDER BY id')
+          .all()
+    return rows
+      .map((row) => rowRecord(row, providerAttemptSchema))
+      .filter((value): value is ProviderAttempt => Boolean(value))
+  }
+
+  async saveProviderHealth(
+    input: Omit<z.input<typeof providerHealthSchema>, 'updatedAt'> & {
+      updatedAt?: string
+    }
+  ): Promise<ProviderHealthRecord> {
+    return this.serializeMutation(async () => {
+      const state = providerHealthSchema.parse({
+        ...input,
+        updatedAt: input.updatedAt ?? nowIso(),
+      })
+      await this.writeRecord(
+        'provider-health',
+        state.providerId,
+        'provider health',
+        state
+      )
+      this.upsertProviderHealth(state)
+      return state
+    })
+  }
+
+  getProviderHealth(providerId: string): ProviderHealthRecord | undefined {
+    return rowRecord(
+      this.database
+        .prepare(
+          'SELECT record_json FROM provider_health WHERE provider_id = ?'
+        )
+        .get(providerId),
+      providerHealthSchema
+    )
+  }
+
+  async saveInteractionSnapshot(
+    input: z.input<typeof interactionSnapshotSchema>
+  ): Promise<InteractionSnapshot> {
+    return this.serializeMutation(async () => {
+      const snapshot = interactionSnapshotSchema.parse(input)
+      if (
+        this.database
+          .prepare('SELECT 1 FROM interaction_snapshots WHERE id = ?')
+          .get(snapshot.id)
+      ) {
+        throw new Error(`Interaction snapshot ${snapshot.id} is immutable`)
+      }
+      await this.writeRecord(
+        'interaction-snapshots',
+        snapshot.id,
+        'interaction snapshot',
+        snapshot
+      )
+      this.upsertInteractionSnapshot(snapshot)
+      return snapshot
+    })
+  }
+
+  listInteractionSnapshots(contentId?: string): InteractionSnapshot[] {
+    const rows = contentId
+      ? this.database
+          .prepare(
+            'SELECT record_json FROM interaction_snapshots WHERE content_id = ? ORDER BY captured_at, id'
+          )
+          .all(contentId)
+      : this.database
+          .prepare(
+            'SELECT record_json FROM interaction_snapshots ORDER BY captured_at, id'
+          )
+          .all()
+    return rows
+      .map((row) => rowRecord(row, interactionSnapshotSchema))
+      .filter((value): value is InteractionSnapshot => Boolean(value))
+  }
+
   async saveRawResponse(input: {
     id: string
     providerId: string
@@ -1571,6 +1898,45 @@ export class RuntimeRepository {
         `INSERT INTO audits (id, source_id, record_json) VALUES (?, ?, ?)`
       )
       .run(audit.id, audit.sourceId, JSON.stringify(audit))
+  }
+
+  private upsertProviderAttempt(attempt: ProviderAttempt): void {
+    this.database
+      .prepare(
+        `INSERT INTO provider_attempts
+          (id, source_id, provider_id, record_json) VALUES (?, ?, ?, ?)`
+      )
+      .run(
+        attempt.id,
+        attempt.sourceId,
+        attempt.providerId,
+        JSON.stringify(attempt)
+      )
+  }
+
+  private upsertProviderHealth(state: ProviderHealthRecord): void {
+    this.database
+      .prepare(
+        `INSERT INTO provider_health (provider_id, record_json) VALUES (?, ?)
+         ON CONFLICT(provider_id) DO UPDATE SET record_json = excluded.record_json`
+      )
+      .run(state.providerId, JSON.stringify(state))
+  }
+
+  private upsertInteractionSnapshot(snapshot: InteractionSnapshot): void {
+    this.database
+      .prepare(
+        `INSERT INTO interaction_snapshots
+          (id, content_id, source_id, captured_at, record_json)
+         VALUES (?, ?, ?, ?, ?)`
+      )
+      .run(
+        snapshot.id,
+        snapshot.contentId,
+        snapshot.sourceId,
+        snapshot.capturedAt,
+        JSON.stringify(snapshot)
+      )
   }
 
   private upsertAnalysis(analysis: AnalysisRecord): void {

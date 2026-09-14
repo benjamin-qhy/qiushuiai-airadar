@@ -5,6 +5,31 @@ const timestamp = z.iso.datetime()
 const sensitiveParameterKey =
   /(?:apikey|accesskey(?:id)?|token|secret|password|passphrase|authorization|auth|cookie|privatekey|credentials?|bearer|signingkey)$/iu
 const secretNamePattern = /^[A-Z][A-Z0-9_]*$/u
+const trackingParameters = new Set([
+  'fbclid',
+  'gclid',
+  'mc_cid',
+  'mc_eid',
+  'ref',
+])
+
+export function canonicalizeContentUrl(value: string): string {
+  const url = new URL(value)
+  url.hash = ''
+  for (const key of [...url.searchParams.keys()]) {
+    const normalizedKey = key.toLowerCase()
+    if (
+      normalizedKey.startsWith('utm_') ||
+      trackingParameters.has(normalizedKey)
+    ) {
+      url.searchParams.delete(key)
+    }
+  }
+  url.searchParams.sort()
+  url.hostname = url.hostname.toLowerCase()
+  if (url.pathname !== '/') url.pathname = url.pathname.replace(/\/+$/u, '')
+  return url.toString().replace(/\?$/u, '').replace(/\/$/u, '')
+}
 
 export const secretReferenceSchema = z
   .object({ secretRef: z.string().regex(secretNamePattern) })

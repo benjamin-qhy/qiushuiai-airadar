@@ -25,7 +25,11 @@ describe('source adapter contract', () => {
         cursor: 'cursor-1',
         limit: 20,
       })
-    ).toEqual({ items: [], nextCursor: 'cursor-1' })
+    ).toEqual({
+      items: [],
+      nextCursor: 'cursor-1',
+      providerId: 'native-rss',
+    })
   })
 
   it('rejects an adapter used with the wrong source type before calling a provider', async () => {

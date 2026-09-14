@@ -21,6 +21,7 @@
   "dependencies": {
     "@airadar/domain": "workspace:*",
     "@airadar/runtime": "workspace:*",
+    "@airadar/source-adapters": "workspace:*",
     "@earendil-works/pi-ai": "0.85.1",
     "@mozilla/readability": "0.6.0",
     "fast-xml-parser": "5.11.1",

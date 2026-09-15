@@ -1,45 +1,56 @@
-# Design QA — Issue #23 完整 Web
+**Design QA**
 
-## 验收范围
+- Source visual truth: `/Users/qiushui/.codex/visualizations/2026/09/14/01a0a063-c1b8-78b0-95d2-7f51f4c030f4/aisocial-reference-with-card-1248x720.png`
+- Implementation screenshot: `/Users/qiushui/.codex/visualizations/2026/09/14/01a0a063-c1b8-78b0-95d2-7f51f4c030f4/airadar-reference-style-final-v2.png`
+- Detail interaction screenshot: `/Users/qiushui/.codex/visualizations/2026/09/14/01a0a063-c1b8-78b0-95d2-7f51f4c030f4/airadar-reference-style-detail.png`
+- Combined comparison: `/Users/qiushui/.codex/visualizations/2026/09/14/01a0a063-c1b8-78b0-95d2-7f51f4c030f4/airadar-design-comparison-final.png`
+- Viewport: desktop, 1280 x 720 CSS pixels, light theme.
+- Pixels and density: source 1280 x 720, implementation 1280 x 720, captured at the same browser density with no normalization required. The detail capture is 1269 x 714 because the in-app panel chrome resized the tab after interaction.
+- State: source AI 精选 page with one representative card; implementation 每日精选 page with two persisted real items. The reference backend was unavailable, so the source capture used one temporary representative card populated from the same real AI Radar item. The reference source directory was not modified.
 
-- 设计依据：Issue #12 已确认的 shadcn-admin 原型截图。
-- 实现地址：`http://192.168.3.108:5173/`，连接真实本机服务与持久化数据。
-- 桌面截图：`design-evidence/issue-23-desktop-open.png`、`issue-23-sources.png`。
-- 移动截图：`design-evidence/issue-23-mobile-closed.png`、`issue-23-mobile-open.png`。
-- 同画面对照：`design-evidence/issue-23-qa-content.png`、`issue-23-qa-sources.png`。
-- 视口：桌面 1281 × 986；移动 390 × 844。
+**Full-view comparison evidence**
 
-## 对照结论
+- The combined comparison confirms the same 256px navigation rail, 64px single-row filter header, pale active states, dense seven-column desktop grid, light borders, 8px card radius, and high whitespace content canvas.
+- The retained differences are intentional product constraints: AI Radar keeps its own navigation labels, score, topics, actions, real-data notice, and master-detail workflow.
 
-| 检查面 | 结果 | 证据 |
-| --- | --- | --- |
-| 字体与层级 | 通过 | 标题、辅助信息、标签和正文层级与原型一致；真实长英文标题被截断，不撑破列表。 |
-| 间距与布局 | 通过 | 保留 240px 侧栏、顶部栏、卡片列表及 38/62 主从详情；信源页维持列表/详情结构。 |
-| 色彩与表面 | 通过 | 沿用 shadcn 中性灰、细边框和低阴影；仅连接、垃圾等状态使用语义色。 |
-| 图像与素材 | 通过 | 本界面不要求装饰图，不伪造缩略图；真实图文内容用类型标签表达。 |
-| 文案与状态 | 通过 | 五个主页面、处理/阅读/垃圾筛选、AI/人工垃圾来源、加载/空/错误状态均有明确中文。 |
-| 交互 | 通过 | 初始关闭详情，桌面可调分栏；Esc、返回、前后篇、J/K；内容利用、试抓、配置预览和回退均接真实接口。 |
-| 响应式 | 通过 | 390px 无横向页面溢出；移动详情全屏，六个底部操作固定同屏可见。 |
-| 可访问性 | 通过 | 主要输入有名称，按钮为语义控件，键盘可关闭和切换内容，焦点样式沿用组件规范。 |
+**Focused region comparison evidence**
 
-## 发现与修复
+- Header: category tabs, platform selection, recommendation/status tabs, search, and compact control sizing follow the source hierarchy and spacing.
+- Card: both use a 3:4 cover, top AI status treatment, AI text over the image, bottom source/date gradient, compact title, metrics, a light border, and a subtle hover fill.
+- Detail: opening the first card was tested and produced the retained 38/62 list/detail split with real media and metadata. This intentionally replaces the source dialog.
 
-| 优先级 | 发现 | 修复与复验 |
-| --- | --- | --- |
-| P1 | 配置页首稿把 scope 发成错误字段，并且只能编辑全局层。 | 改为 `level` 协议，增加全局、平台类型、单个信源三级选择；真实接口预览影响数量后再保存。 |
-| P1 | 真实验收数据的临时 sourceId 与导入后的正式信源 ID 不同，列表显示“未知信源”。 | 服务层加入验收别名映射和安全兜底，复验显示 X / OpenAI、小红书 / iTechTokAI。 |
-| P2 | 390px 移动端底部六个操作需要横向滑动。 | 改为固定六列紧凑按钮；CDP 实测六个按钮范围都在 12–378px 内。 |
-| P2 | 首次移动截图受 Chrome 最小窗口宽度影响，误报横向裁切。 | 使用设备指标仿真复验，`innerWidth=390`、`scrollWidth=390`。 |
+**Findings**
 
-## 功能证据
+- No actionable P0, P1, or P2 visual mismatch remains.
+- P3: AI Radar media cards are slightly taller because topics and persistent project actions are retained below the title.
+- P3: the reference capture shows an unrelated backend error toast; it was excluded from fidelity judgment.
 
-- 真实内容详情的已读和收藏写入后刷新仍保留。
-- 真实分析记录模型为 `gpt-5.3-codex-spark`。
-- 全部内容提供已读、未读、重试三种安全批量操作，没有批量删除。
-- 已导入 36 个信源定义，其中 33 个来自旧配置；六类信源各启用一个。
-- 凭据只展示配置状态和掩码；固定规则仅只读展示。
-- Node `24.21.0` + pnpm `10.34.1` 下执行 `pnpm check`：116 个测试、类型检查、构建和三组 smoke 全部通过。
+**Required fidelity surfaces**
 
-## Final result
+- Fonts and typography: system UI fallback preserves the source-like size, weight, line height, truncation, and hierarchy while avoiding an external-font white-screen failure.
+- Spacing and layout rhythm: sidebar, header, grid gaps, cover ratio, radius, borders, and content padding match the source structure.
+- Colors and visual tokens: neutral gray canvas, pale selected states, white cards, subtle borders, gradients, and black/white overlays are aligned.
+- Image quality and asset fidelity: the implementation uses persisted source media URLs with object-cover cropping; no placeholder or synthetic asset was introduced.
+- Copy and content: AI Radar product labels and real content are intentionally retained.
+
+**Comparison history**
+
+1. First pass findings: selected tabs were too dark, card radius was too large, the header scrollbar was visible, and AI summaries made media cards unnecessarily tall.
+2. Fixes: changed selected tabs to pale gray, reduced cards to 8px radius, hid the header scrollbar, switched to natural-height grid items, and moved media summaries into the cover overlay.
+3. Post-fix evidence: `airadar-reference-style-final-v2.png` and `airadar-design-comparison-final.png`; no actionable P0/P1/P2 mismatch remains.
+
+**Primary interactions tested**
+
+- Initial page load with persisted real data.
+- Content card open into the 38/62 detail split.
+- Real cover image and interaction counts rendered.
+- Browser console errors checked: none in the implementation.
+
+**Implementation Checklist**
+
+- [x] Reference-style shell, header, filters, cards, and density.
+- [x] Existing AI Radar elements and real-data behavior retained.
+- [x] Detail split interaction retained and verified.
+- [x] Full build, tests, and browser console verification completed.
 
 final result: passed

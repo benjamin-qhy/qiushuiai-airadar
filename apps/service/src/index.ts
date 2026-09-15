@@ -71,6 +71,12 @@ interface FeedItem {
   analyzedAt?: string
   kind?: ContentKind
   source?: { id: string; name: string; type: string }
+  images?: Array<{ order?: number; url: string }>
+  video?: {
+    durationSeconds?: number
+    thumbnailUrl?: string
+    mediaUrl?: string
+  }
   processStatus:
     'processing' | 'completed' | 'failed' | 'waiting-manual-transcription'
   originalStatus?: unknown
@@ -83,13 +89,67 @@ interface FeedItem {
     note?: string
   }
   evidence?: unknown
-  interaction?: unknown
+  interaction?: {
+    capturedAt: string
+    views: number | null
+    likes: number | null
+    comments: number | null
+    shares: number | null
+    saves: number | null
+  }
   analysis?: {
     provider: string
     model: string
     profileVersionId: string
     ruleVersion: string
   }
+}
+
+function safeMediaUrl(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  try {
+    const url = new URL(value)
+    return url.protocol === 'http:' || url.protocol === 'https:'
+      ? value
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function contentImages(value: unknown): FeedItem['images'] {
+  if (!Array.isArray(value)) return undefined
+  const images = value.flatMap((entry) => {
+    const record = asRecord(entry)
+    const url = safeMediaUrl(record.url)
+    if (!url) return []
+    return [
+      {
+        ...(typeof record.order === 'number' ? { order: record.order } : {}),
+        url,
+      },
+    ]
+  })
+  return images.length ? images : undefined
+}
+
+function contentVideo(value: unknown): FeedItem['video'] {
+  const record = asRecord(value)
+  const durationSeconds =
+    typeof record.durationSeconds === 'number'
+      ? record.durationSeconds
+      : undefined
+  const thumbnailUrl = safeMediaUrl(
+    record.thumbnailUrl ?? record.coverUrl ?? record.thumbnail
+  )
+  const mediaUrl = safeMediaUrl(record.mediaUrl ?? record.url)
+  if (
+    durationSeconds === undefined &&
+    thumbnailUrl === undefined &&
+    mediaUrl === undefined
+  )
+    return undefined
+  return { durationSeconds, thumbnailUrl, mediaUrl }
 }
 
 interface ProviderDefinition {
@@ -348,6 +408,8 @@ function contentItems(repository: RuntimeRepository): FeedItem[] {
         recommendation: recommendation(result.recommendation),
         analyzedAt: analysis?.createdAt,
         kind: contentKind(content.kind),
+        images: contentImages(content.images),
+        video: contentVideo(content.video),
         source: source
           ? { id: source.id, name: source.name, type: source.type }
           : content.sourceId
@@ -367,7 +429,16 @@ function contentItems(repository: RuntimeRepository): FeedItem[] {
           : (state?.utilizationActions ?? []),
         junk,
         evidence: content.evidence,
-        interaction: latestInteraction,
+        interaction: latestInteraction
+          ? {
+              capturedAt: latestInteraction.capturedAt,
+              views: latestInteraction.views,
+              likes: latestInteraction.likes,
+              comments: latestInteraction.comments,
+              shares: latestInteraction.shares,
+              saves: latestInteraction.saves,
+            }
+          : undefined,
         analysis: analysis
           ? {
               provider: analysis.provider,

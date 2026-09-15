@@ -136,6 +136,10 @@ describe('background service shell', () => {
           canonicalUrl: 'https://example.com/core',
           enrichmentStatus: 'succeeded',
           kind: 'image_post',
+          images: [
+            { order: 0, url: 'https://media.example/core.webp' },
+            { order: 1, url: 'file:///tmp/private.png' },
+          ],
         },
         {
           id: 'content-none',
@@ -213,7 +217,12 @@ describe('background service shell', () => {
     const address = await service.start({ host: '127.0.0.1', port: 0 })
     const base = `http://${address.host}:${address.port}`
     const all = (await (await fetch(`${base}/api/contents`)).json()) as {
-      items: Array<{ id: string; kind?: string; firstInflowAt?: string }>
+      items: Array<{
+        id: string
+        kind?: string
+        firstInflowAt?: string
+        images?: Array<{ order?: number; url: string }>
+      }>
     }
     const daily = (await (await fetch(`${base}/api/daily`)).json()) as {
       items: Array<{ id: string }>
@@ -225,6 +234,9 @@ describe('background service shell', () => {
     expect(all.items.find((item) => item.id === 'content-core')?.kind).toBe(
       'image_post'
     )
+    expect(
+      all.items.find((item) => item.id === 'content-core')?.images
+    ).toEqual([{ order: 0, url: 'https://media.example/core.webp' }])
     expect(daily.items.map((item) => item.id).sort()).toEqual([
       'content-core',
       'content-none',

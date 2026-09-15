@@ -28,6 +28,9 @@ describe('complete web shell', () => {
     expect(html).toContain('信源管理')
     expect(html).toContain('运行状态')
     expect(html).toContain('系统配置')
+    expect(html).toContain('卡片宽度')
+    expect(html).toContain('瀑布流')
+    expect(html).toContain('表格')
     expect(html).toContain('正在读取真实内容')
     expect(html).not.toMatch(/Clerk|Sign in|Dashboard|Tasks|Users/u)
   })
@@ -55,7 +58,8 @@ describe('complete web shell', () => {
         recommendation: 'all',
         read: 'read',
         junk: 'junk',
-        date: '',
+        dateFrom: '',
+        dateTo: '',
       })
     ).toEqual([other])
     expect(
@@ -65,7 +69,8 @@ describe('complete web shell', () => {
         recommendation: 'all',
         read: 'all',
         junk: 'all',
-        date: '',
+        dateFrom: '',
+        dateTo: '',
       })
     ).toHaveLength(1)
     expect(
@@ -76,6 +81,11 @@ describe('complete web shell', () => {
             publishedAt: '2020-01-01T00:00:00.000Z',
             firstInflowAt: '2026-09-14T01:00:00.000Z',
           },
+          {
+            ...item,
+            id: 'x:outside-range',
+            firstInflowAt: '2026-09-07T01:00:00.000Z',
+          },
         ],
         {
           query: '',
@@ -83,7 +93,8 @@ describe('complete web shell', () => {
           recommendation: 'all',
           read: 'all',
           junk: 'all',
-          date: '2026-09-14',
+          dateFrom: '2026-09-08',
+          dateTo: '2026-09-14',
         }
       )
     ).toHaveLength(1)

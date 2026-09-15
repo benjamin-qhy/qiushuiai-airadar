@@ -17,6 +17,12 @@ export interface FeedItem {
   recommendation: 'core' | 'explore' | 'none'
   kind?: 'short_post' | 'video' | 'image_post' | 'article'
   source?: { id: string; name: string; type: string }
+  images?: Array<{ order?: number; url: string }>
+  video?: {
+    durationSeconds?: number
+    thumbnailUrl?: string
+    mediaUrl?: string
+  }
   processStatus:
     'processing' | 'completed' | 'failed' | 'waiting-manual-transcription'
   originalStatus?: unknown
@@ -29,7 +35,14 @@ export interface FeedItem {
     note?: string
   }
   evidence?: unknown
-  interaction?: unknown
+  interaction?: {
+    capturedAt: string
+    views: number | null
+    likes: number | null
+    comments: number | null
+    shares: number | null
+    saves: number | null
+  }
   analysis?: {
     provider: string
     model: string

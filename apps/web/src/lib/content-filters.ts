@@ -14,7 +14,12 @@ export interface ContentFilters {
   recommendation: string
   read: string
   junk: string
-  date: string
+  dateFrom: string
+  dateTo: string
+  datePreset?: string
+  kind?: string
+  sourceType?: string
+  sort?: string
 }
 
 export function filterContentItems(
@@ -22,8 +27,9 @@ export function filterContentItems(
   filters: ContentFilters
 ): FeedItem[] {
   const query = filters.query.trim().toLowerCase()
-  return items.filter(
-    (item) =>
+  return items.filter((item) => {
+    const inflowDate = localDateKey(item.firstInflowAt)
+    return (
       (!query ||
         `${item.title} ${item.summary} ${item.source?.name ?? ''}`
           .toLowerCase()
@@ -38,6 +44,14 @@ export function filterContentItems(
       (filters.read === 'all' || item.read === (filters.read === 'read')) &&
       (filters.junk === 'all' ||
         item.junk.isJunk === (filters.junk === 'junk')) &&
-      (!filters.date || localDateKey(item.firstInflowAt) === filters.date)
-  )
+      (!filters.kind || filters.kind === 'all' || item.kind === filters.kind) &&
+      (!filters.sourceType ||
+        filters.sourceType === 'all' ||
+        item.source?.type === filters.sourceType) &&
+      ((!filters.dateFrom && !filters.dateTo) ||
+        (Boolean(inflowDate) &&
+          (!filters.dateFrom || inflowDate! >= filters.dateFrom) &&
+          (!filters.dateTo || inflowDate! <= filters.dateTo)))
+    )
+  })
 }

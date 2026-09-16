@@ -22,6 +22,23 @@ export interface ContentFilters {
   sort?: string
 }
 
+export type ContentScope = 'daily' | 'all' | 'junk'
+
+export function filterContentScope(
+  items: FeedItem[],
+  scope: ContentScope
+): FeedItem[] {
+  return items.filter((item) => {
+    if (scope === 'junk') return item.junk.isJunk
+    if (item.junk.isJunk) return false
+    if (scope === 'all') return true
+    return (
+      item.processStatus === 'completed' &&
+      (item.recommendation === 'core' || item.recommendation === 'explore')
+    )
+  })
+}
+
 export function filterContentItems(
   items: FeedItem[],
   filters: ContentFilters

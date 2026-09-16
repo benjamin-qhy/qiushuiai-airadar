@@ -14,9 +14,11 @@ export function App() {
   return (
     <AppShell page={page} onPage={setPage}>
       {page === 'daily' ? (
-        <ContentWorkspace daily />
+        <ContentWorkspace scope='daily' />
       ) : page === 'all' ? (
-        <ContentWorkspace daily={false} />
+        <ContentWorkspace scope='all' />
+      ) : page === 'junk' ? (
+        <ContentWorkspace scope='junk' />
       ) : page === 'sources' ? (
         <SourcesPage />
       ) : page === 'runtime' ? (

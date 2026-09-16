@@ -6,8 +6,23 @@ import {
   Radar,
   Settings2,
   Sparkles,
+  Trash2,
 } from 'lucide-react'
-import { Button } from '@/components/ui/button'
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarHeader,
+  SidebarInset,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarProvider,
+  SidebarTrigger,
+} from '@/components/ui/sidebar'
 import type { PageKey } from '@/types'
 
 const navigationGroups: Array<{
@@ -19,6 +34,7 @@ const navigationGroups: Array<{
     items: [
       { id: 'daily', label: '每日精选', icon: Sparkles },
       { id: 'all', label: '全部内容', icon: ListFilter },
+      { id: 'junk', label: '垃圾内容', icon: Trash2 },
     ],
   },
   {
@@ -44,71 +60,63 @@ export function AppShell({
   onPage: (page: PageKey) => void
   children: ReactNode
 }) {
-  const contentPage = page === 'daily' || page === 'all'
   return (
-    <div className='min-h-svh w-screen max-w-full overflow-x-hidden bg-[#f7f8fa] lg:grid lg:grid-cols-[256px_1fr]'>
-      <aside className='hidden border-r bg-[#f5f5f5] px-4 py-5 lg:flex lg:flex-col'>
-        <div className='mb-7 flex items-center gap-3 px-2'>
-          <span className='flex size-10 items-center justify-center rounded-xl bg-slate-950 text-white'>
-            <Radar className='size-5' />
-          </span>
-          <div>
-            <div className='font-semibold'>AI Radar</div>
-            <div className='text-xs text-muted-foreground'>个人 AI 情报台</div>
-          </div>
-        </div>
-        <nav className='space-y-5'>
-          {navigationGroups.map((group) => (
-            <div key={group.label}>
-              <div className='mb-1.5 px-3 text-[11px] font-medium tracking-wide text-muted-foreground/80'>
-                {group.label}
-              </div>
-              <div className='space-y-1'>
-                {group.items.map(({ id, label, icon: Icon }) => (
-                  <Button
-                    key={id}
-                    aria-label={label}
-                    variant={page === id ? 'secondary' : 'ghost'}
-                    className='w-full justify-start gap-3'
-                    onClick={() => onPage(id)}
-                  >
-                    <Icon className='size-4 shrink-0' />
-                    {label}
-                  </Button>
-                ))}
-              </div>
-            </div>
-          ))}
-        </nav>
-        <div className='mt-auto rounded-xl border bg-slate-50 p-3 text-xs text-muted-foreground'>
-          <div className='mb-1 font-medium text-foreground'>真实数据模式</div>
-          页面只读取本机服务与持久化数据。
-        </div>
-      </aside>
-      <div className='min-w-0 w-full overflow-x-hidden'>
-        {!contentPage && (
-          <header className='sticky top-0 z-30 flex h-16 items-center justify-between border-b bg-white/95 px-4 backdrop-blur'>
-            <div className='flex min-w-0 items-center gap-3'>
-              <div className='min-w-0'>
-                <div className='text-[11px] text-muted-foreground'>
-                  AI Radar
-                </div>
-                <h1 className='truncate text-sm font-semibold'>
-                  {navigation.find((item) => item.id === page)?.label}
-                </h1>
-              </div>
-            </div>
-            <span className='hidden rounded-full border px-3 py-1 text-xs text-emerald-700 sm:inline'>
-              ● 服务已连接
+    <SidebarProvider>
+      <Sidebar collapsible='offcanvas' className='overscroll-none'>
+        <SidebarHeader className='h-16 justify-center border-b px-3 py-0'>
+          <div className='flex min-w-0 items-center gap-3'>
+            <span className='flex size-9 shrink-0 items-center justify-center rounded-sm bg-primary text-primary-foreground'>
+              <Radar className='size-5' />
             </span>
-          </header>
-        )}
-        <main className='min-w-0'>{children}</main>
-        <nav className='fixed inset-x-0 bottom-0 z-40 grid w-screen max-w-full grid-cols-5 border-t bg-white/95 px-1 py-1 backdrop-blur lg:hidden'>
+            <div className='min-w-0 group-data-[state=collapsed]/sidebar:hidden'>
+              <div className='font-semibold'>AI Radar</div>
+              <div className='text-xs text-muted-foreground'>
+                个人 AI 情报台
+              </div>
+            </div>
+            <SidebarTrigger className='ml-auto group-data-[state=collapsed]/sidebar:hidden' />
+          </div>
+        </SidebarHeader>
+        <SidebarContent className='py-2'>
+          {navigationGroups.map((group) => (
+            <SidebarGroup key={group.label}>
+              <SidebarGroupLabel>{group.label}</SidebarGroupLabel>
+              <SidebarGroupContent>
+                <SidebarMenu>
+                  {group.items.map(({ id, label, icon: Icon }) => (
+                    <SidebarMenuItem key={id}>
+                      <SidebarMenuButton
+                        aria-label={label}
+                        aria-current={page === id ? 'page' : undefined}
+                        isActive={page === id}
+                        tooltip={label}
+                        onClick={() => onPage(id)}
+                      >
+                        <Icon />
+                        <span>{label}</span>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  ))}
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
+          ))}
+        </SidebarContent>
+        <SidebarFooter className='border-t text-xs text-muted-foreground group-data-[state=collapsed]/sidebar:hidden'>
+          <div className='mb-1 font-medium text-foreground'>真实数据模式</div>
+          <div>页面只读取本机服务与持久化数据。</div>
+        </SidebarFooter>
+      </Sidebar>
+      <SidebarInset>
+        <main className='min-h-0 min-w-0 flex-1 overflow-hidden'>
+          {children}
+        </main>
+        <nav className='fixed inset-x-0 bottom-0 z-40 grid w-screen max-w-full grid-cols-6 border-t bg-background/95 px-1 py-1 backdrop-blur lg:hidden'>
           {navigation.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
-              className={`min-w-0 flex flex-col items-center gap-1 rounded-md py-2 text-[10px] ${page === id ? 'bg-slate-100 text-slate-950' : 'text-muted-foreground'}`}
+              aria-current={page === id ? 'page' : undefined}
+              className={`min-w-0 flex flex-col items-center gap-1 rounded-md py-2 text-[10px] ${page === id ? 'bg-foreground/[0.06] text-foreground' : 'text-muted-foreground'}`}
               onClick={() => onPage(id)}
             >
               <Icon className='size-4' />
@@ -116,7 +124,7 @@ export function AppShell({
             </button>
           ))}
         </nav>
-      </div>
-    </div>
+      </SidebarInset>
+    </SidebarProvider>
   )
 }

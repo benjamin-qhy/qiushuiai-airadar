@@ -1,4 +1,5 @@
-export type PageKey = 'daily' | 'all' | 'sources' | 'runtime' | 'config'
+export type PageKey =
+  'daily' | 'all' | 'junk' | 'sources' | 'runtime' | 'config'
 export type UtilizationAction =
   'favorite' | 'card' | 'video' | 'article' | 'project'
 

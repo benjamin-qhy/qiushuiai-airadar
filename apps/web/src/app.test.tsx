@@ -1,14 +1,17 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { App, ContentCard, type FeedItem } from './app.js'
-import { filterContentItems } from './lib/content-filters.js'
+import {
+  filterContentItems,
+  filterContentScope,
+} from './lib/content-filters.js'
 
 const item: FeedItem = {
   id: 'xiaohongshu:note-1',
   kind: 'image_post',
   title: '真实图文',
   body: '正文',
-  summary: '全部图片已经保存并逐图识别。',
+  summary: '全部图片附件已经保存。',
   topics: ['AI'],
   scores: { substance: 12 },
   totalScore: 80,
@@ -25,12 +28,16 @@ describe('complete web shell', () => {
     expect(html).toContain('AI Radar')
     expect(html).toContain('每日精选')
     expect(html).toContain('全部内容')
+    expect(html).toContain('垃圾内容')
     expect(html).toContain('信源管理')
     expect(html).toContain('运行状态')
     expect(html).toContain('系统配置')
+    expect(html).toContain('data-slot="sidebar"')
+    expect(html).toContain('aria-label="折叠侧栏"')
+    expect(html).toContain('日期范围')
     expect(html).toContain('卡片宽度')
     expect(html).toContain('瀑布流')
-    expect(html).toContain('表格')
+    expect(html).toContain('aria-label="表格"')
     expect(html).toContain('正在读取真实内容')
     expect(html).not.toMatch(/Clerk|Sign in|Dashboard|Tasks|Users/u)
   })
@@ -115,5 +122,28 @@ describe('complete web shell', () => {
         }
       )
     ).toHaveLength(1)
+  })
+
+  it('keeps daily, all and junk content scopes separate', () => {
+    const junk = {
+      ...item,
+      id: 'x:junk',
+      junk: { isJunk: true, source: 'manual' as const },
+    }
+    const ordinary = {
+      ...item,
+      id: 'x:ordinary',
+      recommendation: 'none' as const,
+    }
+    const failed = {
+      ...item,
+      id: 'x:failed',
+      processStatus: 'failed' as const,
+    }
+    const items = [item, junk, ordinary, failed]
+
+    expect(filterContentScope(items, 'daily')).toEqual([item])
+    expect(filterContentScope(items, 'all')).toEqual([item, ordinary, failed])
+    expect(filterContentScope(items, 'junk')).toEqual([junk])
   })
 })

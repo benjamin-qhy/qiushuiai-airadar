@@ -344,6 +344,7 @@ describe('background service shell', () => {
       },
       result: {
         summary: 'summary',
+        chineseTranslation: '这是一条已翻译的英文帖子。',
         topics: ['AI'],
         totalScore: 90,
         recommendation: 'core',
@@ -393,6 +394,9 @@ describe('background service shell', () => {
       (await (await fetch(`${base}/api/contents`)).json()) as {
         items: Array<{
           id: string
+          originalLanguage: string
+          chineseTranslation?: string
+          translatedToChinese: boolean
           read: boolean
           utilizationActions: string[]
           junk: { isJunk: boolean; source: string }
@@ -401,6 +405,9 @@ describe('background service shell', () => {
     ).items[0]
     expect(item).toMatchObject({
       id: 'x:persistent-item',
+      originalLanguage: 'en',
+      chineseTranslation: '这是一条已翻译的英文帖子。',
+      translatedToChinese: true,
       read: true,
       utilizationActions: [],
       junk: { isJunk: false, source: 'manual' },

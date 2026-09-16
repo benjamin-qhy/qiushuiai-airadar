@@ -274,17 +274,6 @@ export async function relateSameWorkAcrossPlatforms(input: {
   return created
 }
 
-export interface ImageRecognizer {
-  providerId: string
-  recognize(input: {
-    contentId: string
-    order: number
-    sourceUrl: string
-    bytes: Uint8Array
-    mimeType: string
-  }): Promise<string>
-}
-
 export interface VideoKeyframeRecognizer {
   providerId: string
   recognizeKeyframes(input: {
@@ -446,14 +435,17 @@ function imageExtension(mimeType: string): string {
 export async function enrichImagePostContent(input: {
   repository: RuntimeRepository
   contentId: string
-  recognizer: ImageRecognizer
   detailProvider?: ImagePostDetailProvider
   fetch?: Fetcher
 }): Promise<{ status: 'succeeded'; providerId: string }> {
   const content = input.repository.getContent(input.contentId)
   if (!content) throw new Error(`Content does not exist: ${input.contentId}`)
   if (content.body.trim() && content.enrichmentStatus === 'succeeded') {
-    return { status: 'succeeded', providerId: input.recognizer.providerId }
+    return {
+      status: 'succeeded',
+      providerId:
+        input.detailProvider?.providerId ?? 'stored-image-attachments',
+    }
   }
   if (content.kind !== 'image_post') {
     throw new Error(`Content is not an image post: ${input.contentId}`)
@@ -483,11 +475,16 @@ export async function enrichImagePostContent(input: {
   ) {
     throw new Error('Image post has incomplete or unordered image evidence')
   }
+  const sourceText =
+    detail?.sourceText.trim() ??
+    (typeof content.sourceText === 'string' ? content.sourceText.trim() : '')
+  if (!sourceText) {
+    throw new Error('Image post has no text for analysis')
+  }
   const fetcher = input.fetch ?? fetch
   const media: Array<{
     order: number
     fileName: string
-    recognizedText: string
   }> = []
   for (const image of ordered) {
     let downloaded: Awaited<ReturnType<typeof downloadImage>>
@@ -505,47 +502,24 @@ export async function enrichImagePostContent(input: {
     const { bytes, mimeType } = downloaded
     const fileName = `image-${String(image.order + 1).padStart(3, '0')}.${imageExtension(mimeType)}`
     await input.repository.saveContentMedia(input.contentId, fileName, bytes)
-    const recognizedText = (
-      await input.recognizer.recognize({
-        contentId: input.contentId,
-        order: image.order,
-        sourceUrl: image.url,
-        bytes,
-        mimeType,
-      })
-    ).trim()
-    if (!recognizedText) {
-      throw new Error(
-        `Image ${image.order + 1} recognition returned empty text`
-      )
-    }
-    media.push({ order: image.order, fileName, recognizedText })
+    media.push({ order: image.order, fileName })
   }
-  const sourceText =
-    detail?.sourceText.trim() ??
-    (typeof content.sourceText === 'string' ? content.sourceText.trim() : '')
-  const body = [
-    sourceText,
-    ...media.map(
-      (image) => `第 ${image.order + 1} 张图：\n${image.recognizedText}`
-    ),
-  ]
-    .filter(Boolean)
-    .join('\n\n')
   await input.repository.completeContentEnrichment(input.contentId, {
-    body,
+    body: sourceText,
     canonicalUrl: content.canonicalUrl,
     media: { images: media },
     images: ordered,
     sourceText,
   })
-  return { status: 'succeeded', providerId: input.recognizer.providerId }
+  return {
+    status: 'succeeded',
+    providerId: input.detailProvider?.providerId ?? 'stored-image-attachments',
+  }
 }
 
 export async function enrichImagePostsIndependently(input: {
   repository: RuntimeRepository
   contentIds: string[]
-  recognizer: ImageRecognizer
   detailProvider?: ImagePostDetailProvider
   fetch?: Fetcher
 }): Promise<
@@ -563,7 +537,6 @@ export async function enrichImagePostsIndependently(input: {
       await enrichImagePostContent({
         repository: input.repository,
         contentId,
-        recognizer: input.recognizer,
         detailProvider: input.detailProvider,
         fetch: input.fetch,
       })
@@ -814,6 +787,7 @@ const scoreSchema = z
 export const analysisResultSchema = z
   .object({
     summary: z.string().min(20),
+    chineseTranslation: z.string().min(1).optional(),
     topics: z.array(z.string().min(1)).min(1),
     scores: z
       .object({
@@ -880,8 +854,8 @@ export interface ModelEvidence {
 export interface ModelGateway {
   readonly provider: string
   readonly model: string
-  auditInput(input: { title: string; body: string; profile: string }): unknown
-  analyze(input: { title: string; body: string; profile: string }): Promise<{
+  auditInput(input: { title: string; body: string; profile: string; translateToChinese?: boolean }): unknown
+  analyze(input: { title: string; body: string; profile: string; translateToChinese?: boolean }): Promise<{
     result: AnalysisResult
     evidence: ModelEvidence
     rawResponse?: unknown
@@ -902,6 +876,18 @@ export class ModelGatewayError extends Error {
 const codexProviderId = 'openai-codex'
 export const rssAcceptanceModel = 'gpt-5.3-codex-spark'
 const analysisPromptVersion = 'rss-analysis-v1'
+const xTranslationPromptVersion = 'x-short-translation-v1'
+
+export type OriginalLanguage = 'zh' | 'en' | 'unknown'
+
+export function detectOriginalLanguage(text: string): OriginalLanguage {
+  const prose = text.replace(/https?:\/\/\S+|@\w+/gu, ' ')
+  const hanCount = (prose.match(/\p{Script=Han}/gu) ?? []).length
+  const latinWords = (prose.match(/[A-Za-z]+(?:'[A-Za-z]+)?/gu) ?? []).length
+  if (hanCount >= 2 && hanCount >= latinWords) return 'zh'
+  if (latinWords >= 2 && latinWords > hanCount) return 'en'
+  return 'unknown'
+}
 
 interface CodexAuthFile {
   auth_mode?: unknown
@@ -982,56 +968,6 @@ export function createCodexPiGateway(
   const model = models.getModel(codexProviderId, modelId)
   if (!model) throw new Error(`Pi model is unavailable: ${modelId}`)
   return createPiModelGateway(models, model)
-}
-
-export function createCodexImageRecognizer(
-  authPath: string,
-  modelId = rssAcceptanceModel
-): ImageRecognizer {
-  const models = createModels({
-    credentials: createReadOnlyCodexCredentialStore(authPath),
-  })
-  models.setProvider(openaiCodexProvider())
-  const model = models.getModel(codexProviderId, modelId)
-  if (!model) throw new Error(`Pi model is unavailable: ${modelId}`)
-  return {
-    providerId: `openai-codex:${modelId}`,
-    async recognize(input) {
-      const message = await models.completeSimple(
-        model,
-        {
-          messages: [
-            {
-              role: 'user',
-              content: [
-                {
-                  type: 'text',
-                  text: '完整识别图片中的文字并描述承载信息。只返回忠实的中文纯文本，不推测看不清的内容。',
-                },
-                {
-                  type: 'image',
-                  data: Buffer.from(input.bytes).toString('base64'),
-                  mimeType: input.mimeType,
-                },
-              ],
-              timestamp: 0,
-            },
-          ],
-        },
-        { reasoning: 'low', maxTokens: 2_000, maxRetries: 0 }
-      )
-      if (message.stopReason === 'error') {
-        throw new Error(message.errorMessage || 'Image recognition failed')
-      }
-      const text = message.content
-        .filter((block) => block.type === 'text')
-        .map((block) => (block.type === 'text' ? block.text : ''))
-        .join('\n')
-        .trim()
-      if (!text) throw new Error('Image recognition returned no text')
-      return text
-    },
-  }
 }
 
 function sha256(value: string): string {
@@ -1384,6 +1320,7 @@ const analysisTool = {
   parameters: Type.Object(
     {
       summary: Type.String({ minLength: 20 }),
+      chineseTranslation: Type.Optional(Type.String({ minLength: 1 })),
       topics: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
       scores: Type.Object({
         topicMatch: Type.Object({
@@ -1433,10 +1370,11 @@ export function createPiModelGateway(
     title: string
     body: string
     profile: string
+    translateToChinese?: boolean
   }) => ({
     context: {
       systemPrompt:
-        '你是个人内容分析器。必须只调用 submit_analysis 一次。根据完整正文和个人画像给出中文摘要、主题、七项1到5档评分与垃圾判断。不要把平台热度作为加分。',
+        `你是个人内容分析器。必须只调用 submit_analysis 一次。根据完整正文和个人画像给出中文摘要、主题、七项1到5档评分与垃圾判断。不要把平台热度作为加分。${input.translateToChinese ? '这是一条英文 X 普通帖子；还必须在 chineseTranslation 字段提供完整、自然的中文意译，保留事实、语气与关键信息，不要只写摘要。' : '无需填写 chineseTranslation 字段。'}`,
       messages: [
         {
           role: 'user' as const,
@@ -1500,6 +1438,9 @@ export function createPiModelGateway(
       let result: AnalysisResult
       try {
         result = analysisResultSchema.parse(submission.arguments)
+        if (input.translateToChinese && !result.chineseTranslation?.trim()) {
+          throw new Error('English X post is missing Chinese translation')
+        }
       } catch (error) {
         throw new ModelGatewayError(
           error instanceof Error ? error.message : String(error),
@@ -1594,12 +1535,19 @@ async function analyzeStoredContentUnlocked(
   if (!content.body.trim() || content.enrichmentStatus !== 'succeeded') {
     throw new Error('Content is not completely enriched')
   }
+  const translateToChinese =
+    content.kind === 'short_post' &&
+    content.id.startsWith('x:') &&
+    detectOriginalLanguage(content.body) === 'en'
+  const promptVersion = translateToChinese
+    ? xTranslationPromptVersion
+    : analysisPromptVersion
   const fingerprint = analysisFingerprint({
     body: content.body,
     profileVersionId: options.profileVersionId,
     ruleVersion: options.ruleVersion,
     modelRouteVersion: options.modelRouteVersion,
-    promptVersion: analysisPromptVersion,
+    promptVersion,
   })
   const existing = repository.getAnalysisByFingerprint(content.id, fingerprint)
   if (existing && !options.manual) return existing
@@ -1611,6 +1559,7 @@ async function analyzeStoredContentUnlocked(
     title: content.title,
     body: content.body,
     profile: options.profile,
+    translateToChinese,
   }
   const auditedRequest = options.modelGateway.auditInput(request)
   await repository.saveRawResponse({
@@ -1623,6 +1572,13 @@ async function analyzeStoredContentUnlocked(
   try {
     const { result, evidence, rawResponse } =
       await options.modelGateway.analyze(request)
+    if (translateToChinese && !result.chineseTranslation?.trim()) {
+      throw new ModelGatewayError(
+        'English X post is missing Chinese translation',
+        evidence,
+        rawResponse
+      )
+    }
     await repository.saveRawResponse({
       id: rawRecordId,
       providerId: evidence.provider,
@@ -1641,7 +1597,7 @@ async function analyzeStoredContentUnlocked(
       manual: options.manual,
       provider: evidence.provider,
       model: evidence.model,
-      promptVersion: analysisPromptVersion,
+      promptVersion,
       profileVersionId: options.profileVersionId,
       ruleVersion: options.ruleVersion,
       createdAt: new Date().toISOString(),

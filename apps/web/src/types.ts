@@ -11,6 +11,9 @@ export interface FeedItem {
   firstInflowAt?: string
   body: string
   summary: string
+  originalLanguage?: 'zh' | 'en' | 'unknown'
+  chineseTranslation?: string
+  translatedToChinese?: boolean
   topics: string[]
   scores: Record<string, unknown>
   totalScore: number

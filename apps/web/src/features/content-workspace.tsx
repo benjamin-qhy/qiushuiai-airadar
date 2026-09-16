@@ -79,6 +79,21 @@ const actionLabels: Record<UtilizationAction, string> = {
   article: '写文章',
   project: '建项目',
 }
+
+function languageLabel(item: FeedItem): string {
+  if (item.originalLanguage === 'zh') return '原文中文'
+  if (item.originalLanguage === 'en') {
+    return item.translatedToChinese ? '原文英文 · 已意译' : '原文英文 · 未意译'
+  }
+  return '原文语言待识别'
+}
+
+function listTitle(item: FeedItem): string {
+  return item.kind === 'short_post' && item.source?.type === 'x' && item.chineseTranslation
+    ? item.chineseTranslation
+    : item.title
+}
+
 const kindLabels: Record<NonNullable<FeedItem['kind']>, string> = {
   short_post: '短文',
   video: '视频',
@@ -286,9 +301,9 @@ export function ContentCard({
           <span className='absolute right-2 top-2 rounded bg-black/55 px-1.5 py-0.5 text-[11px] font-medium text-white backdrop-blur'>
             {item.totalScore} 分
           </span>
-          {!compact && item.summary && (
+          {!compact && (item.chineseTranslation || item.summary) && (
             <p className='absolute inset-x-2 top-10 line-clamp-4 text-[11px] font-medium leading-4 text-white/95'>
-              {item.summary}
+              {item.chineseTranslation || item.summary}
             </p>
           )}
           <div className='absolute inset-x-2 bottom-2 min-w-0 text-white'>
@@ -363,9 +378,12 @@ export function ContentCard({
         <h2
           className={`font-semibold text-foreground ${compact ? 'line-clamp-2 text-sm leading-5' : 'line-clamp-2 text-sm leading-5'}`}
         >
-          {item.title}
+          {listTitle(item)}
         </h2>
-        {!compact && !cover && (
+        <span className='mt-1 text-[11px] text-muted-foreground'>
+          {languageLabel(item)}
+        </span>
+        {!compact && !cover && !item.chineseTranslation && (
           <p className='mt-1.5 line-clamp-2 text-xs leading-5 text-muted-foreground'>
             {item.summary || '暂无摘要'}
           </p>
@@ -577,6 +595,7 @@ function Detail({
                 <Badge variant='secondary'>{kindLabels[item.kind]}</Badge>
               )}
               <Badge variant='outline'>{item.source?.name ?? '未知信源'}</Badge>
+              <Badge variant='outline'>{languageLabel(item)}</Badge>
               {item.junk.isJunk && (
                 <Badge variant='destructive'>垃圾内容</Badge>
               )}
@@ -618,6 +637,10 @@ function Detail({
             </Button>
           )}
           {(item.processStatus !== 'completed' ||
+            (item.kind === 'short_post' &&
+              item.source?.type === 'x' &&
+              item.originalLanguage === 'en' &&
+              !item.translatedToChinese) ||
             item.originalStatus === 'deleted' ||
             item.originalStatus === 'private') && (
             <Button
@@ -627,7 +650,7 @@ function Detail({
               onClick={() => void retry()}
             >
               <RotateCcw />
-              单条恢复
+              {item.originalLanguage === 'en' && !item.translatedToChinese ? '生成中文意译' : '单条恢复'}
             </Button>
           )}
           {operationMessage && (
@@ -670,9 +693,19 @@ function Detail({
                   <PlayCircle className='absolute left-1/2 top-1/2 size-14 -translate-x-1/2 -translate-y-1/2 text-white drop-shadow-lg' />
                 </div>
               )}
-              <div className='whitespace-pre-wrap leading-8'>
-                {item.body || item.summary}
-              </div>
+              {item.chineseTranslation ? (
+                <div className='space-y-4'>
+                  <div className='whitespace-pre-wrap leading-8'>{item.chineseTranslation}</div>
+                  <details className='text-sm text-muted-foreground'>
+                    <summary className='cursor-pointer'>查看英文原文</summary>
+                    <div className='mt-3 whitespace-pre-wrap leading-7'>{item.body}</div>
+                  </details>
+                </div>
+              ) : (
+                <div className='whitespace-pre-wrap leading-8'>
+                  {item.body || item.summary}
+                </div>
+              )}
             </TabsContent>
             <TabsContent value='ai' className='mt-5 space-y-4'>
               <p className='leading-7'>{item.summary}</p>
@@ -1092,9 +1125,9 @@ export function ContentWorkspace({ daily }: { daily: boolean }) {
                 </TableCell>
               )}
               <TableCell className='max-w-80 whitespace-normal'>
-                <div className='line-clamp-1 font-medium'>{item.title}</div>
+                <div className='line-clamp-1 font-medium'>{listTitle(item)}</div>
                 <div className='line-clamp-1 text-xs text-muted-foreground'>
-                  {item.summary || '暂无摘要'}
+                  {languageLabel(item)}{!item.chineseTranslation && ' · ' + (item.summary || '暂无摘要')}
                 </div>
               </TableCell>
               <TableCell>

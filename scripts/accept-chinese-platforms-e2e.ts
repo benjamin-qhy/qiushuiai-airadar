@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
@@ -14,7 +14,6 @@ import {
   enrichPlatformVideoContent,
   rssAcceptanceModel,
   runPlatformDiscovery,
-  type ImageRecognizer,
   type VideoKeyframeRecognizer,
 } from '../packages/pipeline/src/index.js'
 import { RuntimeRepository } from '../packages/runtime/src/index.js'
@@ -398,21 +397,9 @@ async function main(): Promise<void> {
       keyframeRecognizer,
     })
 
-    const recognizer: ImageRecognizer = {
-      providerId: 'macos-vision',
-      async recognize(input) {
-        const imagePath = path.join(scratch, `image-${input.order}.bin`)
-        await writeFile(imagePath, input.bytes)
-        const { stdout } = await execFileAsync(ocrBinary, [imagePath], {
-          maxBuffer: 10 * 1024 * 1024,
-        })
-        return stdout
-      },
-    }
     const imageEnrichment = await enrichImagePostContent({
       repository,
       contentId: imageItem.platformIdentity,
-      recognizer,
       detailProvider: providers.xiaohongshuDetail,
     })
     const completedImage = repository.getContent(imageItem.platformIdentity)

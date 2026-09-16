@@ -16,6 +16,7 @@ import {
   calculateRecommendation,
   canonicalizeArticleUrl,
   createPiModelGateway,
+  detectOriginalLanguage,
   createReadOnlyCodexCredentialStore,
   enrichArticle,
   enrichImagePostContent,
@@ -528,7 +529,7 @@ describe('strict multimedia enrichment', () => {
     await runtime.close()
   })
 
-  it('keeps image posts pending until every ordered image is saved and recognized', async () => {
+  it('keeps image posts pending until every ordered image attachment is saved', async () => {
     const runtime = await repository()
     await runPlatformDiscovery({
       repository: runtime,
@@ -577,7 +578,6 @@ describe('strict multimedia enrichment', () => {
     expect(task?.payload).toMatchObject({ mode: 'image-post-enrichment' })
     await runtime.completeTask(task!.id)
 
-    const recognized: number[] = []
     await enrichImagePostContent({
       repository: runtime,
       contentId: 'xiaohongshu:note-1',
@@ -585,26 +585,26 @@ describe('strict multimedia enrichment', () => {
         new Response(new Uint8Array([String(url).includes('one') ? 1 : 2]), {
           headers: { 'content-type': 'image/webp' },
         }),
-      recognizer: {
-        providerId: 'real-ocr',
-        async recognize(input) {
-          expect(
-            await readFile(
-              path.join(
-                path.dirname(runtime.contentMarkdownPath(input.contentId)),
-                `image-${String(input.order + 1).padStart(3, '0')}.webp`
-              )
-            )
-          ).toEqual(Buffer.from([input.order + 1]))
-          recognized.push(input.order)
-          return `第 ${input.order + 1} 张图识别文本`
-        },
-      },
     })
-    expect(recognized).toEqual([0, 1])
+    expect(
+      await readFile(
+        path.join(
+          path.dirname(runtime.contentMarkdownPath('xiaohongshu:note-1')),
+          'image-001.webp'
+        )
+      )
+    ).toEqual(Buffer.from([1]))
+    expect(
+      await readFile(
+        path.join(
+          path.dirname(runtime.contentMarkdownPath('xiaohongshu:note-1')),
+          'image-002.webp'
+        )
+      )
+    ).toEqual(Buffer.from([2]))
     expect(runtime.getContent('xiaohongshu:note-1')).toMatchObject({
       enrichmentStatus: 'succeeded',
-      body: expect.stringContaining('第 2 张图识别文本'),
+      body: '图文正文',
       media: {
         images: [
           { order: 0, fileName: 'image-001.webp' },
@@ -627,6 +627,7 @@ describe('strict multimedia enrichment', () => {
           canonicalUrl: 'https://www.xiaohongshu.com/explore/broken',
           kind: 'image_post',
           enrichmentStatus: 'pending',
+          sourceText: '图文正文',
           images: [
             { order: 0, url: 'https://media.example/one.webp' },
             { order: 1, url: 'https://media.example/missing.webp' },
@@ -652,18 +653,53 @@ describe('strict multimedia enrichment', () => {
             : new Response(new Uint8Array([1]), {
                 headers: { 'content-type': 'image/webp' },
               }),
-        recognizer: {
-          providerId: 'real-ocr',
-          async recognize() {
-            return 'recognized'
-          },
-        },
       })
     ).rejects.toThrow('image 2')
     expect(runtime.getContent('xiaohongshu:broken')).toMatchObject({
       body: '',
       enrichmentStatus: 'pending',
     })
+    await runtime.close()
+  })
+
+  it('does not analyze image pixels when an image post has no platform text', async () => {
+    const runtime = await repository()
+    await runtime.commitDiscoveryBatch({
+      sourceId: 'xhs-no-text',
+      contents: [
+        {
+          id: 'xiaohongshu:no-text',
+          title: 'Image-only post',
+          body: '',
+          canonicalUrl: 'https://www.xiaohongshu.com/explore/no-text',
+          kind: 'image_post',
+          enrichmentStatus: 'pending',
+          images: [{ order: 0, url: 'https://media.example/image-only.webp' }],
+        },
+      ],
+      discoveries: [
+        {
+          id: 'xhs-no-text:note',
+          sourceId: 'xhs-no-text',
+          contentId: 'xiaohongshu:no-text',
+          discoveredAt: '2026-09-14T08:00:00.000Z',
+        },
+      ],
+    })
+    let fetched = false
+    await expect(
+      enrichImagePostContent({
+        repository: runtime,
+        contentId: 'xiaohongshu:no-text',
+        fetch: async () => {
+          fetched = true
+          return new Response(new Uint8Array([1]), {
+            headers: { 'content-type': 'image/webp' },
+          })
+        },
+      })
+    ).rejects.toThrow('no text for analysis')
+    expect(fetched).toBe(false)
     await runtime.close()
   })
 
@@ -716,6 +752,7 @@ describe('strict multimedia enrichment', () => {
             canonicalUrl: 'https://www.xiaohongshu.com/explore/unsafe',
             kind: 'image_post',
             enrichmentStatus: 'pending',
+            sourceText: '图文正文',
             images: [{ order: 0, url: imageUrl }],
           },
         ],
@@ -734,12 +771,6 @@ describe('strict multimedia enrichment', () => {
           repository: runtime,
           contentId: 'xiaohongshu:unsafe',
           ...(fetcher ? { fetch: fetcher } : {}),
-          recognizer: {
-            providerId: 'ocr',
-            async recognize() {
-              return 'never reached'
-            },
-          },
         })
       } catch (error) {
         caught = error
@@ -789,12 +820,6 @@ describe('strict multimedia enrichment', () => {
         new Response(new Uint8Array([1]), {
           headers: { 'content-type': 'image/webp' },
         }),
-      recognizer: {
-        providerId: 'ocr',
-        async recognize() {
-          return '识别正文'
-        },
-      },
     })
     expect(result).toEqual([
       {
@@ -1067,6 +1092,53 @@ const analysisArguments = {
   },
   spam: { isSpam: false },
 }
+
+describe('X short-post translation', () => {
+  it('recognizes the original language without treating links as English prose', () => {
+    expect(detectOriginalLanguage('今天发布了新功能 https://example.com')).toBe('zh')
+    expect(detectOriginalLanguage('We shipped a useful new feature.')).toBe('en')
+    expect(detectOriginalLanguage('https://example.com')).toBe('unknown')
+  })
+
+  it('stores a full Chinese paraphrase in the existing analysis call', async () => {
+    const runtime = await repository()
+    await runtime.commitDiscoveryBatch({
+      sourceId: 'x-openai',
+      contents: [{
+        id: 'x:translation-test',
+        title: 'A product update',
+        body: 'We shipped a useful new feature for everyone today.',
+        canonicalUrl: 'https://x.com/example/status/translation-test',
+        enrichmentStatus: 'succeeded',
+        kind: 'short_post',
+      }],
+      discoveries: [],
+    })
+    const models = createModels()
+    const faux = fauxProvider()
+    models.setProvider(faux.provider)
+    faux.setResponses([
+      fauxAssistantMessage(fauxToolCall('submit_analysis', {
+        ...analysisArguments,
+        chineseTranslation: '我们今天向所有用户推出了一项实用的新功能。',
+      })),
+    ])
+    const analysis = await analyzeStoredContent(runtime, 'x:translation-test', {
+      modelGateway: createPiModelGateway(models, faux.getModel()),
+      profile: '关注产品更新',
+      profileVersionId: 'profile-1',
+      ruleVersion: 'rules-1',
+      modelRouteVersion: 'route-1',
+      manual: false,
+    })
+    expect(analysis.result).toMatchObject({
+      chineseTranslation: '我们今天向所有用户推出了一项实用的新功能。',
+    })
+    expect(analysis.promptVersion).toBe('x-short-translation-v1')
+    expect(faux.state.callCount).toBe(1)
+    await runtime.close()
+  })
+})
 
 function fauxGateway() {
   const models = createModels()

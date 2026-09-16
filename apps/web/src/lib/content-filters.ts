@@ -31,7 +31,7 @@ export function filterContentItems(
     const inflowDate = localDateKey(item.firstInflowAt)
     return (
       (!query ||
-        `${item.title} ${item.summary} ${item.source?.name ?? ''}`
+        `${item.title} ${item.summary} ${item.chineseTranslation ?? ''} ${item.source?.name ?? ''}`
           .toLowerCase()
           .includes(query)) &&
       (filters.processStatus === 'all' ||

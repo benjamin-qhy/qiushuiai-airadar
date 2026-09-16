@@ -23,8 +23,8 @@ import {
 } from '@airadar/runtime'
 import {
   analyzeStoredContent,
-  createCodexImageRecognizer,
   createCodexPiGateway,
+  detectOriginalLanguage,
   enrichArticle,
   enrichImagePostContent,
   enrichPlatformVideoContent,
@@ -64,6 +64,9 @@ interface FeedItem {
   firstInflowAt?: string
   body: string
   summary: string
+  originalLanguage: 'zh' | 'en' | 'unknown'
+  chineseTranslation?: string
+  translatedToChinese: boolean
   topics: string[]
   scores: Record<string, unknown>
   totalScore: number
@@ -374,6 +377,15 @@ function contentItems(repository: RuntimeRepository): FeedItem[] {
     .map((content): FeedItem => {
       const analysis = latestByContent.get(content.id)
       const result = asRecord(analysis?.result)
+      const originalLanguage = detectOriginalLanguage(content.body)
+      const chineseTranslation =
+        content.kind === 'short_post' &&
+        content.id.startsWith('x:') &&
+        originalLanguage === 'en' &&
+        typeof result.chineseTranslation === 'string' &&
+        result.chineseTranslation.trim()
+          ? result.chineseTranslation.trim()
+          : undefined
       const state = repository.getContentUserState(content.id)
       const junk = effectiveJunk(state, result)
       const sourceId = content.sourceId
@@ -391,6 +403,10 @@ function contentItems(repository: RuntimeRepository): FeedItem[] {
         discoveredAt: content.discoveredAt,
         firstInflowAt: firstInflowByContent.get(content.id),
         body: content.body,
+        originalLanguage,
+        chineseTranslation,
+        translatedToChinese:
+          originalLanguage === 'en' && Boolean(chineseTranslation),
         summary:
           typeof result.summary === 'string'
             ? result.summary
@@ -1024,11 +1040,6 @@ async function executeTask(
         repository,
         contentId,
         detailProvider: createTikHubXiaohongshuDetailProvider({ token }),
-        recognizer: createCodexImageRecognizer(
-          process.env.CODEX_AUTH_PATH ??
-            path.join(homedir(), '.codex', 'auth.json'),
-          'gpt-5.3-codex-spark'
-        ),
       })
     } else if (mode === 'auto-transcription') {
       const apiKey = process.env.GETBIJI_API_KEY

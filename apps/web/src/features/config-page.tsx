@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { History, LockKeyhole, Save } from 'lucide-react'
+import { PageHeader } from '@/components/page-header'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -92,166 +93,168 @@ export function ConfigPage() {
     await load()
   }
   return (
-    <div className='p-4 pb-24 md:p-6 lg:pb-6'>
-      <div className='mx-auto max-w-6xl'>
-        <div className='mb-6'>
-          <h2 className='text-2xl font-semibold'>系统配置</h2>
-          <p className='text-sm text-muted-foreground'>
-            先预览影响，再保存版本；敏感凭据不在这里显示。
-          </p>
-        </div>
-        {message && (
-          <p className='mb-4 rounded-lg bg-blue-50 p-3 text-sm text-blue-800'>
-            {message}
-          </p>
-        )}
-        <Tabs defaultValue='parameters'>
-          <TabsList>
-            <TabsTrigger value='parameters'>参数配置</TabsTrigger>
-            <TabsTrigger value='versions'>版本与回退</TabsTrigger>
-            <TabsTrigger value='rules'>固定规则</TabsTrigger>
-          </TabsList>
-          <TabsContent value='parameters' className='mt-4'>
-            <Card>
-              <CardHeader>
-                <div className='flex flex-wrap items-center justify-between gap-3'>
-                  <div>
-                    <CardTitle>三层参数治理</CardTitle>
-                    <p className='mt-1 text-sm text-muted-foreground'>
-                      信源还可叠加平台类型、单个信源两层参数。
-                    </p>
-                  </div>
-                  <Button onClick={() => void showPreview()}>
-                    <Save />
-                    预览并保存
-                  </Button>
-                </div>
-              </CardHeader>
-              <CardContent>
-                <div className='mb-4 grid gap-3 sm:grid-cols-3'>
-                  <label className='text-sm'>
-                    配置层级
-                    <select
-                      aria-label='配置层级'
-                      value={scopeLevel}
-                      onChange={(event) =>
-                        setScopeLevel(event.target.value as typeof scopeLevel)
-                      }
-                      className='mt-1 h-9 w-full rounded-md border px-3'
-                    >
-                      <option value='global'>全局</option>
-                      <option value='sourceType'>平台类型</option>
-                      <option value='source'>单个信源</option>
-                    </select>
-                  </label>
-                  {scopeLevel === 'sourceType' && (
-                    <label className='text-sm'>
-                      平台类型
-                      <select
-                        aria-label='平台类型'
-                        value={sourceType}
-                        onChange={(event) => setSourceType(event.target.value)}
-                        className='mt-1 h-9 w-full rounded-md border px-3'
-                      >
-                        <option value='x'>X</option>
-                        <option value='youtube'>YouTube</option>
-                        <option value='rss'>RSS</option>
-                        <option value='douyin'>抖音</option>
-                        <option value='wechat_channels'>微信视频号</option>
-                        <option value='xiaohongshu'>小红书</option>
-                      </select>
-                    </label>
-                  )}
-                  {scopeLevel === 'source' && (
-                    <label className='text-sm sm:col-span-2'>
-                      具体信源
-                      <select
-                        aria-label='具体信源'
-                        value={sourceId}
-                        onChange={(event) => setSourceId(event.target.value)}
-                        className='mt-1 h-9 w-full rounded-md border px-3'
-                      >
-                        {sources.map((source) => (
-                          <option key={source.id} value={source.id}>
-                            {source.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  )}
-                </div>
-                <Textarea
-                  aria-label='全局参数 JSON'
-                  value={draft}
-                  onChange={(event) => setDraft(event.target.value)}
-                  className='min-h-[430px] font-mono text-xs'
-                />
-                <details className='mt-4 rounded-lg border p-3'>
-                  <summary className='cursor-pointer text-sm font-medium'>
-                    查看三级合并后的当前生效值
-                  </summary>
-                  <pre className='mt-3 max-h-72 overflow-auto rounded-lg bg-slate-950 p-4 text-xs text-white'>
-                    {JSON.stringify(data?.effective.values ?? {}, null, 2)}
-                  </pre>
-                </details>
-              </CardContent>
-            </Card>
-          </TabsContent>
-          <TabsContent value='versions' className='mt-4'>
-            <div className='overflow-hidden rounded-xl border bg-white'>
-              {data?.versions.map((version, index) => (
-                <div
-                  key={version.id}
-                  className='flex flex-wrap items-center justify-between gap-3 border-b p-4'
-                >
-                  <div className='flex gap-3'>
-                    <History className='mt-1 size-4 text-muted-foreground' />
+    <div className='flex h-full min-h-0 flex-col'>
+      <PageHeader
+        title='系统配置'
+        description='先预览影响，再保存版本；敏感凭据不在这里显示'
+      />
+      <div className='min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 pb-24 md:p-6 lg:pb-6'>
+        <div className='mx-auto max-w-6xl'>
+          {message && (
+            <p className='mb-4 border-l-2 border-foreground/30 bg-foreground/[0.025] p-3 text-sm'>
+              {message}
+            </p>
+          )}
+          <Tabs defaultValue='parameters'>
+            <TabsList>
+              <TabsTrigger value='parameters'>参数配置</TabsTrigger>
+              <TabsTrigger value='versions'>版本与回退</TabsTrigger>
+              <TabsTrigger value='rules'>固定规则</TabsTrigger>
+            </TabsList>
+            <TabsContent value='parameters' className='mt-4'>
+              <Card>
+                <CardHeader>
+                  <div className='flex flex-wrap items-center justify-between gap-3'>
                     <div>
-                      <div className='font-medium'>{version.description}</div>
-                      <div className='text-xs text-muted-foreground'>
-                        {new Date(version.createdAt).toLocaleString('zh-CN')} ·{' '}
-                        {version.id.slice(0, 8)}
+                      <CardTitle>三层参数治理</CardTitle>
+                      <p className='mt-1 text-sm text-muted-foreground'>
+                        信源还可叠加平台类型、单个信源两层参数。
+                      </p>
+                    </div>
+                    <Button onClick={() => void showPreview()}>
+                      <Save />
+                      预览并保存
+                    </Button>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <div className='mb-4 grid gap-3 sm:grid-cols-3'>
+                    <label className='text-sm'>
+                      配置层级
+                      <select
+                        aria-label='配置层级'
+                        value={scopeLevel}
+                        onChange={(event) =>
+                          setScopeLevel(event.target.value as typeof scopeLevel)
+                        }
+                        className='mt-1 h-9 w-full rounded-md border px-3'
+                      >
+                        <option value='global'>全局</option>
+                        <option value='sourceType'>平台类型</option>
+                        <option value='source'>单个信源</option>
+                      </select>
+                    </label>
+                    {scopeLevel === 'sourceType' && (
+                      <label className='text-sm'>
+                        平台类型
+                        <select
+                          aria-label='平台类型'
+                          value={sourceType}
+                          onChange={(event) =>
+                            setSourceType(event.target.value)
+                          }
+                          className='mt-1 h-9 w-full rounded-md border px-3'
+                        >
+                          <option value='x'>X</option>
+                          <option value='youtube'>YouTube</option>
+                          <option value='rss'>RSS</option>
+                          <option value='douyin'>抖音</option>
+                          <option value='wechat_channels'>微信视频号</option>
+                          <option value='xiaohongshu'>小红书</option>
+                        </select>
+                      </label>
+                    )}
+                    {scopeLevel === 'source' && (
+                      <label className='text-sm sm:col-span-2'>
+                        具体信源
+                        <select
+                          aria-label='具体信源'
+                          value={sourceId}
+                          onChange={(event) => setSourceId(event.target.value)}
+                          className='mt-1 h-9 w-full rounded-md border px-3'
+                        >
+                          {sources.map((source) => (
+                            <option key={source.id} value={source.id}>
+                              {source.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    )}
+                  </div>
+                  <Textarea
+                    aria-label='全局参数 JSON'
+                    value={draft}
+                    onChange={(event) => setDraft(event.target.value)}
+                    className='min-h-[430px] font-mono text-xs'
+                  />
+                  <details className='mt-4 rounded-sm bg-foreground/[0.025] p-3'>
+                    <summary className='cursor-pointer text-sm font-medium'>
+                      查看三级合并后的当前生效值
+                    </summary>
+                    <pre className='mt-3 max-h-72 overflow-auto rounded-sm bg-code-surface p-4 text-xs text-code-foreground'>
+                      {JSON.stringify(data?.effective.values ?? {}, null, 2)}
+                    </pre>
+                  </details>
+                </CardContent>
+              </Card>
+            </TabsContent>
+            <TabsContent value='versions' className='mt-4'>
+              <div className='overflow-hidden rounded-sm border bg-card'>
+                {data?.versions.map((version, index) => (
+                  <div
+                    key={version.id}
+                    className='flex flex-wrap items-center justify-between gap-3 border-b p-4'
+                  >
+                    <div className='flex gap-3'>
+                      <History className='mt-1 size-4 text-muted-foreground' />
+                      <div>
+                        <div className='font-medium'>{version.description}</div>
+                        <div className='text-xs text-muted-foreground'>
+                          {new Date(version.createdAt).toLocaleString('zh-CN')}{' '}
+                          · {version.id.slice(0, 8)}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                  {index === 0 ? (
-                    <Badge>当前版本</Badge>
-                  ) : (
-                    <Button
-                      variant='outline'
-                      size='sm'
-                      onClick={() => void rollback(version.id)}
-                    >
-                      回退到此版本
-                    </Button>
-                  )}
-                </div>
-              ))}
-            </div>
-          </TabsContent>
-          <TabsContent value='rules' className='mt-4'>
-            <Card>
-              <CardHeader>
-                <CardTitle className='flex items-center gap-2'>
-                  <LockKeyhole />
-                  不可修改的固定规则
-                </CardTitle>
-              </CardHeader>
-              <CardContent className='space-y-3'>
-                {data?.fixedRules.map((rule, index) => (
-                  <div
-                    key={rule}
-                    className='flex items-center gap-3 rounded-lg border bg-slate-50 p-3 text-sm'
-                  >
-                    <Badge variant='outline'>{index + 1}</Badge>
-                    {rule}
-                    <LockKeyhole className='ml-auto size-4 text-muted-foreground' />
+                    {index === 0 ? (
+                      <Badge>当前版本</Badge>
+                    ) : (
+                      <Button
+                        variant='outline'
+                        size='sm'
+                        onClick={() => void rollback(version.id)}
+                      >
+                        回退到此版本
+                      </Button>
+                    )}
                   </div>
                 ))}
-              </CardContent>
-            </Card>
-          </TabsContent>
-        </Tabs>
+              </div>
+            </TabsContent>
+            <TabsContent value='rules' className='mt-4'>
+              <Card>
+                <CardHeader>
+                  <CardTitle className='flex items-center gap-2'>
+                    <LockKeyhole />
+                    不可修改的固定规则
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className='space-y-3'>
+                  {data?.fixedRules.map((rule, index) => (
+                    <div
+                      key={rule}
+                      className='flex items-center gap-3 border-l bg-foreground/[0.025] p-3 text-sm'
+                    >
+                      <Badge variant='outline'>{index + 1}</Badge>
+                      {rule}
+                      <LockKeyhole className='ml-auto size-4 text-muted-foreground' />
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            </TabsContent>
+          </Tabs>
+        </div>
       </div>
       <Dialog
         open={Boolean(preview)}
@@ -268,13 +271,13 @@ export function ConfigPage() {
           <div className='grid gap-3 sm:grid-cols-2'>
             <div>
               <div className='mb-1 text-xs text-muted-foreground'>变更前</div>
-              <pre className='max-h-64 overflow-auto rounded-lg bg-slate-100 p-3 text-xs'>
+              <pre className='max-h-64 overflow-auto rounded-sm bg-foreground/[0.04] p-3 text-xs'>
                 {JSON.stringify(preview?.before, null, 2)}
               </pre>
             </div>
             <div>
               <div className='mb-1 text-xs text-muted-foreground'>变更后</div>
-              <pre className='max-h-64 overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-white'>
+              <pre className='max-h-64 overflow-auto rounded-sm bg-code-surface p-3 text-xs text-code-foreground'>
                 {JSON.stringify(preview?.after, null, 2)}
               </pre>
             </div>

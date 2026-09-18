@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import {
   ArrowDownWideNarrow,
   Bookmark,
@@ -6,13 +8,10 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
-  Clapperboard,
   Columns3,
   Eye,
   ExternalLink,
-  FilePenLine,
   FileText,
-  FolderPlus,
   Heart,
   Image as ImageIcon,
   LayoutGrid,
@@ -22,7 +21,6 @@ import {
   Search,
   Share2,
   SlidersHorizontal,
-  SquareStack,
   Star,
   TableProperties,
   Trash2,
@@ -58,6 +56,11 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import {
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger,
+} from '@/components/ui/hover-card'
+import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
@@ -82,14 +85,6 @@ import {
 } from '@/lib/content-filters'
 import type { FeedItem, UtilizationAction } from '@/types'
 
-const actionLabels: Record<UtilizationAction, string> = {
-  favorite: '收藏',
-  card: '做卡片',
-  video: '做视频',
-  article: '写文章',
-  project: '建项目',
-}
-
 function languageLabel(item: FeedItem): string {
   if (item.originalLanguage === 'zh') return '原文中文'
   if (item.originalLanguage === 'en') {
@@ -106,13 +101,6 @@ function listTitle(item: FeedItem): string {
     ? item.chineseTranslation
     : item.title
 }
-const actionIcons: Record<UtilizationAction, typeof Star> = {
-  favorite: Star,
-  card: SquareStack,
-  video: Clapperboard,
-  article: FilePenLine,
-  project: FolderPlus,
-}
 const kindLabels: Record<NonNullable<FeedItem['kind']>, string> = {
   short_post: '短文',
   video: '视频',
@@ -121,6 +109,21 @@ const kindLabels: Record<NonNullable<FeedItem['kind']>, string> = {
 }
 const statusLabels: Record<FeedItem['processStatus'], string> = {
   processing: '处理中',
+  completed: '已完成',
+  failed: '失败',
+  'waiting-manual-transcription': '待人工转写',
+}
+const formatLabels: Record<string, string> = {
+  plain_text: '纯文本',
+  markdown_article: 'Markdown 文章',
+  subtitle: '视频字幕',
+}
+const stageLabels: Record<string, string> = {
+  discovered: '已发现',
+  enriching: '获取正文',
+  classifying: '总结与判定',
+  scoring: '分析与评分',
+  translating: '中文意译',
   completed: '已完成',
   failed: '失败',
   'waiting-manual-transcription': '待人工转写',
@@ -154,6 +157,23 @@ function formatDuration(seconds: number | undefined): string | undefined {
 
 function contentCover(item: FeedItem): string | undefined {
   return item.images?.[0]?.url ?? item.video?.thumbnailUrl
+}
+
+function cardContent(item: FeedItem): string {
+  if (item.kind === 'short_post' || item.kind === 'image_post')
+    return item.chineseTranslation || item.body || item.summary || '暂无正文'
+  return item.summary || '暂无 AI 总结'
+}
+
+function CardBody({ item }: { item: FeedItem }) {
+  const content = cardContent(item)
+  if (item.kind === 'short_post' || item.kind === 'image_post' || !item.summary)
+    return <p className='whitespace-pre-wrap'>{content}</p>
+  return (
+    <div className='space-y-1 break-words [&_a]:underline [&_h1]:font-semibold [&_h2]:font-semibold [&_h3]:font-semibold [&_li]:ml-4 [&_ol]:list-decimal [&_ul]:list-disc'>
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+    </div>
+  )
 }
 
 function KindIcon({ kind }: { kind: FeedItem['kind'] }) {
@@ -208,6 +228,97 @@ const scoreLabels: Record<string, string> = {
 
 function scoreLabel(value: number | null): string {
   return value === null ? '未评分' : `${value} 分`
+}
+
+interface ContentLogEntry {
+  index: number
+  timestamp: string
+  action: string
+  status: string
+  stage?: string
+  trigger?: string
+  duration?: string
+  retryCount?: string
+  processor?: string
+  prompt?: string
+  error?: string
+  request?: string
+  response?: string
+}
+
+function LogEntry({ contentId, entry }: { contentId: string; entry: ContentLogEntry }) {
+  const [detail, setDetail] = useState<ContentLogEntry>()
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+  async function loadDetail() {
+    if (detail || loading) return
+    setLoading(true)
+    try {
+      const result = await api<{ item: ContentLogEntry }>(
+        `/api/contents/${encodeURIComponent(contentId)}/logs?entry=${entry.index}`
+      )
+      setDetail(result.item)
+    } catch (reason) {
+      setError(String(reason))
+    } finally {
+      setLoading(false)
+    }
+  }
+  return (
+    <details className='border-t py-3' onToggle={(event) => {
+      if (event.currentTarget.open) void loadDetail()
+    }}>
+      <summary className='cursor-pointer text-sm'>
+        <span className='font-medium'>{entry.action}</span>
+        <span className='ml-2 text-muted-foreground'>
+          {entry.status === 'succeeded' ? '成功' : '失败'} · {new Date(entry.timestamp).toLocaleString('zh-CN')}
+        </span>
+        {entry.error && <span className='mt-1 block text-destructive'>{entry.error}</span>}
+      </summary>
+      <dl className='mt-3 grid gap-2 text-xs sm:grid-cols-2'>
+        <div>阶段：{entry.stage ?? '—'}</div>
+        <div>触发：{entry.trigger ?? '—'}</div>
+        <div>耗时：{entry.duration ?? '—'}</div>
+        <div>重试：{entry.retryCount ?? '—'}</div>
+        {entry.processor && <div>处理器：{entry.processor}</div>}
+        {entry.prompt && <div>提示词：{entry.prompt}</div>}
+      </dl>
+      {loading && <p className='mt-3 text-xs text-muted-foreground'>正在读取请求与响应…</p>}
+      {error && <p className='mt-3 text-xs text-destructive'>读取失败：{error}</p>}
+      {detail && (
+        <div className='mt-3 space-y-2'>
+          <details>
+            <summary className='cursor-pointer text-xs'>request</summary>
+            <pre className='mt-2 max-h-80 overflow-auto rounded-sm bg-foreground/[0.025] p-3 text-xs whitespace-pre-wrap break-all'>{detail.request ?? '无'}</pre>
+          </details>
+          <details>
+            <summary className='cursor-pointer text-xs'>response</summary>
+            <pre className='mt-2 max-h-80 overflow-auto rounded-sm bg-foreground/[0.025] p-3 text-xs whitespace-pre-wrap break-all'>{detail.response ?? '无'}</pre>
+          </details>
+        </div>
+      )}
+    </details>
+  )
+}
+
+function LogPanel({ contentId }: { contentId: string }) {
+  const [entries, setEntries] = useState<ContentLogEntry[]>()
+  const [error, setError] = useState('')
+  useEffect(() => {
+    let active = true
+    void api<{ items: ContentLogEntry[] }>(
+      `/api/contents/${encodeURIComponent(contentId)}/logs`
+    ).then((result) => {
+      if (active) setEntries(result.items)
+    }).catch((reason) => {
+      if (active) setError(String(reason))
+    })
+    return () => { active = false }
+  }, [contentId])
+  if (error) return <p className='text-sm text-destructive'>日志读取失败：{error}</p>
+  if (!entries) return <p className='text-sm text-muted-foreground'>正在读取日志…</p>
+  if (!entries.length) return <p className='text-sm text-muted-foreground'>暂无执行日志</p>
+  return <div>{entries.map((entry) => <LogEntry key={entry.index} contentId={contentId} entry={entry} />)}</div>
 }
 
 function useMobile() {
@@ -299,236 +410,196 @@ export function ContentCard({
   const duration = formatDuration(item.video?.durationSeconds)
   const metrics = item.interaction
   return (
-    <article
-      tabIndex={0}
-      className={`group flex min-w-0 cursor-pointer overflow-hidden rounded-sm border bg-card outline-none transition-colors hover:bg-foreground/[0.025] focus-visible:ring-2 focus-visible:ring-ring ${compact ? 'h-full min-h-28 flex-row' : 'flex-col'} ${selected ? 'bg-foreground/[0.045]' : ''}`}
-      onClick={onOpen}
-      onKeyDown={(event) => {
-        if ((event.key === 'Enter' || event.key === ' ') && onOpen) {
-          event.preventDefault()
-          onOpen()
-        }
-      }}
-    >
-      {cover ? (
-        <div
-          className={`relative shrink-0 overflow-hidden bg-muted ${compact ? 'm-3 mr-0 w-24 rounded-sm' : 'aspect-[3/4] w-full'}`}
+    <HoverCard openDelay={350} closeDelay={150}>
+      <HoverCardTrigger asChild>
+        <article
+          tabIndex={0}
+          className={`group flex max-h-[360px] min-w-0 cursor-pointer flex-col overflow-hidden rounded-sm border bg-card p-3 outline-none transition-colors hover:bg-foreground/[0.025] focus-visible:ring-2 focus-visible:ring-ring ${compact ? 'min-h-28' : ''} ${selected ? 'bg-foreground/[0.045]' : ''}`}
+          onClick={onOpen}
+          onKeyDown={(event) => {
+            if (
+              event.target === event.currentTarget &&
+              (event.key === 'Enter' || event.key === ' ') &&
+              onOpen
+            ) {
+              event.preventDefault()
+              onOpen()
+            }
+          }}
         >
-          <img
-            src={cover}
-            alt=''
-            className='size-full object-cover transition duration-300 group-hover:scale-[1.02]'
-          />
-          <div className='absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-code-surface/80 to-transparent' />
-          <div className='absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-code-surface/80 to-transparent' />
-          <Badge className='absolute left-2 top-2 bg-background/90 text-foreground hover:bg-background/90'>
-            {item.recommendation === 'core'
-              ? '核心'
-              : item.recommendation === 'explore'
-                ? '探索'
-                : '普通'}
-          </Badge>
-          <span className='absolute right-2 top-2 rounded bg-code-surface/70 px-1.5 py-0.5 text-[11px] font-medium text-code-foreground backdrop-blur'>
-            {scoreLabel(item.totalScore)}
+          <div className='mb-2 flex min-w-0 shrink-0 items-start gap-2'>
+            {onCheck && !compact && (
+              <Checkbox
+                aria-label={`选择 ${item.title}`}
+                checked={checked}
+                onCheckedChange={(value) => onCheck(value === true)}
+                onClick={(event) => event.stopPropagation()}
+              />
+            )}
+            <div className='min-w-0 flex-1'>
+              <div className='flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground'>
+                {cover ? (
+                  <img
+                    src={cover}
+                    alt=''
+                    className='size-6 shrink-0 rounded-sm object-cover'
+                  />
+                ) : (
+                  <span className='flex size-6 shrink-0 items-center justify-center rounded-sm bg-muted [&>svg]:size-3.5'>
+                    <KindIcon kind={item.kind} />
+                  </span>
+                )}
+                <span className='truncate'>
+                  {item.source?.name ?? '未知信源'}
+                </span>
+                <span aria-hidden='true'>·</span>
+                <span className='shrink-0 font-semibold text-foreground'>
+                  {scoreLabel(item.totalScore)}
+                </span>
+                {!item.read && (
+                  <span
+                    className='size-2 shrink-0 rounded-full bg-live'
+                    title='未读'
+                  />
+                )}
+              </div>
+            </div>
+          </div>
+          {item.kind !== 'short_post' && item.title && (
+            <h2 className='mb-1 line-clamp-2 shrink-0 text-sm font-semibold leading-5 text-foreground'>
+              {listTitle(item)}
+            </h2>
+          )}
+          <span className='mb-1 shrink-0 text-[11px] text-muted-foreground'>
+            {languageLabel(item)}
+            {duration ? ` · ${duration}` : ''}
           </span>
-          {!compact && (item.chineseTranslation || item.summary) && (
-            <p className='absolute inset-x-2 top-10 line-clamp-4 text-[11px] font-medium leading-4 text-code-foreground/95'>
-              {item.chineseTranslation || item.summary}
-            </p>
-          )}
-          <div className='absolute inset-x-2 bottom-2 min-w-0 text-code-foreground'>
-            <div className='truncate text-xs font-medium'>
-              {item.source?.name ?? '未知信源'}
-            </div>
-            <div className='mt-0.5 text-[10px] text-code-foreground/75'>
-              {item.publishedAt
-                ? new Date(item.publishedAt).toLocaleDateString('zh-CN', {
-                    month: '2-digit',
-                    day: '2-digit',
-                  })
-                : '时间未知'}
-            </div>
+          <div className='min-h-0 flex-1 overflow-auto overscroll-contain text-xs leading-5 text-foreground/85'>
+            <CardBody item={item} />
           </div>
-          {duration && (
-            <span className='absolute bottom-2 right-2 rounded bg-code-surface/80 px-1.5 py-0.5 text-[11px] font-medium text-code-foreground'>
-              {duration}
-            </span>
-          )}
-        </div>
-      ) : null}
-      <div
-        className={`flex min-w-0 flex-1 flex-col ${compact ? 'p-3' : 'p-3'}`}
-      >
-        <div className='mb-2 flex min-w-0 items-start gap-2'>
-          {onCheck && !compact && (
-            <Checkbox
-              aria-label={`选择 ${item.title}`}
-              checked={checked}
-              onCheckedChange={(value) => onCheck(value === true)}
-              onClick={(event) => event.stopPropagation()}
-            />
-          )}
-          <div className='min-w-0 flex-1'>
-            <div className='flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground'>
-              {!cover && (
-                <span className='flex size-6 shrink-0 items-center justify-center rounded-sm bg-muted [&>svg]:size-3.5'>
-                  <KindIcon kind={item.kind} />
-                </span>
-              )}
-              <span className='truncate'>
-                {cover ? item.kind : (item.source?.name ?? '未知信源')}
-              </span>
-              <span aria-hidden='true'>·</span>
-              <span
-                className={`shrink-0 font-semibold text-foreground ${cover ? 'sr-only' : ''}`}
-              >
-                {scoreLabel(item.totalScore)}
-              </span>
-              {!item.read && (
-                <span
-                  className='size-2 shrink-0 rounded-full bg-live'
-                  title='未读'
-                />
-              )}
-            </div>
-          </div>
-          {!cover && (
-            <Badge
-              variant={item.recommendation === 'core' ? 'default' : 'secondary'}
-              className='shrink-0'
-            >
-              {item.recommendation === 'core'
-                ? '核心'
-                : item.recommendation === 'explore'
-                  ? '探索'
-                  : '普通'}
-            </Badge>
-          )}
-        </div>
-        <h2
-          className={`font-semibold text-foreground ${compact ? 'line-clamp-2 text-sm leading-5' : 'line-clamp-2 text-sm leading-5'}`}
-        >
-          {listTitle(item)}
-        </h2>
-        <span className='mt-1 text-[11px] text-muted-foreground'>
-          {languageLabel(item)}
-        </span>
-        {!compact && !cover && (item.chineseTranslation || item.summary) && (
-          <p className='mt-1.5 line-clamp-2 text-xs leading-5 text-muted-foreground'>
-            {item.chineseTranslation || item.summary}
-          </p>
-        )}
-        <div className='mt-auto pt-3'>
-          {!compact && item.topics.length > 0 && (
-            <div className='mb-2 flex min-w-0 flex-nowrap gap-1 overflow-hidden'>
-              {item.topics.slice(0, 2).map((topic) => (
-                <Badge key={topic} variant='outline' className='font-normal'>
-                  {topic}
-                </Badge>
-              ))}
-              {item.topics.length > 2 && (
-                <Badge variant='outline' className='font-normal'>
-                  +{item.topics.length - 2}
-                </Badge>
-              )}
-            </div>
-          )}
-          <div className='flex items-center justify-between gap-2 pt-2 text-[11px] text-muted-foreground'>
-            <div className='flex min-w-0 items-center gap-2.5'>
-              {item.publishedAt && (
-                <span className='shrink-0'>
-                  {new Date(item.publishedAt).toLocaleDateString('zh-CN', {
-                    month: '2-digit',
-                    day: '2-digit',
-                  })}
-                </span>
-              )}
-              {!compact && (
-                <>
-                  <Metric label='浏览' value={metrics?.views} icon={Eye} />
-                  <Metric label='点赞' value={metrics?.likes} icon={Heart} />
-                  <Metric
-                    label='评论'
-                    value={metrics?.comments}
-                    icon={MessageCircle}
-                  />
-                </>
-              )}
-            </div>
-            <div className='flex shrink-0 items-center gap-1'>
-              {onFavorite && (
-                <Button
-                  variant='ghost'
-                  size='icon'
-                  className='size-8'
-                  aria-label={
-                    item.utilizationActions.includes('favorite')
-                      ? '取消收藏'
-                      : '收藏'
-                  }
-                  title={
-                    item.utilizationActions.includes('favorite')
-                      ? '取消收藏'
-                      : '收藏'
-                  }
-                  disabled={item.junk.isJunk}
-                  onClick={(event) => {
-                    event.stopPropagation()
-                    onFavorite()
-                  }}
-                >
-                  <Bookmark
-                    className={
+          <div className='mt-auto shrink-0 pt-2'>
+            <div className='flex items-center justify-between gap-2 pt-2 text-[11px] text-muted-foreground'>
+              <div className='flex min-w-0 items-center gap-2.5'>
+                {item.publishedAt && (
+                  <span className='shrink-0'>
+                    {new Date(item.publishedAt).toLocaleDateString('zh-CN', {
+                      month: '2-digit',
+                      day: '2-digit',
+                    })}
+                  </span>
+                )}
+                {!compact && (
+                  <>
+                    <Metric label='浏览' value={metrics?.views} icon={Eye} />
+                    <Metric label='点赞' value={metrics?.likes} icon={Heart} />
+                    <Metric
+                      label='评论'
+                      value={metrics?.comments}
+                      icon={MessageCircle}
+                    />
+                  </>
+                )}
+              </div>
+              <div className='flex shrink-0 items-center gap-1'>
+                {onFavorite && (
+                  <Button
+                    variant='ghost'
+                    size='icon'
+                    className='size-8'
+                    aria-label={
                       item.utilizationActions.includes('favorite')
-                        ? 'fill-current'
-                        : ''
+                        ? '取消收藏'
+                        : '收藏'
                     }
-                  />
-                </Button>
-              )}
-              {item.url && (
-                <Button
-                  asChild
-                  variant='ghost'
-                  size='icon'
-                  className='size-8'
-                  onClick={(event) => event.stopPropagation()}
-                >
-                  <a
-                    href={item.url}
-                    target='_blank'
-                    rel='noreferrer'
-                    aria-label='打开原文'
-                    title='打开原文'
+                    title={
+                      item.utilizationActions.includes('favorite')
+                        ? '取消收藏'
+                        : '收藏'
+                    }
+                    disabled={item.junk.isJunk}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      onFavorite()
+                    }}
                   >
-                    <ExternalLink />
-                  </a>
-                </Button>
-              )}
+                    <Bookmark
+                      className={
+                        item.utilizationActions.includes('favorite')
+                          ? 'fill-current'
+                          : ''
+                      }
+                    />
+                  </Button>
+                )}
+                {item.url && (
+                  <Button
+                    asChild
+                    variant='ghost'
+                    size='icon'
+                    className='size-8'
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    <a
+                      href={item.url}
+                      target='_blank'
+                      rel='noreferrer'
+                      aria-label='打开原文'
+                      title='打开原文'
+                    >
+                      <ExternalLink />
+                    </a>
+                  </Button>
+                )}
+              </div>
             </div>
+            {item.junk.isJunk && (
+              <Badge
+                variant='destructive'
+                className='mt-2 max-w-full whitespace-normal text-left'
+              >
+                垃圾内容 ·{' '}
+                {item.junk.note ??
+                  (item.junk.source === 'manual' ? '人工标记' : 'AI 判定')}
+              </Badge>
+            )}
+            {item.processStatus !== 'completed' && (
+              <Badge variant='outline' className='mt-2'>
+                {statusLabels[item.processStatus]}
+              </Badge>
+            )}
           </div>
-          {item.junk.isJunk && (
-            <Badge
-              variant='destructive'
-              className='mt-2 max-w-full whitespace-normal text-left'
-            >
-              垃圾内容 ·{' '}
-              {item.junk.note ??
-                (item.junk.source === 'manual' ? '人工标记' : 'AI 判定')}
-            </Badge>
-          )}
-          {item.processStatus !== 'completed' && (
-            <Badge variant='outline' className='mt-2'>
-              {statusLabels[item.processStatus]}
-            </Badge>
+        </article>
+      </HoverCardTrigger>
+      <HoverCardContent
+        side='right'
+        align='start'
+        className='max-h-[min(70vh,32rem)] overflow-y-auto'
+      >
+        {item.kind !== 'short_post' && item.title && (
+          <h3 className='mb-2 text-sm font-semibold leading-5'>
+            {listTitle(item)}
+          </h3>
+        )}
+        <div className='text-sm leading-6'>
+          <CardBody item={item} />
+        </div>
+        <div className='mt-3 flex flex-wrap gap-1.5 border-t pt-3'>
+          {item.topics.length ? (
+            item.topics.map((topic) => (
+              <Badge key={topic} variant='outline' className='font-normal'>
+                {topic}
+              </Badge>
+            ))
+          ) : (
+            <span className='text-xs text-muted-foreground'>暂无标签</span>
           )}
         </div>
-      </div>
-    </article>
+      </HoverCardContent>
+    </HoverCard>
   )
 }
 
-function Detail({
+export function Detail({
   item,
   index,
   count,
@@ -580,6 +651,24 @@ function Detail({
     )
     setOperationMessage(`恢复任务已进入队列：${result.taskId.slice(0, 8)}`)
   }
+  const showHeaderMetadata =
+    item.junk.isJunk ||
+    item.originalStatus === 'deleted' ||
+    item.originalStatus === 'private'
+  const chineseBody = item.originalLanguage === 'zh'
+    ? item.body
+    : item.chineseTranslation
+  const englishBody =
+    item.originalLanguage === 'en' && item.hasEnglishBody !== false
+      ? item.body
+      : undefined
+  const hasInteractionMetrics = [
+    item.interaction?.views,
+    item.interaction?.likes,
+    item.interaction?.comments,
+    item.interaction?.shares,
+    item.interaction?.saves,
+  ].some((value) => typeof value === 'number' && value > 0)
   return (
     <Sidebar
       side='right'
@@ -587,31 +676,41 @@ function Detail({
       aria-label='内容详情侧栏'
       className='h-full min-h-0 bg-background'
     >
-      <Tabs defaultValue='content' className='h-full min-h-0 gap-0'>
+      <Tabs key={item.id} defaultValue='summary' className='h-full min-h-0 gap-0'>
         <SidebarHeader className='gap-0 border-b p-0'>
           <div className='flex h-12 min-w-0 items-center gap-1 px-2'>
-            <div className='no-scrollbar flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto'>
-              {(Object.keys(actionLabels) as UtilizationAction[]).map(
-                (action) => {
-                  const ActionIcon = actionIcons[action]
-                  const active = item.utilizationActions.includes(action)
-                  return (
-                    <Button
-                      key={action}
-                      variant={active ? 'secondary' : 'ghost'}
-                      size='icon'
-                      className='size-8'
-                      aria-label={actionLabels[action]}
-                      aria-pressed={active}
-                      title={actionLabels[action]}
-                      disabled={item.junk.isJunk}
-                      onClick={() => void toggleAction(action)}
-                    >
-                      <ActionIcon className={active ? 'fill-current' : ''} />
-                    </Button>
-                  )
-                }
+            <div className='flex shrink-0 items-center gap-1.5 pl-1'>
+              <Badge>{scoreLabel(item.totalScore)}</Badge>
+              {item.kind && (
+                <Badge variant='secondary'>{kindLabels[item.kind]}</Badge>
               )}
+              <span className='max-w-32 truncate text-xs text-muted-foreground' title={item.source?.name ?? '未知信源'}>
+                {item.source?.name ?? '未知信源'}
+              </span>
+            </div>
+            <div className='no-scrollbar flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto'>
+              <Button
+                variant={
+                  item.utilizationActions.includes('favorite')
+                    ? 'secondary'
+                    : 'ghost'
+                }
+                size='icon'
+                className='size-8'
+                aria-label='收藏'
+                aria-pressed={item.utilizationActions.includes('favorite')}
+                title='收藏'
+                disabled={item.junk.isJunk}
+                onClick={() => void toggleAction('favorite')}
+              >
+                <Star
+                  className={
+                    item.utilizationActions.includes('favorite')
+                      ? 'fill-current'
+                      : ''
+                  }
+                />
+              </Button>
               {item.junk.isJunk ? (
                 <Button
                   variant='ghost'
@@ -713,75 +812,60 @@ function Detail({
             </div>
           </div>
           <div className='px-5 pb-4 pt-4 md:px-6'>
-            <div className='mb-3 flex flex-wrap items-center justify-between gap-2'>
-              <div className='flex flex-wrap items-center gap-2'>
-                <Badge>{scoreLabel(item.totalScore)}</Badge>
-                {item.kind && (
-                  <Badge variant='secondary'>{kindLabels[item.kind]}</Badge>
-                )}
-                <Badge variant='outline'>
-                  {item.source?.name ?? '未知信源'}
-                </Badge>
-                <Badge variant='outline'>{languageLabel(item)}</Badge>
-                {item.junk.isJunk && (
-                  <Badge
-                    variant='destructive'
-                    className='whitespace-normal text-left'
-                  >
-                    垃圾内容{item.junk.note ? ` · ${item.junk.note}` : ''}
-                  </Badge>
-                )}
-                {(item.originalStatus === 'deleted' ||
-                  item.originalStatus === 'private') && (
-                  <Badge variant='outline'>原文不可用</Badge>
-                )}
+            {showHeaderMetadata && (
+              <div className='mb-3 flex flex-wrap items-center justify-between gap-2'>
+                <div className='flex flex-wrap items-center gap-2'>
+                  {item.junk.isJunk && (
+                    <Badge
+                      variant='destructive'
+                      className='whitespace-normal text-left'
+                    >
+                      垃圾内容{item.junk.note ? ` · ${item.junk.note}` : ''}
+                    </Badge>
+                  )}
+                  {(item.originalStatus === 'deleted' ||
+                    item.originalStatus === 'private') && (
+                    <Badge variant='outline'>原文不可用</Badge>
+                  )}
+                </div>
               </div>
-              <div className='flex items-center gap-3 text-xs text-muted-foreground'>
-                <Metric
-                  label='浏览'
-                  value={item.interaction?.views}
-                  icon={Eye}
-                />
-                <Metric
-                  label='点赞'
-                  value={item.interaction?.likes}
-                  icon={Heart}
-                />
-                <Metric
-                  label='评论'
-                  value={item.interaction?.comments}
-                  icon={MessageCircle}
-                />
-                <Metric
-                  label='分享'
-                  value={item.interaction?.shares}
-                  icon={Share2}
-                />
-              </div>
-            </div>
+            )}
             <h2 className='line-clamp-2 text-xl font-semibold leading-tight'>
               {listTitle(item)}
             </h2>
-            <p className='mt-2 text-xs text-muted-foreground'>
-              {item.publishedAt
-                ? new Date(item.publishedAt).toLocaleString('zh-CN')
-                : '发布时间未知'}
-            </p>
+            <div
+              aria-label='互动与发布时间'
+              className='mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground'
+            >
+              {!hasInteractionMetrics && <span>暂无互动数据</span>}
+              <Metric label='浏览' value={item.interaction?.views} icon={Eye} />
+              <Metric label='点赞' value={item.interaction?.likes} icon={Heart} />
+              <Metric label='评论' value={item.interaction?.comments} icon={MessageCircle} />
+              <Metric label='分享' value={item.interaction?.shares} icon={Share2} />
+              <Metric label='收藏' value={item.interaction?.saves} icon={Bookmark} />
+              <span className='whitespace-nowrap'>
+                {item.publishedAt
+                  ? new Date(item.publishedAt).toLocaleString('zh-CN')
+                  : '发布时间未知'}
+              </span>
+            </div>
             {operationMessage && (
               <p className='mt-3 border-l-2 border-foreground/30 bg-foreground/[0.025] p-2 text-xs'>
                 {operationMessage}
               </p>
             )}
           </div>
-          <TabsList className='h-10 w-full justify-start gap-5 px-5 md:px-6'>
-            <TabsTrigger value='content'>内容</TabsTrigger>
-            <TabsTrigger value='ai'>AI 分析</TabsTrigger>
-            <TabsTrigger value='collection'>采集信息</TabsTrigger>
+          <TabsList className='no-scrollbar h-10 w-full justify-start gap-4 overflow-x-auto px-5 md:px-6'>
+            <TabsTrigger value='summary'>AI 总结</TabsTrigger>
+            <TabsTrigger value='chinese'>中文</TabsTrigger>
+            {englishBody && <TabsTrigger value='english'>英文</TabsTrigger>}
+            <TabsTrigger value='properties'>属性</TabsTrigger>
+            <TabsTrigger value='logs'>日志</TabsTrigger>
           </TabsList>
         </SidebarHeader>
         <SidebarContent className='px-5 py-5 md:px-6'>
           <div className='mx-auto max-w-3xl'>
-            <TabsContent value='content' className='m-0 space-y-5'>
+            <TabsContent value='chinese' className='m-0 space-y-5'>
               {item.images && item.images.length > 0 && (
                 <div className='grid gap-2 sm:grid-cols-2'>
                   {item.images.map((image, imageIndex) => (
@@ -812,23 +896,16 @@ function Detail({
                   <PlayCircle className='absolute left-1/2 top-1/2 size-14 -translate-x-1/2 -translate-y-1/2 text-code-foreground' />
                 </div>
               )}
-              {item.chineseTranslation ? (
-                <div className='space-y-4'>
-                  <div className='whitespace-pre-wrap leading-8'>
-                    {item.chineseTranslation}
-                  </div>
-                  <details className='text-sm text-muted-foreground'>
-                    <summary className='cursor-pointer'>查看英文原文</summary>
-                    <div className='mt-3 whitespace-pre-wrap leading-7'>
-                      <p className='mb-3 font-medium'>{item.title}</p>
-                      {item.body}
-                    </div>
-                  </details>
+              {chineseBody ? (
+                <div className='space-y-3 whitespace-pre-wrap break-words leading-8 [&_a]:underline [&_h1]:font-semibold [&_h2]:font-semibold [&_h3]:font-semibold [&_li]:ml-5 [&_ol]:list-decimal [&_ul]:list-disc'>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{chineseBody}</ReactMarkdown>
                 </div>
               ) : (
-                <div className='whitespace-pre-wrap leading-8'>
-                  {item.body || item.summary}
-                </div>
+                <p className='text-sm text-muted-foreground'>
+                  {item.originalLanguage === 'en'
+                    ? '未生成中文意译；中文 AI 总结可在“AI 总结”中查看。'
+                    : '暂无中文正文'}
+                </p>
               )}
               {item.repostedBy && (
                 <p className='text-sm text-muted-foreground'>
@@ -896,16 +973,37 @@ function Detail({
                 </section>
               )}
             </TabsContent>
-            <TabsContent value='ai' className='m-0 space-y-4'>
-              {item.valueSummary && (
-                <p className='leading-7'>{item.valueSummary}</p>
-              )}
-              <p className='whitespace-pre-wrap leading-7'>{item.summary}</p>
-              {item.keywordsText && (
-                <p className='text-sm text-muted-foreground'>
-                  关键词：{item.keywordsText}
-                </p>
-              )}
+            {englishBody && (
+              <TabsContent value='english' className='m-0'>
+                <div className='whitespace-pre-wrap break-words leading-8 [&_a]:underline [&_h1]:font-semibold [&_h2]:font-semibold [&_h3]:font-semibold [&_li]:ml-5 [&_ol]:list-decimal [&_ul]:list-disc'>
+                  {item.originalFormat === 'markdown_article' ? (
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{englishBody}</ReactMarkdown>
+                  ) : englishBody}
+                </div>
+              </TabsContent>
+            )}
+            <TabsContent value='summary' className='m-0 space-y-6'>
+              <section>
+                <h3 className='mb-2 text-sm font-semibold'>看完能获得什么</h3>
+                <p className='leading-7'>{item.valueSummary || '暂无价值分析'}</p>
+              </section>
+              <section>
+                <h3 className='mb-2 text-sm font-semibold'>
+                  {item.kind === 'short_post' ? '帖子内容（未额外总结）' : 'AI 总结'}
+                </h3>
+                {item.summary ? (
+                  <div className='space-y-3 break-words leading-7 [&_a]:underline [&_h1]:font-semibold [&_h2]:font-semibold [&_h3]:font-semibold [&_li]:ml-5 [&_ol]:list-decimal [&_ul]:list-disc'>
+                    {item.kind === 'short_post' ? (
+                      <p className='whitespace-pre-wrap'>{item.summary}</p>
+                    ) : (
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.summary}</ReactMarkdown>
+                    )}
+                  </div>
+                ) : <p className='text-sm text-muted-foreground'>暂无 AI 总结</p>}
+              </section>
+              <section>
+                <h3 className='mb-2 text-sm font-semibold'>评分</h3>
+                <p className='mb-3 text-lg font-semibold'>{scoreLabel(item.totalScore)}</p>
               <div className='grid gap-3 sm:grid-cols-2'>
                 {Object.entries(item.scores).map(([key, value]) => (
                   <div key={key} className='border-l px-3 py-2'>
@@ -923,30 +1021,38 @@ function Detail({
                   </div>
                 ))}
               </div>
-              <details className='rounded-sm bg-foreground/[0.025] p-4'>
-                <summary className='cursor-pointer text-sm font-medium'>
-                  查看分析依据
-                </summary>
-                <pre className='mt-3 max-h-72 overflow-auto whitespace-pre-wrap text-xs text-muted-foreground'>
-                  {JSON.stringify(item.evidence, null, 2)}
-                </pre>
-              </details>
+              </section>
             </TabsContent>
-            <TabsContent value='collection' className='m-0'>
-              <dl className='grid gap-3 text-sm'>
-                <div>
-                  <dt className='text-muted-foreground'>处理状态</dt>
-                  <dd>{statusLabels[item.processStatus]}</dd>
-                </div>
-                <div>
-                  <dt className='text-muted-foreground'>分析模型</dt>
-                  <dd>{item.analysis?.model ?? '尚未分析'}</dd>
-                </div>
-                <div>
-                  <dt className='text-muted-foreground'>内容 ID</dt>
-                  <dd className='break-all font-mono text-xs'>{item.id}</dd>
-                </div>
+            <TabsContent value='properties' className='m-0'>
+              <dl className='grid gap-x-6 gap-y-4 text-sm sm:grid-cols-2 [&_dt]:text-muted-foreground [&_dd]:mt-1 [&_dd]:break-words'>
+                <div><dt>来源平台与账号</dt><dd>{sourceTypeLabels[item.source?.type ?? ''] ?? item.source?.type ?? '未知'} · {item.source?.name ?? '未知信源'}</dd></div>
+                <div><dt>来源账号 ID</dt><dd className='font-mono text-xs'>{item.source?.id ?? '—'}</dd></div>
+                <div><dt>内容 ID</dt><dd className='font-mono text-xs'>{item.id}</dd></div>
+                {item.externalContentId && <div><dt>平台内容 ID</dt><dd className='font-mono text-xs'>{item.externalContentId}</dd></div>}
+                <div><dt>原文链接</dt><dd>{item.url ? <a href={item.url} target='_blank' rel='noreferrer' className='underline underline-offset-2'>打开原文</a> : '无'}</dd></div>
+                <div><dt>内容类型与格式</dt><dd>{item.kind ? kindLabels[item.kind] : '未知'} · {formatLabels[item.originalFormat ?? ''] ?? '未知'}</dd></div>
+                <div><dt>原文语言</dt><dd>{item.originalLanguage === 'zh' ? '中文' : item.originalLanguage === 'en' ? '英文' : '待识别'}</dd></div>
+                {(item.originalStatus === 'deleted' || item.originalStatus === 'private' || item.originalStatus === 'unavailable') && <div><dt>原文状态</dt><dd>{item.originalStatus === 'deleted' ? '已删除' : item.originalStatus === 'private' ? '不公开' : '无法访问'}</dd></div>}
+                <div><dt>中文意译</dt><dd>{item.originalLanguage === 'en' ? (item.translatedToChinese ? '已生成' : '未生成') : '不适用'}</dd></div>
+                <div><dt>关键词</dt><dd>{item.keywordsText || '无'}</dd></div>
+                <div><dt>推荐状态</dt><dd>{item.recommendation === 'core' ? '核心' : item.recommendation === 'explore' ? '探索' : '不推荐'}</dd></div>
+                <div><dt>垃圾判断</dt><dd>{item.junk.isJunk ? `是${item.junk.note ? ` · ${item.junk.note}` : item.junk.reason ? ` · ${item.junk.reason}` : ''}` : '否'}</dd></div>
+                <div><dt>处理状态</dt><dd>{statusLabels[item.processStatus]} · {stageLabels[item.processStage ?? ''] ?? '未知阶段'}</dd></div>
+                <div><dt>重试次数</dt><dd>{item.retryCount ?? 0}</dd></div>
+                <div><dt>发布时间</dt><dd>{item.publishedAt ? new Date(item.publishedAt).toLocaleString('zh-CN') : '未知'}</dd></div>
+                <div><dt>发现时间</dt><dd>{item.discoveredAt ? new Date(item.discoveredAt).toLocaleString('zh-CN') : '未知'}</dd></div>
+                <div><dt>首次入库</dt><dd>{item.firstInflowAt ? new Date(item.firstInflowAt).toLocaleString('zh-CN') : '未知'}</dd></div>
+                <div><dt>最近处理</dt><dd>{item.lastProcessedAt ? new Date(item.lastProcessedAt).toLocaleString('zh-CN') : '未知'}</dd></div>
+                <div><dt>阅读状态</dt><dd>{item.read ? '已读' : '未读'}</dd></div>
+                <div><dt>分析模型</dt><dd>{item.analysis ? `${item.analysis.provider} / ${item.analysis.model}` : '尚未分析'}</dd></div>
+                {item.analysis && <div><dt>评分规则</dt><dd>{item.analysis.ruleVersion}</dd></div>}
+                {item.video?.durationSeconds && <div><dt>视频时长</dt><dd>{formatDuration(item.video.durationSeconds)}</dd></div>}
+                {item.interaction?.capturedAt && <div><dt>互动数据采集时间</dt><dd>{new Date(item.interaction.capturedAt).toLocaleString('zh-CN')}</dd></div>}
+                {item.lastError && <div className='sm:col-span-2'><dt>最近错误</dt><dd className='text-destructive'>{item.lastError}</dd></div>}
               </dl>
+            </TabsContent>
+            <TabsContent value='logs' className='m-0'>
+              <LogPanel contentId={item.id} />
             </TabsContent>
           </div>
         </SidebarContent>
@@ -1195,14 +1301,19 @@ export function ContentWorkspace({ scope }: { scope: ContentScope }) {
       key={item.id}
       item={item}
       selected={selected === item.id}
-      checked={checked.includes(item.id)}
+      checked={scope === 'junk' && checked.includes(item.id)}
       compact={Boolean(selectedItem)}
       onOpen={() => open(item)}
       onFavorite={() => void toggleFavorite(item)}
-      onCheck={(value) =>
-        setChecked((current) =>
-          value ? [...current, item.id] : current.filter((id) => id !== item.id)
-        )
+      onCheck={
+        scope === 'junk'
+          ? (value) =>
+              setChecked((current) =>
+                value
+                  ? [...current, item.id]
+                  : current.filter((id) => id !== item.id)
+              )
+          : undefined
       }
     />
   )
@@ -1242,7 +1353,7 @@ export function ContentWorkspace({ scope }: { scope: ContentScope }) {
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead className='w-10' />
+            {scope === 'junk' && <TableHead className='w-10' />}
             <TableHead>内容</TableHead>
             <TableHead>平台</TableHead>
             <TableHead>类型</TableHead>
@@ -1267,20 +1378,22 @@ export function ContentWorkspace({ scope }: { scope: ContentScope }) {
                 }
               }}
             >
-              <TableCell>
-                <Checkbox
-                  aria-label={`选择 ${item.title}`}
-                  checked={checked.includes(item.id)}
-                  onCheckedChange={(value) =>
-                    setChecked((current) =>
-                      value === true
-                        ? [...current, item.id]
-                        : current.filter((id) => id !== item.id)
-                    )
-                  }
-                  onClick={(event) => event.stopPropagation()}
-                />
-              </TableCell>
+              {scope === 'junk' && (
+                <TableCell>
+                  <Checkbox
+                    aria-label={`选择 ${item.title}`}
+                    checked={checked.includes(item.id)}
+                    onCheckedChange={(value) =>
+                      setChecked((current) =>
+                        value === true
+                          ? [...current, item.id]
+                          : current.filter((id) => id !== item.id)
+                      )
+                    }
+                    onClick={(event) => event.stopPropagation()}
+                  />
+                </TableCell>
+              )}
               <TableCell className='max-w-80 whitespace-normal'>
                 <div className='line-clamp-1 font-medium'>
                   {listTitle(item)}
@@ -1647,7 +1760,7 @@ export function ContentWorkspace({ scope }: { scope: ContentScope }) {
         </ButtonGroup>
       </PageHeader>
 
-      {checked.length > 0 && (
+      {scope === 'junk' && checked.length > 0 && (
         <div className='flex flex-wrap items-center gap-2 border-t bg-code-surface px-4 py-2 text-code-foreground'>
           <span className='mr-auto text-sm'>已选 {checked.length} 条</span>
           <Button

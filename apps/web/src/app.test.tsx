@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { App, ContentCard, type FeedItem } from './app.js'
+import { Detail } from './features/content-workspace.js'
 import {
   filterContentItems,
   filterContentScope,
@@ -84,9 +85,117 @@ describe('complete web shell', () => {
       />
     )
     expect(html).toContain('我们今天推出了一项新功能。')
-    expect(html).toContain('我们推出了一项新功能')
+    expect(html).not.toContain('<h2')
     expect(html).toContain('原文英文 · 已意译')
     expect(html).not.toContain('We shipped a new feature</h2>')
+  })
+
+  it('shows the full X post without duplicating its generated title or list tags', () => {
+    const body = '第一段完整帖子。\n\n第二段也要在卡片内可读。'
+    const html = renderToStaticMarkup(
+      <ContentCard
+        item={{
+          ...item,
+          kind: 'short_post',
+          source: { id: 'x-test', name: 'X / 测试', type: 'x' },
+          title: body.slice(0, 10),
+          body,
+          summary: '这不是卡片要展示的原帖正文',
+        }}
+      />
+    )
+    expect(html).toContain(body)
+    expect(html).not.toContain('这不是卡片要展示的原帖正文')
+    expect(html).not.toContain('<h2')
+    expect(html).not.toContain('核心</span>')
+    expect(html).not.toContain('>AI</span>')
+    expect(html).toContain('max-h-[360px]')
+  })
+
+  it('shows the AI summary instead of the source transcript for videos', () => {
+    const html = renderToStaticMarkup(
+      <ContentCard
+        item={{
+          ...item,
+          kind: 'video',
+          title: '视频标题',
+          body: '很长的原始英文字幕',
+          summary: '给非技术读者看的中文总结',
+          video: { thumbnailUrl: 'https://example.com/thumbnail.jpg' },
+        }}
+      />
+    )
+    expect(html).toContain('视频标题')
+    expect(html).toContain('给非技术读者看的中文总结')
+    expect(html).not.toContain('很长的原始英文字幕')
+  })
+
+  it('puts source in the first row and interaction counts before the date', () => {
+    const html = renderToStaticMarkup(
+      <Detail
+        item={{
+          ...item,
+          kind: 'video',
+          source: { id: 'youtube-ibm', name: 'IBM', type: 'youtube' },
+          originalLanguage: 'en',
+          publishedAt: '2026-09-18T08:00:00.000Z',
+          interaction: {
+            capturedAt: '2026-09-18T09:00:00.000Z',
+            views: 120,
+            likes: 8,
+            comments: 0,
+            shares: 0,
+            saves: 0,
+          },
+        }}
+        index={0}
+        count={1}
+        onClose={() => {}}
+        onMove={() => {}}
+        onChanged={() => {}}
+      />
+    )
+    expect(html).toContain('80 分')
+    expect(html).toContain('视频')
+    expect(html).toContain('IBM')
+    expect(html).not.toContain('原文英文 · 未意译')
+    expect(html.indexOf('80 分')).toBeLessThan(html.indexOf('aria-label="收藏"'))
+    expect(html.indexOf('IBM')).toBeLessThan(html.indexOf('真实图文</h2>'))
+    const metadata = html.match(/<div aria-label="互动与发布时间"[^>]*>(.*?)<\/div>/u)?.[1]
+    expect(metadata).toBeDefined()
+    expect(metadata).toContain('120')
+    expect(metadata).toContain('2026/9/18')
+    expect(metadata!.indexOf('120')).toBeLessThan(metadata!.indexOf('2026/9/18'))
+    expect(html.indexOf('120')).toBeGreaterThan(html.indexOf('真实图文</h2>'))
+    for (const tab of ['AI 总结', '中文', '英文', '属性', '日志']) {
+      expect(html).toContain(tab)
+    }
+    for (const action of ['做卡片', '做视频', '写文章', '建项目']) {
+      expect(html).not.toContain(action)
+    }
+  })
+
+  it('omits the English tab when no English document exists', () => {
+    const html = renderToStaticMarkup(
+      <Detail
+        item={{
+          ...item,
+          originalLanguage: 'en',
+          body: '',
+          hasEnglishBody: false,
+          processStatus: 'failed',
+        }}
+        index={0}
+        count={1}
+        onClose={() => {}}
+        onMove={() => {}}
+        onChanged={() => {}}
+      />
+    )
+    expect(html).toContain('AI 总结')
+    expect(html).toContain('中文')
+    expect(html).not.toContain('>英文</button>')
+    expect(html).toContain('暂无互动数据</span><span class="whitespace-nowrap">发布时间未知')
   })
 
   it('supports combined process, read and junk filters', () => {

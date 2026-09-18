@@ -34,6 +34,50 @@ function arrayValue(value: unknown): unknown[] {
   }
 }
 
+interface LogEntry {
+  index: number
+  timestamp: string
+  action: string
+  status: string
+  stage?: string
+  trigger?: string
+  duration?: string
+  retryCount?: string
+  processor?: string
+  prompt?: string
+  error?: string
+  request?: string
+  response?: string
+}
+
+function logEntries(markdown: string): LogEntry[] {
+  const sections = markdown.split(/^## /mu).slice(1)
+  return sections.flatMap((section, index) => {
+    const [heading] = section.split('\n', 1)
+    const parts = /^(.*?) \| (.*?) \| (.*?)$/u.exec(heading ?? '')
+    if (!parts) return []
+    const field = (name: string) =>
+      new RegExp(`^- ${name}：\x60([^\x60]*)\x60`, 'mu').exec(section)?.[1]
+    const payload = (name: string) =>
+      new RegExp(`^### ${name}\\n\\n\\x60{3}json\\n([\\s\\S]*?)\\n\\x60{3}`, 'mu').exec(section)?.[1]
+    return [{
+      index,
+      timestamp: parts[1]!,
+      action: parts[2]!,
+      status: parts[3]!,
+      stage: field('阶段'),
+      trigger: field('触发方式'),
+      duration: field('耗时'),
+      retryCount: field('重试次数'),
+      processor: field('处理器'),
+      prompt: field('提示词'),
+      error: field('错误摘要'),
+      request: payload('request'),
+      response: payload('response'),
+    }]
+  })
+}
+
 async function feedItem(
   repository: SingleTableRepository,
   row: ContentRow,
@@ -60,7 +104,15 @@ async function feedItem(
     publishedAt: row.published_at ?? undefined,
     discoveredAt: row.discovered_at,
     firstInflowAt: row.first_inflow_at,
+    originalFormat: row.original_format,
+    externalContentId: row.external_content_id,
+    processStage: row.processing_stage,
+    retryCount: row.retry_count,
+    lastError: row.last_error,
+    lastProcessedAt: row.last_processed_at,
+    analyzedAt: row.analyzed_at,
     body: english ?? chinese ?? '',
+    hasEnglishBody: Boolean(english),
     summary: row.summary ?? '',
     keywordsText: row.keywords_text,
     valueSummary: row.value_summary ?? undefined,
@@ -185,6 +237,24 @@ export function createSingleTableServiceApp(options: {
               service: 'airadar-single-table',
               status: 'ready',
             })
+          const logMatch = /^\/api\/contents\/([^/]+)\/logs$/u.exec(url.pathname)
+          if (method === 'GET' && logMatch) {
+            const id = decodeURIComponent(logMatch[1]!)
+            const markdown = await activeRepository.readLog(id)
+            if (markdown === undefined)
+              return send(response, 404, { error: 'not_found' })
+            const entries = logEntries(markdown)
+            const entryIndex = url.searchParams.get('entry')
+            if (entryIndex !== null) {
+              const index = Number(entryIndex)
+              if (!Number.isInteger(index) || index < 0 || index >= entries.length)
+                return send(response, 404, { error: 'not_found' })
+              return send(response, 200, { item: entries[index] })
+            }
+            return send(response, 200, {
+              items: entries.map(({ request, response, ...entry }) => entry).reverse(),
+            })
+          }
           if (
             method === 'GET' &&
             (url.pathname === '/api/contents' || url.pathname === '/api/daily')
@@ -493,7 +563,8 @@ export function createSingleTableServiceApp(options: {
                 } else {
                   const page = await provider.discover(
                     source,
-                    config.runtime.collection.per_source_limit
+                    source.per_source_limit ??
+                      config.runtime.collection.per_source_limit
                   )
                   const item = page.items.find(
                     (candidate) =>

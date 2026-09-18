@@ -11,7 +11,15 @@ export interface FeedItem {
   publishedAt?: string
   discoveredAt?: string
   firstInflowAt?: string
+  originalFormat?: 'plain_text' | 'markdown_article' | 'subtitle'
+  externalContentId?: string
+  processStage?: string
+  retryCount?: number
+  lastError?: string
+  lastProcessedAt?: string
+  analyzedAt?: string
   body: string
+  hasEnglishBody?: boolean
   summary: string
   keywordsText?: string
   valueSummary?: string

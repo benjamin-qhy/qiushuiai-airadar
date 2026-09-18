@@ -34,6 +34,14 @@ it('serves and updates content from the single table, with field-only keyword se
       keywords: ['智能体'],
       isJunk: false,
     })
+    await repository.appendLog(row.id, {
+      action: 'classify',
+      stage: 'classifying',
+      status: 'succeeded',
+      durationMs: 12,
+      request: { prompt: '测试', apiKey: 'private-secret' },
+      response: { result: '智能体' },
+    })
     repository.close()
     service = createSingleTableServiceApp({ dataRoot: root, configRoot })
     const address = await service.start({ host: '127.0.0.1', port: 0 })
@@ -48,7 +56,25 @@ it('serves and updates content from the single table, with field-only keyword se
       id: row.id,
       keywordsText: '智能体',
       totalScore: null,
+      externalContentId: 'api-test',
+      originalFormat: 'plain_text',
+      processStage: 'scoring',
     })
+    const logs = (await fetch(`${base}/api/contents/${row.id}/logs`).then(
+      (response) => response.json()
+    )) as { items: Array<{ index: number; action: string; request?: string }> }
+    expect(logs.items[0]).toMatchObject({ action: 'classify' })
+    expect(logs.items[0]).not.toHaveProperty('request')
+    const logDetail = (await fetch(
+      `${base}/api/contents/${row.id}/logs?entry=${logs.items[0]!.index}`
+    ).then((response) => response.json())) as {
+      item: { request: string; response: string }
+    }
+    expect(logDetail.item.request).toContain('[REDACTED]')
+    expect(logDetail.item.request).not.toContain('private-secret')
+    expect(logDetail.item.response).toContain('智能体')
+    expect((await fetch(`${base}/api/contents/${row.id}/logs?entry=-1`)).status).toBe(404)
+    expect((await fetch(`${base}/api/contents/not-found/logs`)).status).toBe(404)
     const absent = (await fetch(`${base}/api/contents?keyword=不存在`).then(
       (response) => response.json()
     )) as { items: unknown[] }

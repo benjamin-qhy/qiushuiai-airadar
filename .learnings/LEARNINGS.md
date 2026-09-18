@@ -1,5 +1,36 @@
 # Learnings
 
+## [LRN-20260918-001] correction
+
+**Logged**: 2026-09-18T14:27:00+08:00
+**Priority**: medium
+**Status**: resolved
+**Area**: backend
+
+### Summary
+
+单条 YouTube 视频取不到字幕，不等于此前实现的字幕获取能力整体失效。
+
+### Details
+
+用户指出 YouTube 字幕此前已成功获取。排查时应使用同一代码、同一凭据对照已知有字幕的视频，并检查供应商原始响应。本次旧视频可取得字幕，新视频的 TikHub 响应为无可用字幕；YouTube Data API 的 `contentDetails.caption=false` 对两条视频都成立，不能凭这个标记判断自动字幕是否存在。
+
+### Suggested Action
+
+遇到单条视频缺字幕时，先做同源对照并区分供应商返回空、解析失败与独立转写缺失；不要把视频简介当作字幕。
+
+### Metadata
+
+- Source: user_feedback
+- Related Files: packages/source-adapters/src/index.ts, apps/service/src/single-table-provider.ts
+- Tags: youtube, captions, diagnosis
+- Pattern-Key: backend.youtube_caption_missing_is_not_global_failure
+- Recurrence-Count: 1
+- First-Seen: 2026-09-18
+- Last-Seen: 2026-09-18
+
+---
+
 ## [LRN-20260915-001] correction
 
 **Logged**: 2026-09-15T14:42:00+08:00

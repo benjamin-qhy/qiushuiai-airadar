@@ -99,7 +99,10 @@ function languageLabel(item: FeedItem): string {
 }
 
 function listTitle(item: FeedItem): string {
-  return item.kind === 'short_post' && item.source?.type === 'x' && item.chineseTranslation
+  if (item.chineseTitle) return item.chineseTitle
+  return item.kind === 'short_post' &&
+    item.source?.type === 'x' &&
+    item.chineseTranslation
     ? item.chineseTranslation
     : item.title
 }
@@ -399,9 +402,9 @@ export function ContentCard({
         <span className='mt-1 text-[11px] text-muted-foreground'>
           {languageLabel(item)}
         </span>
-        {!compact && !cover && !item.chineseTranslation && (
+        {!compact && !cover && (item.chineseTranslation || item.summary) && (
           <p className='mt-1.5 line-clamp-2 text-xs leading-5 text-muted-foreground'>
-            {item.summary || '暂无摘要'}
+            {item.chineseTranslation || item.summary}
           </p>
         )}
         <div className='mt-auto pt-3'>
@@ -494,8 +497,13 @@ export function ContentCard({
             </div>
           </div>
           {item.junk.isJunk && (
-            <Badge variant='destructive' className='mt-2'>
-              垃圾内容 · {item.junk.source === 'manual' ? '人工' : 'AI'}
+            <Badge
+              variant='destructive'
+              className='mt-2 max-w-full whitespace-normal text-left'
+            >
+              垃圾内容 ·{' '}
+              {item.junk.note ??
+                (item.junk.source === 'manual' ? '人工标记' : 'AI 判定')}
             </Badge>
           )}
           {item.processStatus !== 'completed' && (
@@ -617,18 +625,25 @@ function Detail({
                 </Button>
               )}
               {(item.processStatus !== 'completed' ||
-                (item.kind === 'short_post' &&
-                  item.source?.type === 'x' &&
-                  item.originalLanguage === 'en' &&
-                  !item.translatedToChinese) ||
+                (item.originalLanguage === 'en' &&
+                  !item.translatedToChinese &&
+                  !item.junk.isJunk) ||
                 item.originalStatus === 'deleted' ||
                 item.originalStatus === 'private') && (
                 <Button
                   variant='ghost'
                   size='icon'
                   className='size-8'
-                  aria-label={item.originalLanguage === 'en' && !item.translatedToChinese ? '生成中文意译' : '单条恢复'}
-                  title={item.originalLanguage === 'en' && !item.translatedToChinese ? '生成中文意译' : '单条恢复'}
+                  aria-label={
+                    item.originalLanguage === 'en' && !item.translatedToChinese
+                      ? '生成中文意译'
+                      : '单条恢复'
+                  }
+                  title={
+                    item.originalLanguage === 'en' && !item.translatedToChinese
+                      ? '生成中文意译'
+                      : '单条恢复'
+                  }
                   onClick={() => void retry()}
                 >
                   <RotateCcw />
@@ -698,7 +713,12 @@ function Detail({
                 </Badge>
                 <Badge variant='outline'>{languageLabel(item)}</Badge>
                 {item.junk.isJunk && (
-                  <Badge variant='destructive'>垃圾内容</Badge>
+                  <Badge
+                    variant='destructive'
+                    className='whitespace-normal text-left'
+                  >
+                    垃圾内容{item.junk.note ? ` · ${item.junk.note}` : ''}
+                  </Badge>
                 )}
                 {(item.originalStatus === 'deleted' ||
                   item.originalStatus === 'private') && (
@@ -729,7 +749,7 @@ function Detail({
               </div>
             </div>
             <h2 className='line-clamp-2 text-xl font-semibold leading-tight'>
-              {item.title}
+              {listTitle(item)}
             </h2>
             <p className='mt-2 text-xs text-muted-foreground'>
               {item.publishedAt
@@ -753,7 +773,7 @@ function Detail({
             <TabsContent value='content' className='m-0 space-y-5'>
               {item.images && item.images.length > 0 && (
                 <div className='grid gap-2 sm:grid-cols-2'>
-                  {item.images.slice(0, 4).map((image, imageIndex) => (
+                  {item.images.map((image, imageIndex) => (
                     <a
                       key={`${image.url}-${imageIndex}`}
                       href={image.url}
@@ -783,16 +803,42 @@ function Detail({
               )}
               {item.chineseTranslation ? (
                 <div className='space-y-4'>
-                  <div className='whitespace-pre-wrap leading-8'>{item.chineseTranslation}</div>
+                  <div className='whitespace-pre-wrap leading-8'>
+                    {item.chineseTranslation}
+                  </div>
                   <details className='text-sm text-muted-foreground'>
                     <summary className='cursor-pointer'>查看英文原文</summary>
-                    <div className='mt-3 whitespace-pre-wrap leading-7'>{item.body}</div>
+                    <div className='mt-3 whitespace-pre-wrap leading-7'>
+                      <p className='mb-3 font-medium'>{item.title}</p>
+                      {item.body}
+                    </div>
                   </details>
                 </div>
               ) : (
                 <div className='whitespace-pre-wrap leading-8'>
                   {item.body || item.summary}
                 </div>
+              )}
+              {item.repostedBy && (
+                <p className='text-sm text-muted-foreground'>
+                  由 <a className='underline underline-offset-2' href={item.repostedBy.url} target='_blank' rel='noreferrer'>{item.repostedBy.name}</a> 转发
+                </p>
+              )}
+              {item.quotedPost && (
+                <section className='space-y-3 border-l-2 border-foreground/20 bg-foreground/[0.025] p-4' aria-label='引用的帖子'>
+                  <div className='text-sm'>
+                    <span className='font-semibold'>{item.quotedPost.authorName ?? item.quotedPost.authorHandle ?? 'X 用户'}</span>
+                    {item.quotedPost.authorHandle && <span className='ml-2 text-muted-foreground'>@{item.quotedPost.authorHandle}</span>}
+                    <span className='ml-2 text-muted-foreground'>引用的帖子</span>
+                  </div>
+                  {item.quotedPost.text && <p className='whitespace-pre-wrap leading-7'>{item.quotedPost.text}</p>}
+                  {item.quotedPost.images.map((image, index) => (
+                    <a key={`${image.url}-${index}`} href={image.url} target='_blank' rel='noreferrer' className='block' title='查看引用帖原图'>
+                      <img src={image.url} alt={`引用帖配图 ${index + 1}`} className='max-h-[520px] w-full object-contain' />
+                    </a>
+                  ))}
+                  <a href={item.quotedPost.url} target='_blank' rel='noreferrer' className='inline-block text-sm underline underline-offset-2'>查看引用帖原文</a>
+                </section>
               )}
             </TabsContent>
             <TabsContent value='ai' className='m-0 space-y-4'>
@@ -1167,9 +1213,13 @@ export function ContentWorkspace({ scope }: { scope: ContentScope }) {
                 />
               </TableCell>
               <TableCell className='max-w-80 whitespace-normal'>
-                <div className='line-clamp-1 font-medium'>{listTitle(item)}</div>
+                <div className='line-clamp-1 font-medium'>
+                  {listTitle(item)}
+                </div>
                 <div className='line-clamp-1 text-xs text-muted-foreground'>
-                  {languageLabel(item)}{!item.chineseTranslation && ` · ${item.summary || '暂无摘要'}`}
+                  {item.junk.isJunk && item.junk.note
+                    ? `垃圾原因：${item.junk.note}`
+                    : `${languageLabel(item)} · ${item.chineseTranslation || item.summary || '暂无摘要'}`}
                 </div>
               </TableCell>
               <TableCell>

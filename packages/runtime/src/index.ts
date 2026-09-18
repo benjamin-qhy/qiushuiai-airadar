@@ -421,6 +421,39 @@ export type UtilizationAction = z.infer<typeof utilizationActionSchema>
 export type JunkReason = z.infer<typeof junkReasonSchema>
 export type ContentUserState = z.infer<typeof contentUserStateSchema>
 
+/** Rebuildable, detail-free row used by the content list. Markdown remains authoritative. */
+export interface ContentListRecord {
+  id: string
+  title: string
+  bodyPreview: string
+  chinesePreview?: string
+  canonicalUrl?: string
+  sourceId?: string
+  publishedAt?: string
+  discoveredAt?: string
+  kind?: unknown
+  enrichmentStatus?: ContentRecord['enrichmentStatus']
+  enrichmentError?: string
+  originalStatus?: unknown
+  images?: unknown
+  video?: unknown
+  quotedPost?: unknown
+  repostedBy?: unknown
+  source?: Pick<ManagedSource, 'id' | 'name' | 'type' | 'language'>
+  analysis?: {
+    result: Record<string, unknown>
+    createdAt: string
+    provider: string
+    model: string
+    profileVersionId: string
+    ruleVersion: string
+  }
+  firstInflowAt?: string
+  state?: Pick<ContentUserState, 'read' | 'utilizationActions' | 'manualJunk'>
+  interaction?: InteractionSnapshot
+  processStatus: 'processing' | 'completed' | 'failed' | 'waiting-manual-transcription'
+}
+
 export interface EnqueueTaskInput {
   id: string
   type: RuntimeTask['type']
@@ -665,6 +698,7 @@ export class RuntimeRepository {
   private readonly rootLock: RootLock
   private mutationTail: Promise<void> = Promise.resolve()
   private closed = false
+  private rebuildingIndex = false
 
   private constructor(
     root: string,
@@ -758,6 +792,10 @@ export class RuntimeRepository {
         id TEXT PRIMARY KEY,
         record_json TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS content_list (
+        id TEXT PRIMARY KEY,
+        record_json TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS sources (
         id TEXT PRIMARY KEY,
         sort_order INTEGER NOT NULL,
@@ -831,6 +869,11 @@ export class RuntimeRepository {
         record_json TEXT NOT NULL
       );
     `)
+    const taskColumns = this.database.prepare('PRAGMA table_info(tasks)').all() as Array<{ name: string }>
+    if (!taskColumns.some((column) => column.name === 'content_id')) {
+      this.database.exec('ALTER TABLE tasks ADD COLUMN content_id TEXT')
+    }
+    this.database.exec('CREATE INDEX IF NOT EXISTS tasks_content_type ON tasks (content_id, type, created_at DESC)')
     await this.rebuildIndex()
   }
 
@@ -913,11 +956,14 @@ export class RuntimeRepository {
   }
 
   async rebuildIndex(): Promise<void> {
+    this.rebuildingIndex = true
+    try {
     this.database.exec(`
       DELETE FROM source_locks;
       DELETE FROM tasks;
       DELETE FROM parameters;
       DELETE FROM contents;
+      DELETE FROM content_list;
       DELETE FROM sources;
       DELETE FROM content_user_states;
       DELETE FROM junk_samples;
@@ -998,6 +1044,11 @@ export class RuntimeRepository {
     await this.rebuildFolder('analysis-calls', analysisCallSchema, (record) => {
       this.upsertAnalysisCall(record)
     })
+    this.rebuildingIndex = false
+    for (const content of this.listContents()) this.refreshContentList(content.id)
+    } finally {
+      this.rebuildingIndex = false
+    }
   }
 
   private async rebuildTasks(): Promise<void> {
@@ -1478,6 +1529,8 @@ export class RuntimeRepository {
               Array.isArray(content.images) && content.images.length
                 ? content.images
                 : existing.images,
+            quotedPost: content.quotedPost ?? existing.quotedPost,
+            repostedBy: content.repostedBy ?? existing.repostedBy,
             sourceText: content.sourceText ?? existing.sourceText,
           })
         : content
@@ -1556,15 +1609,119 @@ export class RuntimeRepository {
       .filter((record): record is ContentRecord => Boolean(record))
   }
 
+  listContentList(): ContentListRecord[] {
+    return this.database.prepare('SELECT record_json FROM content_list ORDER BY id').all()
+      .map((row) => JSON.parse((row as { record_json: string }).record_json) as ContentListRecord)
+  }
+
+  getContentList(id: string): ContentListRecord | undefined {
+    const row = this.database.prepare('SELECT record_json FROM content_list WHERE id = ?').get(id) as { record_json: string } | undefined
+    return row ? JSON.parse(row.record_json) as ContentListRecord : undefined
+  }
+
+  async readContentMarkdown(id: string): Promise<ContentRecord | undefined> {
+    if (!this.getContentList(id)) return undefined
+    return parseRecord(await readFile(this.contentMarkdownPath(id), 'utf8'), contentRecordSchema)
+  }
+
+  private refreshContentList(id: string): void {
+    if (this.rebuildingIndex) return
+    const content = this.getContent(id)
+    if (!content) {
+      this.database.prepare('DELETE FROM content_list WHERE id = ?').run(id)
+      return
+    }
+    const analyses = this.listAnalyses(id)
+    const latest = analyses[0]
+    const result = (latest?.result ?? {}) as Record<string, unknown>
+    const state = this.getContentUserState(id)
+    const sourceAlias: Record<string, string> = {
+      'accept-x-openai': 'x_openai',
+      'accept-x-ycombinator': 'x_ycombinator',
+      'accept-youtube-openai': 'yt_openai',
+      'accept-youtube-ycombinator': 'yt_ycombinator',
+    }
+    const source = content.sourceId ? this.getSource(sourceAlias[content.sourceId] ?? content.sourceId) : undefined
+    const latestInteraction = this.listInteractionSnapshots(id).at(-1)
+    const taskStatus = (type: string) => (this.database.prepare(
+      'SELECT status FROM tasks WHERE content_id = ? AND type = ? ORDER BY created_at DESC LIMIT 1'
+    ).get(id, type) as { status?: string } | undefined)?.status
+    const processStatus: ContentListRecord['processStatus'] =
+      content.enrichmentStatus === 'failed' ? 'failed' :
+      content.enrichmentStatus === 'waiting-manual-transcription' ? 'waiting-manual-transcription' :
+      content.enrichmentStatus !== 'succeeded' ? (taskStatus('enrich') === 'failed' ? 'failed' : 'processing') :
+      analyses.length > 0 ? 'completed' : (taskStatus('analyze') === 'failed' ? 'failed' : 'processing')
+    const firstInflowAt = analyses
+      .filter((analysis) => ['core', 'explore'].includes(String((analysis.result as Record<string, unknown>).recommendation)))
+      .map((analysis) => analysis.createdAt).sort()[0]
+    const row: ContentListRecord = {
+      id, title: content.title, bodyPreview: content.body.trim().slice(0, 240),
+      chinesePreview: typeof result.chineseTranslation === 'string' ? result.chineseTranslation.trim().slice(0, 240) : undefined,
+      canonicalUrl: content.canonicalUrl, sourceId: content.sourceId,
+      publishedAt: content.publishedAt, discoveredAt: content.discoveredAt,
+      kind: content.kind, enrichmentStatus: content.enrichmentStatus,
+      enrichmentError: content.enrichmentError, originalStatus: content.originalStatus,
+      images: Array.isArray(content.images) ? content.images.slice(0, 1) : undefined,
+      video: content.video, quotedPost: content.quotedPost, repostedBy: content.repostedBy,
+      source: source ? { id: source.id, name: source.name, type: source.type, language: source.language } : undefined,
+      analysis: latest ? {
+        result: {
+          summary: typeof result.summary === 'string' ? result.summary.slice(0, 500) : undefined,
+          topics: result.topics, scores: result.scores, totalScore: result.totalScore,
+          recommendation: result.recommendation, spam: result.spam,
+          chineseTitle: result.chineseTitle,
+        },
+        createdAt: latest.createdAt, provider: latest.provider, model: latest.model,
+        profileVersionId: latest.profileVersionId, ruleVersion: latest.ruleVersion,
+      } : undefined,
+      firstInflowAt, state: state ? { read: state.read, utilizationActions: state.utilizationActions, manualJunk: state.manualJunk } : undefined,
+      interaction: latestInteraction, processStatus,
+    }
+    this.database.prepare('INSERT INTO content_list (id, record_json) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET record_json = excluded.record_json')
+      .run(id, JSON.stringify(row))
+  }
+
   async importSources(
     sources: Array<Source & { sortOrder?: number }>
   ): Promise<void> {
     await this.serializeMutation(async () => {
       for (const source of sources) {
         const parsed = managedSourceSchema.parse(source)
-        if (this.getSource(parsed.id)) continue
+        const existing = this.getSource(parsed.id)
+        if (existing) {
+          const row = this.database
+            .prepare('SELECT record_json FROM sources WHERE id = ?')
+            .get(parsed.id) as { record_json?: string } | undefined
+          const stored = row?.record_json
+            ? (JSON.parse(row.record_json) as Record<string, unknown>)
+            : {}
+          if (stored.language === undefined) {
+            const upgraded = managedSourceSchema.parse({
+              ...existing,
+              language: parsed.language,
+            })
+            await this.writeRecord('sources', upgraded.id, 'source', upgraded)
+            this.upsertSource(upgraded)
+          }
+          continue
+        }
         await this.writeRecord('sources', parsed.id, 'source', parsed)
         this.upsertSource(parsed)
+      }
+    })
+  }
+
+  async retireSourceConfigs(ids: readonly string[]): Promise<void> {
+    await this.serializeMutation(async () => {
+      const retiredDirectory = this.folder('retired-sources')
+      for (const id of ids) {
+        if (!this.getSource(id)) continue
+        await mkdir(retiredDirectory, { recursive: true })
+        await rename(
+          path.join(this.folder('sources'), `${storageKey(id)}.md`),
+          path.join(retiredDirectory, `${storageKey(id)}-${randomUUID()}.md`)
+        )
+        this.database.prepare('DELETE FROM sources WHERE id = ?').run(id)
       }
     })
   }
@@ -1885,7 +2042,7 @@ export class RuntimeRepository {
   async mergeContentIdentity(
     fromId: string,
     canonicalId: string,
-    input: { body: string; canonicalUrl: string }
+    input: { body: string; canonicalUrl: string; images?: Array<{ order: number; url: string }> }
   ): Promise<ContentRecord> {
     return this.serializeMutation(async () => {
       if (fromId === canonicalId) {
@@ -2380,11 +2537,11 @@ export class RuntimeRepository {
   }
 
   private upsertTask(task: RuntimeTask): StatementResultingChanges {
-    return this.database
+    const change = this.database
       .prepare(
         `INSERT INTO tasks
-          (id, idempotency_key, source_id, type, status, available_at, created_at, payload_json, record_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          (id, idempotency_key, source_id, type, status, available_at, created_at, payload_json, record_json, content_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
           idempotency_key = excluded.idempotency_key,
           source_id = excluded.source_id,
@@ -2393,7 +2550,8 @@ export class RuntimeRepository {
           available_at = excluded.available_at,
           created_at = excluded.created_at,
           payload_json = excluded.payload_json,
-          record_json = excluded.record_json`
+          record_json = excluded.record_json,
+          content_id = excluded.content_id`
       )
       .run(
         task.id,
@@ -2404,8 +2562,11 @@ export class RuntimeRepository {
         task.availableAt,
         task.createdAt,
         JSON.stringify(task.payload),
-        JSON.stringify(task)
+        JSON.stringify(task),
+        typeof task.payload.contentId === 'string' ? task.payload.contentId : null
       )
+    if (typeof task.payload.contentId === 'string') this.refreshContentList(task.payload.contentId)
+    return change
   }
 
   private upsertParameter(version: RuntimeParameterVersion): void {
@@ -2429,6 +2590,7 @@ export class RuntimeRepository {
          ON CONFLICT(id) DO UPDATE SET record_json = excluded.record_json`
       )
       .run(content.id, JSON.stringify(content))
+    this.refreshContentList(content.id)
   }
 
   private upsertSource(source: ManagedSource): void {
@@ -2440,6 +2602,11 @@ export class RuntimeRepository {
           record_json = excluded.record_json`
       )
       .run(source.id, source.sortOrder ?? 999_999, JSON.stringify(source))
+    if (!this.rebuildingIndex) {
+      for (const row of this.database.prepare('SELECT id FROM contents WHERE json_extract(record_json, \'$.sourceId\') = ?').all(source.id)) {
+        this.refreshContentList((row as { id: string }).id)
+      }
+    }
   }
 
   private upsertContentUserState(state: ContentUserState): void {
@@ -2449,6 +2616,7 @@ export class RuntimeRepository {
          ON CONFLICT(content_id) DO UPDATE SET record_json = excluded.record_json`
       )
       .run(state.contentId, JSON.stringify(state))
+    this.refreshContentList(state.contentId)
   }
 
   private upsertJunkSample(sample: z.infer<typeof junkSampleSchema>): void {
@@ -2540,6 +2708,7 @@ export class RuntimeRepository {
         snapshot.capturedAt,
         JSON.stringify(snapshot)
       )
+    this.refreshContentList(snapshot.contentId)
   }
 
   private upsertRelatedContent(relation: RelatedContent): void {
@@ -2572,6 +2741,7 @@ export class RuntimeRepository {
         analysis.createdAt,
         JSON.stringify(analysis)
       )
+    this.refreshContentList(analysis.contentId)
   }
 
   private upsertAnalysisCall(call: AnalysisCall): void {

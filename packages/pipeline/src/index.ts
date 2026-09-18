@@ -24,6 +24,7 @@ import { z } from 'zod'
 import { canonicalizeContentUrl, type Source } from '@airadar/domain'
 import type { AnalysisRecord, RuntimeRepository } from '@airadar/runtime'
 import {
+  classifyNonArticlePage,
   decideVideoEnrichment,
   type ImagePostDetailProvider,
   normalizeYouTubeIdentity,
@@ -77,7 +78,14 @@ export async function runPlatformDiscovery(input: {
     let enrichmentStatus:
       'pending' | 'waiting-manual-transcription' | 'succeeded' | 'failed' =
       'pending'
-    if (item.enrichmentError) {
+    const nonArticleReason =
+      input.source.type === 'x' && item.content.kind === 'article'
+        ? classifyNonArticlePage(item.content.canonicalUrl)
+        : undefined
+    if (nonArticleReason) {
+      item = { ...item, enrichmentError: nonArticleReason }
+      enrichmentStatus = 'failed'
+    } else if (item.enrichmentError) {
       enrichmentStatus = 'failed'
     } else if (
       item.content.kind === 'short_post' &&
@@ -87,18 +95,27 @@ export async function runPlatformDiscovery(input: {
       body = item.description.trim()
       enrichmentStatus = 'succeeded'
     } else if (item.content.kind === 'video') {
-      const decision = decideVideoEnrichment({
-        hasTranscript: Boolean(
-          item.description && item.evidence?.transcriptStatus === 'available'
-        ),
-        durationSeconds: item.video?.durationSeconds,
-        autoTranscribe: input.autoTranscribe ?? false,
-      })
-      if (decision.status === 'ready') {
-        body = item.description?.trim() ?? ''
-        enrichmentStatus = 'succeeded'
-      } else if (decision.status === 'waiting-manual-transcription') {
-        enrichmentStatus = 'waiting-manual-transcription'
+      // A YouTube description is not a transcript. Always queue caption lookup
+      // before deciding whether speech-to-text or manual transcription is needed.
+      if (
+        item.platformIdentity?.startsWith('youtube:') &&
+        item.evidence?.transcriptStatus !== 'available'
+      ) {
+        enrichmentStatus = 'pending'
+      } else {
+        const decision = decideVideoEnrichment({
+          hasTranscript: Boolean(
+            item.description && item.evidence?.transcriptStatus === 'available'
+          ),
+          durationSeconds: item.video?.durationSeconds,
+          autoTranscribe: input.autoTranscribe ?? false,
+        })
+        if (decision.status === 'ready') {
+          body = item.description?.trim() ?? ''
+          enrichmentStatus = 'succeeded'
+        } else if (decision.status === 'waiting-manual-transcription') {
+          enrichmentStatus = 'waiting-manual-transcription'
+        }
       }
     }
     return { item, body, enrichmentStatus }
@@ -121,11 +138,15 @@ export async function runPlatformDiscovery(input: {
       evidence: item.evidence,
       video: item.video,
       images: item.images,
+      quotedPost: item.quotedPost,
+      repostedBy: item.repostedBy,
       sourceText: item.description,
       threadParts: item.thread?.parts,
       threadComplete: item.thread?.complete,
       mergePlatformMetadata:
-        item.content.kind === 'video' || item.content.kind === 'image_post',
+        item.content.kind === 'video' ||
+        item.content.kind === 'image_post' ||
+        (input.source.type === 'x' && item.content.kind === 'short_post'),
       mergeThreadParts:
         input.source.type === 'x' &&
         item.content.kind === 'short_post' &&
@@ -787,6 +808,7 @@ const scoreSchema = z
 export const analysisResultSchema = z
   .object({
     summary: z.string().min(20),
+    chineseTitle: z.string().min(1).optional(),
     chineseTranslation: z.string().min(1).optional(),
     topics: z.array(z.string().min(1)).min(1),
     scores: z
@@ -854,8 +876,20 @@ export interface ModelEvidence {
 export interface ModelGateway {
   readonly provider: string
   readonly model: string
-  auditInput(input: { title: string; body: string; profile: string; translateToChinese?: boolean }): unknown
-  analyze(input: { title: string; body: string; profile: string; translateToChinese?: boolean }): Promise<{
+  auditInput(input: {
+    title: string
+    body: string
+    profile: string
+    translateToChinese?: boolean
+    forceTranslate?: boolean
+  }): unknown
+  analyze(input: {
+    title: string
+    body: string
+    profile: string
+    translateToChinese?: boolean
+    forceTranslate?: boolean
+  }): Promise<{
     result: AnalysisResult
     evidence: ModelEvidence
     rawResponse?: unknown
@@ -876,7 +910,7 @@ export class ModelGatewayError extends Error {
 const codexProviderId = 'openai-codex'
 export const rssAcceptanceModel = 'gpt-5.3-codex-spark'
 const analysisPromptVersion = 'rss-analysis-v1'
-const xTranslationPromptVersion = 'x-short-translation-v1'
+const englishTranslationPromptVersion = 'english-full-translation-v2'
 
 export type OriginalLanguage = 'zh' | 'en' | 'unknown'
 
@@ -1110,7 +1144,7 @@ export class RssAdapter {
 export async function enrichArticle(
   url: string,
   fetcher: Fetcher = globalThis.fetch
-): Promise<{ title: string; body: string; canonicalUrl: string }> {
+): Promise<{ title: string; body: string; canonicalUrl: string; images: Array<{ order: number; url: string }> }> {
   const readResponse = async (response: Response): Promise<string> => {
     if (!response.body) throw new Error('Article response has no body')
     const reader = response.body.getReader()
@@ -1247,11 +1281,25 @@ export async function enrichArticle(
   if (body.length < 200) {
     throw new Error('Could not extract a complete article body')
   }
+  const articleDocument = parseHTML(article?.content ?? '').document
+  const images: Array<{ order: number; url: string }> = []
+  const seenImages = new Set<string>()
+  for (const image of articleDocument.querySelectorAll('img')) {
+    const source = image.getAttribute('src') ?? image.getAttribute('data-src')
+    if (!source) continue
+    try {
+      const resolved = new URL(source, finalUrl)
+      if (!['http:', 'https:'].includes(resolved.protocol) || seenImages.has(resolved.href)) continue
+      seenImages.add(resolved.href)
+      images.push({ order: images.length, url: resolved.href })
+    } catch { /* Ignore malformed image URLs. */ }
+  }
   return {
     title:
       article?.title?.trim() || document.title.trim() || 'Untitled article',
     body,
     canonicalUrl: canonicalizeArticleUrl(finalUrl),
+    images,
   }
 }
 
@@ -1320,6 +1368,7 @@ const analysisTool = {
   parameters: Type.Object(
     {
       summary: Type.String({ minLength: 20 }),
+      chineseTitle: Type.Optional(Type.String({ minLength: 1 })),
       chineseTranslation: Type.Optional(Type.String({ minLength: 1 })),
       topics: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
       scores: Type.Object({
@@ -1371,10 +1420,10 @@ export function createPiModelGateway(
     body: string
     profile: string
     translateToChinese?: boolean
+    forceTranslate?: boolean
   }) => ({
     context: {
-      systemPrompt:
-        `你是个人内容分析器。必须只调用 submit_analysis 一次。根据完整正文和个人画像给出中文摘要、主题、七项1到5档评分与垃圾判断。不要把平台热度作为加分。${input.translateToChinese ? '这是一条英文 X 普通帖子；还必须在 chineseTranslation 字段提供完整、自然的中文意译，保留事实、语气与关键信息，不要只写摘要。' : '无需填写 chineseTranslation 字段。'}`,
+      systemPrompt: `你是个人内容分析器。必须只调用 submit_analysis 一次。根据完整正文和个人画像给出中文摘要、主题、七项1到5档评分与垃圾判断。不要把平台热度作为加分。${input.translateToChinese ? `正文语言为英文。先判断 spam；${input.forceTranslate ? '用户已明确将此内容判为非垃圾，因此无论 spam 判断为何都应' : '只有非垃圾内容才'}填写 chineseTitle 和 chineseTranslation。标题与完整正文都要自然、准确地意译成中文，逐段保留原文的全部事实、数字、专名、链接、顺序和语气；不得增删信息，不得以摘要代替正文。${input.forceTranslate ? '' : '垃圾内容不要翻译。'}` : '无需填写 chineseTitle 和 chineseTranslation 字段。'}`,
       messages: [
         {
           role: 'user' as const,
@@ -1384,7 +1433,16 @@ export function createPiModelGateway(
       ],
       tools: [analysisTool],
     },
-    options: { reasoning: 'low' as const, maxTokens: 2_500, maxRetries: 0 },
+    options: {
+      reasoning: 'low' as const,
+      maxTokens: input.translateToChinese
+        ? Math.min(
+            32_000,
+            Math.max(4_000, Math.ceil(input.body.length / 2) + 2_000)
+          )
+        : 2_500,
+      maxRetries: 0,
+    },
   })
   return {
     provider: model.provider,
@@ -1438,8 +1496,14 @@ export function createPiModelGateway(
       let result: AnalysisResult
       try {
         result = analysisResultSchema.parse(submission.arguments)
-        if (input.translateToChinese && !result.chineseTranslation?.trim()) {
-          throw new Error('English X post is missing Chinese translation')
+        if (
+          input.translateToChinese &&
+          (!result.spam.isSpam || input.forceTranslate) &&
+          (!result.chineseTitle?.trim() || !result.chineseTranslation?.trim())
+        ) {
+          throw new Error(
+            'Non-junk English content is missing Chinese translation'
+          )
         }
       } catch (error) {
         throw new ModelGatewayError(
@@ -1509,6 +1573,7 @@ export async function analyzeStoredContent(
     rawResponseRetentionDays?: number
     modelRouteVersion: string
     manual: boolean
+    sourceLanguage?: 'en' | 'zh'
   }
 ): Promise<AnalysisRecord> {
   return withAnalysisLock(`${repository.root}:${contentId}`, () =>
@@ -1528,6 +1593,7 @@ async function analyzeStoredContentUnlocked(
     rawResponseRetentionDays?: number
     modelRouteVersion: string
     manual: boolean
+    sourceLanguage?: 'en' | 'zh'
   }
 ): Promise<AnalysisRecord> {
   const content = repository.getContent(contentId)
@@ -1535,12 +1601,17 @@ async function analyzeStoredContentUnlocked(
   if (!content.body.trim() || content.enrichmentStatus !== 'succeeded') {
     throw new Error('Content is not completely enriched')
   }
+  const source = content.sourceId
+    ? repository.getSource(content.sourceId)
+    : undefined
   const translateToChinese =
-    content.kind === 'short_post' &&
-    content.id.startsWith('x:') &&
-    detectOriginalLanguage(content.body) === 'en'
+    (options.sourceLanguage ?? source?.language) === 'en' &&
+    detectOriginalLanguage(content.body) !== 'zh' &&
+    repository.getContentUserState(content.id)?.manualJunk?.isJunk !== true
+  const forceTranslate =
+    repository.getContentUserState(content.id)?.manualJunk?.isJunk === false
   const promptVersion = translateToChinese
-    ? xTranslationPromptVersion
+    ? `${englishTranslationPromptVersion}${forceTranslate ? '-manual-not-junk' : ''}`
     : analysisPromptVersion
   const fingerprint = analysisFingerprint({
     body: content.body,
@@ -1560,6 +1631,7 @@ async function analyzeStoredContentUnlocked(
     body: content.body,
     profile: options.profile,
     translateToChinese,
+    forceTranslate,
   }
   const auditedRequest = options.modelGateway.auditInput(request)
   await repository.saveRawResponse({
@@ -1572,9 +1644,13 @@ async function analyzeStoredContentUnlocked(
   try {
     const { result, evidence, rawResponse } =
       await options.modelGateway.analyze(request)
-    if (translateToChinese && !result.chineseTranslation?.trim()) {
+    if (
+      translateToChinese &&
+      (!result.spam.isSpam || forceTranslate) &&
+      (!result.chineseTitle?.trim() || !result.chineseTranslation?.trim())
+    ) {
       throw new ModelGatewayError(
-        'English X post is missing Chinese translation',
+        'Non-junk English content is missing Chinese translation',
         evidence,
         rawResponse
       )

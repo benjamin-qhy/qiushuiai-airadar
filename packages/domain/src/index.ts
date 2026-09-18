@@ -84,6 +84,7 @@ export const sourceSchema = z
     slug: z.string().min(1),
     name: z.string().min(1),
     type: sourceTypeSchema,
+    language: z.enum(['en', 'zh']).default('en'),
     externalIdentity: z.string().min(1),
     status: z.enum(['enabled', 'disabled', 'archived']),
   })
@@ -156,7 +157,7 @@ export const providerSchema = z
   })
   .strict()
 
-export type Source = z.infer<typeof sourceSchema>
+export type Source = z.input<typeof sourceSchema>
 export type Content = z.infer<typeof contentSchema>
 export type Discovery = z.infer<typeof discoverySchema>
 export type Task = z.infer<typeof taskSchema>

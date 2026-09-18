@@ -706,6 +706,25 @@ describe('enriched content and analysis records', () => {
     })
     expect(frozen).toEqual(first)
 
+    await repository.commitDiscoveryBatch({
+      sourceId: 'rss-source',
+      contents: [{
+        id: 'content-1',
+        title: 'Article',
+        body: 'A rediscovered excerpt',
+        enrichmentStatus: 'succeeded',
+        images: [{ order: 0, url: 'https://example.com/photo.jpg' }],
+        quotedPost: { url: 'https://x.com/i/status/2', text: 'A quoted post', images: [] },
+        mergePlatformMetadata: true,
+      }],
+      discoveries: [],
+    })
+    expect(repository.getContent('content-1')).toMatchObject({
+      body: 'First complete body',
+      images: [{ order: 0, url: 'https://example.com/photo.jpg' }],
+      quotedPost: { text: 'A quoted post' },
+    })
+
     const analysis = await repository.saveAnalysis({
       ...invalidAnalysis,
       id: 'analysis-1',
@@ -805,6 +824,51 @@ describe('cross-platform related content', () => {
 })
 
 describe('Web operations persistence', () => {
+  it('removes retired source configurations without deleting historical content', async () => {
+    const root = await temporaryRoot()
+    let repository = await RuntimeRepository.open(root)
+    await repository.importSources([
+      {
+        id: 'douyin_old',
+        slug: 'douyin_old',
+        name: 'Old Douyin source',
+        type: 'douyin',
+        externalIdentity: 'author-id',
+        status: 'enabled',
+      },
+    ])
+    await repository.commitDiscoveryBatch({
+      sourceId: 'douyin_old',
+      contents: [
+        {
+          id: 'douyin:historical',
+          title: 'Historical video',
+          body: '',
+          enrichmentStatus: 'waiting-manual-transcription',
+          sourceId: 'douyin_old',
+        },
+      ],
+      discoveries: [
+        {
+          id: 'douyin_old:historical',
+          sourceId: 'douyin_old',
+          contentId: 'douyin:historical',
+          discoveredAt: '2026-09-14T08:00:00.000Z',
+        },
+      ],
+    })
+    await repository.retireSourceConfigs(['douyin_old'])
+    expect(repository.getSource('douyin_old')).toBeUndefined()
+    expect(repository.getContent('douyin:historical')).toBeDefined()
+    await repository.close()
+
+    repository = await RuntimeRepository.open(root)
+    expect(repository.getSource('douyin_old')).toBeUndefined()
+    expect(repository.getContent('douyin:historical')).toBeDefined()
+    expect(await readdir(path.join(root, 'retired-sources'))).toHaveLength(1)
+    await repository.close()
+  })
+
   it('imports source definitions idempotently and persists status changes', async () => {
     const root = await temporaryRoot()
     let repository = await RuntimeRepository.open(root)
@@ -830,14 +894,16 @@ describe('Web operations persistence', () => {
     ]
     await repository.importSources(sources)
     await repository.importSources(sources)
-    expect(repository.listSources()).toEqual(sources)
+    expect(repository.listSources()).toEqual(
+      sources.map((source) => ({ ...source, language: 'en' }))
+    )
     await repository.updateSourceStatus('x_anthropic', 'enabled')
     await repository.close()
 
     repository = await RuntimeRepository.open(root)
     expect(repository.listSources()).toEqual([
-      sources[0],
-      { ...sources[1], status: 'enabled' },
+      { ...sources[0], language: 'en' },
+      { ...sources[1], language: 'en', status: 'enabled' },
     ])
     await repository.close()
   })

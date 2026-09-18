@@ -19,6 +19,121 @@ describe('background service shell', () => {
     await rm(dataRoot, { recursive: true })
   })
 
+  it('exposes English as the language of the current source definitions', async () => {
+    service = createServiceApp({ dataRoot })
+    const address = await service.start({ host: '127.0.0.1', port: 0 })
+    const response = await fetch(
+      `http://${address.host}:${address.port}/api/sources`
+    )
+    const sources = (
+      (await response.json()) as { items: Array<{ language: string }> }
+    ).items
+    expect(sources.length).toBeGreaterThan(0)
+    expect(sources.every((source) => source.language === 'en')).toBe(true)
+  })
+
+  it('queues old complete non-junk English content for one translation backfill', async () => {
+    const repository = await RuntimeRepository.open(dataRoot)
+    await repository.commitDiscoveryBatch({
+      sourceId: 'x_openai',
+      contents: [
+        {
+          id: 'x:backfill',
+          sourceId: 'x_openai',
+          title: 'Update',
+          body: 'We shipped an important product update today.',
+          canonicalUrl: 'https://x.com/OpenAI/status/backfill',
+          enrichmentStatus: 'succeeded',
+          kind: 'short_post',
+        },
+      ],
+      discoveries: [],
+    })
+    await repository.close()
+    service = createServiceApp({ dataRoot })
+    const address = await service.start({ host: '127.0.0.1', port: 0 })
+    expect(
+      (await fetch(`http://${address.host}:${address.port}/api/sources`)).status
+    ).toBe(200)
+    await service.stop()
+    service = undefined
+    const reopened = await RuntimeRepository.open(dataRoot)
+    expect(
+      reopened
+        .listTasks()
+        .filter(
+          (task) =>
+            task.idempotencyKey ===
+            'translation-backfill:english-full-translation-v2:x:backfill'
+        )
+    ).toHaveLength(1)
+    await reopened.close()
+  })
+
+  it('marks confirmed non-article X destinations as junk with distinct reasons', async () => {
+    const repository = await RuntimeRepository.open(dataRoot)
+    const urls = [
+      'https://events.ycombinator.com/MakeSomethingAgentsWant',
+      'https://chatgpt.com/plugins?category=small-business',
+      'https://openai.com/gpt-tv',
+      'https://openai.com/index/gpt-6-astra',
+    ]
+    await repository.commitDiscoveryBatch({
+      sourceId: 'x_openai',
+      contents: urls.map((url, index) => ({
+        id: `url:${url}`,
+        title: `Content ${index}`,
+        body: index === 3 ? 'Complete article body' : '',
+        canonicalUrl: url,
+        sourceId: 'x_openai',
+        kind: 'article',
+        enrichmentStatus: index === 3 ? 'succeeded' : 'failed',
+      })),
+      discoveries: urls.map((url, index) => ({
+        id: `discovery-${index}`,
+        sourceId: 'x_openai',
+        contentId: `url:${url}`,
+        discoveredAt: '2026-09-14T00:00:00.000Z',
+      })),
+    })
+    await repository.close()
+    service = createServiceApp({ dataRoot })
+    const address = await service.start({ host: '127.0.0.1', port: 0 })
+    const response = await fetch(
+      `http://${address.host}:${address.port}/api/contents`
+    )
+    const items = (
+      (await response.json()) as {
+        items: Array<{
+          url: string
+          junk: { isJunk: boolean; source: string; note?: string }
+        }>
+      }
+    ).items
+    const byUrl = Object.fromEntries(items.map(({ url, junk }) => [url, junk]))
+    expect(byUrl).toEqual({
+      [urls[0]!]: {
+        isJunk: true,
+        source: 'rule',
+        reason: 'other',
+        note: '活动页：活动报名与介绍，不是文章正文',
+      },
+      [urls[1]!]: {
+        isJunk: true,
+        source: 'rule',
+        reason: 'other',
+        note: '目录页：插件列表，不是单篇文章',
+      },
+      [urls[2]!]: {
+        isJunk: true,
+        source: 'rule',
+        reason: 'other',
+        note: '互动页：播放器与操作界面，不是文章正文',
+      },
+      [urls[3]!]: { isJunk: false, source: 'none' },
+    })
+  })
+
   it('starts on loopback and exposes only a minimal health response', async () => {
     service = createServiceApp({ dataRoot })
     const address = await service.start({ host: '127.0.0.1', port: 0 })
@@ -140,6 +255,12 @@ describe('background service shell', () => {
             { order: 0, url: 'https://media.example/core.webp' },
             { order: 1, url: 'file:///tmp/private.png' },
           ],
+          quotedPost: {
+            url: 'https://x.com/i/status/2',
+            authorName: 'Author',
+            text: 'Complete quote',
+            images: [{ order: 0, url: 'https://media.example/quote.jpg' }],
+          },
         },
         {
           id: 'content-none',
@@ -222,6 +343,7 @@ describe('background service shell', () => {
         kind?: string
         firstInflowAt?: string
         images?: Array<{ order?: number; url: string }>
+        quotedPost?: { text: string; images: Array<{ url: string }> }
       }>
     }
     const daily = (await (await fetch(`${base}/api/daily`)).json()) as {
@@ -237,6 +359,10 @@ describe('background service shell', () => {
     expect(
       all.items.find((item) => item.id === 'content-core')?.images
     ).toEqual([{ order: 0, url: 'https://media.example/core.webp' }])
+    expect(all.items.find((item) => item.id === 'content-core')?.quotedPost).toMatchObject({
+      text: 'Complete quote',
+      images: [{ url: 'https://media.example/quote.jpg' }],
+    })
     expect(daily.items.map((item) => item.id).sort()).toEqual([
       'content-core',
       'content-none',
@@ -246,7 +372,7 @@ describe('background service shell', () => {
     ).toBe('2026-09-15T01:00:00.000Z')
   })
 
-  it('imports 33 legacy and 3 Chinese sources with one enabled per type and masks secrets', async () => {
+  it('imports only X, YouTube, and RSS source configurations and masks secrets', async () => {
     process.env.TIKHUB_API_KEY = 'test-secret-value'
     try {
       service = createServiceApp({ dataRoot })
@@ -255,17 +381,10 @@ describe('background service shell', () => {
       const sources = (await (await fetch(`${base}/api/sources`)).json()) as {
         items: Array<{ type: string; status: string }>
       }
-      expect(sources.items).toHaveLength(36)
+      expect(sources.items).toHaveLength(33)
       expect(
         Object.fromEntries(
-          [
-            'x',
-            'youtube',
-            'rss',
-            'douyin',
-            'wechat_channels',
-            'xiaohongshu',
-          ].map((type) => [
+          ['x', 'youtube', 'rss'].map((type) => [
             type,
             sources.items.filter(
               (source) => source.type === type && source.status === 'enabled'
@@ -276,9 +395,6 @@ describe('background service shell', () => {
         x: 1,
         youtube: 1,
         rss: 1,
-        douyin: 1,
-        wechat_channels: 1,
-        xiaohongshu: 1,
       })
       const providers = (await (
         await fetch(`${base}/api/providers`)
@@ -297,6 +413,53 @@ describe('background service shell', () => {
     } finally {
       delete process.env.TIKHUB_API_KEY
     }
+  })
+
+  it('removes former Chinese-platform source configs on startup but keeps their content', async () => {
+    const repository = await RuntimeRepository.open(dataRoot)
+    await repository.importSources([
+      {
+        id: 'douyin_qinghua_jiang',
+        slug: 'douyin_qinghua_jiang',
+        name: '抖音 / 清华姜学长',
+        type: 'douyin',
+        externalIdentity: 'former-author',
+        status: 'enabled',
+      },
+    ])
+    await repository.commitDiscoveryBatch({
+      sourceId: 'douyin_qinghua_jiang',
+      contents: [
+        {
+          id: 'douyin:retained',
+          title: '保留历史内容',
+          body: '',
+          sourceId: 'douyin_qinghua_jiang',
+          enrichmentStatus: 'waiting-manual-transcription',
+        },
+      ],
+      discoveries: [],
+    })
+    await repository.close()
+
+    service = createServiceApp({ dataRoot })
+    const address = await service.start({ host: '127.0.0.1', port: 0 })
+    const base = `http://${address.host}:${address.port}`
+    const sources = (await (await fetch(`${base}/api/sources`)).json()) as {
+      items: Array<{ id: string }>
+    }
+    const contents = (await (await fetch(`${base}/api/contents`)).json()) as {
+      items: Array<{ id: string; source?: { name: string } }>
+    }
+    expect(
+      sources.items.some((source) => source.id === 'douyin_qinghua_jiang')
+    ).toBe(false)
+    expect(contents.items).toContainEqual(
+      expect.objectContaining({
+        id: 'douyin:retained',
+        source: expect.objectContaining({ name: '抖音 / 清华姜学长' }),
+      })
+    )
   })
 
   it('persists read, utilization and junk operations and removes junk from daily immediately', async () => {

@@ -19,7 +19,7 @@
     "web"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && esbuild src/cli.ts --bundle --platform=node --format=esm --target=node24 --outfile=dist/cli.js && node ../../scripts/copy-web-assets.mjs",
+    "build": "tsc -p tsconfig.json && esbuild src/cli.ts --bundle --platform=node --format=esm --target=node24 --external:@earendil-works/pi-ai --external:@earendil-works/pi-ai/* --outfile=dist/cli.js && node ../../scripts/copy-web-assets.mjs",
     "dev": "tsx src/cli.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
@@ -27,5 +27,8 @@
     "@airadar/config": "workspace:*",
     "@airadar/service": "workspace:*",
     "@airadar/web": "workspace:*"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "0.85.1"
   }
 }

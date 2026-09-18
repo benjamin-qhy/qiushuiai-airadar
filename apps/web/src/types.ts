@@ -6,6 +6,7 @@ export type UtilizationAction =
 export interface FeedItem {
   id: string
   title: string
+  chineseTitle?: string
   url?: string
   publishedAt?: string
   discoveredAt?: string
@@ -20,8 +21,16 @@ export interface FeedItem {
   totalScore: number
   recommendation: 'core' | 'explore' | 'none'
   kind?: 'short_post' | 'video' | 'image_post' | 'article'
-  source?: { id: string; name: string; type: string }
+  source?: { id: string; name: string; type: string; language?: 'en' | 'zh' }
   images?: Array<{ order?: number; url: string }>
+  quotedPost?: {
+    url: string
+    authorName?: string
+    authorHandle?: string
+    text: string
+    images: Array<{ order?: number; url: string }>
+  }
+  repostedBy?: { name: string; handle?: string; url: string }
   video?: {
     durationSeconds?: number
     thumbnailUrl?: string
@@ -34,7 +43,7 @@ export interface FeedItem {
   utilizationActions: UtilizationAction[]
   junk: {
     isJunk: boolean
-    source: 'ai' | 'manual' | 'none'
+    source: 'ai' | 'manual' | 'rule' | 'none'
     reason?: string
     note?: string
   }
@@ -59,6 +68,7 @@ export interface SourceItem {
   id: string
   name: string
   type: string
+  language: 'en' | 'zh'
   externalIdentity: string
   status: 'enabled' | 'disabled' | 'archived'
   health: 'healthy' | 'warning' | 'unavailable' | 'disabled'

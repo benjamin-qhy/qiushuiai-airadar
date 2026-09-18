@@ -11,8 +11,8 @@ import path from 'node:path'
 
 import {
   RuntimeRepository,
+  type ContentListRecord,
   runPendingTasks,
-  type ContentRecord,
   type ContentUserState,
   type JunkReason,
   type ManagedSource,
@@ -33,6 +33,7 @@ import {
   runRssDiscovery,
 } from '@airadar/pipeline'
 import {
+  classifyNonArticlePage,
   createGetBijiDouyinProvider,
   createGetBijiDouyinTranscriber,
   createProviderRouter,
@@ -44,13 +45,15 @@ import {
   createTikHubYouTubeProvider,
   createTikHubYouTubeTranscriptProvider,
   createTwitterApiIoProvider,
+  fetchTwitterApiIoArticle,
+  isXArticleUrl,
   createYouTubeDataApiProvider,
   type CaptureProviderResponse,
   type SourceAdapter,
   type VideoTranscriber,
 } from '@airadar/source-adapters'
 
-import { initialSources } from './source-seeds.js'
+import { initialSources, retiredSourceIds } from './source-seeds.js'
 
 type Recommendation = 'core' | 'explore' | 'none'
 type ContentKind = 'short_post' | 'video' | 'image_post' | 'article'
@@ -58,6 +61,7 @@ type ContentKind = 'short_post' | 'video' | 'image_post' | 'article'
 interface FeedItem {
   id: string
   title: string
+  chineseTitle?: string
   url?: string
   publishedAt?: string
   discoveredAt?: string
@@ -73,8 +77,16 @@ interface FeedItem {
   recommendation: Recommendation
   analyzedAt?: string
   kind?: ContentKind
-  source?: { id: string; name: string; type: string }
+  source?: { id: string; name: string; type: string; language: 'en' | 'zh' }
   images?: Array<{ order?: number; url: string }>
+  quotedPost?: {
+    url: string
+    authorName?: string
+    authorHandle?: string
+    text: string
+    images: Array<{ order?: number; url: string }>
+  }
+  repostedBy?: { name: string; handle?: string; url: string }
   video?: {
     durationSeconds?: number
     thumbnailUrl?: string
@@ -87,7 +99,7 @@ interface FeedItem {
   utilizationActions: UtilizationAction[]
   junk: {
     isJunk: boolean
-    source: 'ai' | 'manual' | 'none'
+    source: 'ai' | 'manual' | 'rule' | 'none'
     reason?: string
     note?: string
   }
@@ -294,8 +306,9 @@ function maskSecret(value: string): string {
 }
 
 function effectiveJunk(
-  state: ContentUserState | undefined,
-  analysisResult: Record<string, unknown>
+  state: Pick<ContentUserState, 'manualJunk'> | undefined,
+  analysisResult: Record<string, unknown>,
+  content?: { kind?: unknown; canonicalUrl?: string }
 ): FeedItem['junk'] {
   if (state?.manualJunk) {
     return {
@@ -303,6 +316,18 @@ function effectiveJunk(
       source: 'manual',
       reason: state.manualJunk.reason,
       note: state.manualJunk.note,
+    }
+  }
+  const nonArticleReason =
+    content?.kind === 'article' && content.canonicalUrl
+      ? classifyNonArticlePage(content.canonicalUrl)
+      : undefined
+  if (nonArticleReason) {
+    return {
+      isJunk: true,
+      source: 'rule',
+      reason: 'other',
+      note: nonArticleReason,
     }
   }
   const spam = asRecord(analysisResult.spam)
@@ -315,31 +340,6 @@ function effectiveJunk(
     : { isJunk: false, source: 'none' }
 }
 
-function processStatus(
-  repository: RuntimeRepository,
-  content: ContentRecord
-): FeedItem['processStatus'] {
-  if (content.enrichmentStatus === 'failed') return 'failed'
-  if (content.enrichmentStatus === 'waiting-manual-transcription') {
-    return 'waiting-manual-transcription'
-  }
-  const tasks = repository.listTasks()
-  if (content.enrichmentStatus !== 'succeeded') {
-    const enrichmentTask = tasks.find(
-      (task) => task.type === 'enrich' && task.payload.contentId === content.id
-    )
-    return enrichmentTask?.status === 'failed' ? 'failed' : 'processing'
-  }
-  if (content.enrichmentStatus === 'succeeded') {
-    if (repository.listAnalyses(content.id).length > 0) return 'completed'
-    const analysisTask = tasks.find(
-      (task) => task.type === 'analyze' && task.payload.contentId === content.id
-    )
-    return analysisTask?.status === 'failed' ? 'failed' : 'processing'
-  }
-  return 'processing'
-}
-
 const acceptanceSourceAliases: Record<string, string> = {
   'accept-x-openai': 'x_openai',
   'accept-x-ycombinator': 'x_ycombinator',
@@ -350,67 +350,63 @@ const acceptanceSourceAliases: Record<string, string> = {
   'accept-xiaohongshu-wendy': 'xhs_itechtokai',
 }
 
+const retiredSourceNames: Record<string, string> = {
+  douyin_qinghua_jiang: '抖音 / 清华姜学长',
+  wechat_zhangzhang_ai: '视频号 / 张张AI视界',
+  xhs_itechtokai: '小红书 / iTechTokAI',
+}
+
 function contentItems(repository: RuntimeRepository): FeedItem[] {
-  const latestByContent = new Map<
-    string,
-    ReturnType<RuntimeRepository['listAnalyses']>[number]
-  >()
-  for (const analysis of repository.listAnalyses()) {
-    if (!latestByContent.has(analysis.contentId)) {
-      latestByContent.set(analysis.contentId, analysis)
-    }
-  }
-  const firstInflowByContent = new Map<string, string>()
-  for (const analysis of repository.listAnalyses()) {
-    const recommendation = asRecord(analysis.result).recommendation
-    if (recommendation !== 'core' && recommendation !== 'explore') continue
-    const current = firstInflowByContent.get(analysis.contentId)
-    if (!current || analysis.createdAt < current) {
-      firstInflowByContent.set(analysis.contentId, analysis.createdAt)
-    }
-  }
-  const sources = new Map(
-    repository.listSources().map((source) => [source.id, source])
+  return repository.listContentList().map(contentListItem).sort((left, right) =>
+    (
+      right.analyzedAt ??
+      right.publishedAt ??
+      right.discoveredAt ??
+      ''
+    ).localeCompare(
+      left.analyzedAt ?? left.publishedAt ?? left.discoveredAt ?? ''
+    )
   )
-  return repository
-    .listContents()
-    .map((content): FeedItem => {
-      const analysis = latestByContent.get(content.id)
+}
+
+function contentListItem(content: ContentListRecord): FeedItem {
+      const analysis = content.analysis
       const result = asRecord(analysis?.result)
-      const originalLanguage = detectOriginalLanguage(content.body)
-      const chineseTranslation =
-        content.kind === 'short_post' &&
-        content.id.startsWith('x:') &&
-        originalLanguage === 'en' &&
-        typeof result.chineseTranslation === 'string' &&
-        result.chineseTranslation.trim()
-          ? result.chineseTranslation.trim()
-          : undefined
-      const state = repository.getContentUserState(content.id)
-      const junk = effectiveJunk(state, result)
       const sourceId = content.sourceId
         ? (acceptanceSourceAliases[content.sourceId] ?? content.sourceId)
         : undefined
-      const source = sourceId ? sources.get(sourceId) : undefined
-      const latestInteraction = repository
-        .listInteractionSnapshots(content.id)
-        .at(-1)
+      const source = content.source
+      const detectedLanguage = detectOriginalLanguage(content.bodyPreview)
+      const originalLanguage =
+        detectedLanguage === 'unknown'
+          ? (source?.language ?? 'unknown')
+          : detectedLanguage
+      const chineseTranslation = content.chinesePreview
+      const state = content.state
+      const junk = effectiveJunk(state, result, content)
+      const latestInteraction = content.interaction
       return {
         id: content.id,
         title: content.title,
+        chineseTitle:
+          !junk.isJunk && typeof result.chineseTitle === 'string'
+            ? result.chineseTitle.trim() || undefined
+            : undefined,
         url: content.canonicalUrl,
         publishedAt: content.publishedAt,
         discoveredAt: content.discoveredAt,
-        firstInflowAt: firstInflowByContent.get(content.id),
-        body: content.body,
+        firstInflowAt: content.firstInflowAt,
+        body: content.bodyPreview,
         originalLanguage,
-        chineseTranslation,
+        chineseTranslation: !junk.isJunk ? chineseTranslation : undefined,
         translatedToChinese:
-          originalLanguage === 'en' && Boolean(chineseTranslation),
+          !junk.isJunk &&
+          originalLanguage === 'en' &&
+          Boolean(chineseTranslation),
         summary:
           typeof result.summary === 'string'
             ? result.summary
-            : content.body.trim().slice(0, 240) ||
+            : content.bodyPreview ||
               content.enrichmentError ||
               '等待处理',
         topics: Array.isArray(result.topics)
@@ -425,26 +421,56 @@ function contentItems(repository: RuntimeRepository): FeedItem[] {
         analyzedAt: analysis?.createdAt,
         kind: contentKind(content.kind),
         images: contentImages(content.images),
+        quotedPost: (() => {
+          const quote = asRecord(content.quotedPost)
+          const url = safeMediaUrl(quote.url)
+          if (!url) return undefined
+          return {
+            url,
+            authorName: typeof quote.authorName === 'string' ? quote.authorName : undefined,
+            authorHandle: typeof quote.authorHandle === 'string' ? quote.authorHandle : undefined,
+            text: typeof quote.text === 'string' ? quote.text : '',
+            images: contentImages(quote.images) ?? [],
+          }
+        })(),
+        repostedBy: (() => {
+          const repost = asRecord(content.repostedBy)
+          const url = safeMediaUrl(repost.url)
+          if (!url) return undefined
+          return {
+            url,
+            name: typeof repost.name === 'string' ? repost.name : 'X 用户',
+            handle: typeof repost.handle === 'string' ? repost.handle : undefined,
+          }
+        })(),
         video: contentVideo(content.video),
         source: source
-          ? { id: source.id, name: source.name, type: source.type }
+          ? {
+              id: source.id,
+              name: source.name,
+              type: source.type,
+              language: source.language,
+            }
           : content.sourceId
             ? {
                 id: content.sourceId,
-                name: content.sourceId
-                  .replace(/^accept-/u, '')
-                  .replaceAll('-', ' / '),
+                name:
+                  retiredSourceNames[sourceId ?? ''] ??
+                  content.sourceId
+                    .replace(/^accept-/u, '')
+                    .replaceAll('-', ' / '),
                 type: content.id.split(':')[0] ?? 'unknown',
+                language: 'en',
               }
             : undefined,
-        processStatus: processStatus(repository, content),
+        processStatus: content.processStatus,
         originalStatus: content.originalStatus,
         read: state?.read ?? false,
         utilizationActions: junk.isJunk
           ? []
           : (state?.utilizationActions ?? []),
         junk,
-        evidence: content.evidence,
+        evidence: undefined,
         interaction: latestInteraction
           ? {
               capturedAt: latestInteraction.capturedAt,
@@ -464,17 +490,6 @@ function contentItems(repository: RuntimeRepository): FeedItem[] {
             }
           : undefined,
       }
-    })
-    .sort((left, right) =>
-      (
-        right.analyzedAt ??
-        right.publishedAt ??
-        right.discoveredAt ??
-        ''
-      ).localeCompare(
-        left.analyzedAt ?? left.publishedAt ?? left.discoveredAt ?? ''
-      )
-    )
 }
 
 function allowLocalWebOrigin(origin: string | undefined): string | undefined {
@@ -904,7 +919,7 @@ function analysisOptions(task: RuntimeTask, manual: boolean) {
     modelGateway: createCodexPiGateway(
       process.env.CODEX_AUTH_PATH ??
         path.join(homedir(), '.codex', 'auth.json'),
-      'gpt-5.3-codex-spark'
+      'gpt-5.6-terra'
     ),
     profile: JSON.stringify(profile),
     profileVersionId: valueVersion('profile', profile),
@@ -930,7 +945,7 @@ function analysisOptions(task: RuntimeTask, manual: boolean) {
           ? scoring.exploreThreshold
           : 60,
     },
-    modelRouteVersion: 'gpt-5.3-codex-spark',
+    modelRouteVersion: 'gpt-5.6-terra',
     manual,
   }
 }
@@ -951,11 +966,16 @@ async function analyzeTaskContent(
   contentId: string,
   manual = false
 ): Promise<void> {
-  await analyzeStoredContent(
-    repository,
-    contentId,
-    analysisOptions(task, manual)
-  )
+  const content = repository.getContent(contentId)
+  const sourceId = content?.sourceId
+    ? (acceptanceSourceAliases[content.sourceId] ?? content.sourceId)
+    : undefined
+  await analyzeStoredContent(repository, contentId, {
+    ...analysisOptions(task, manual),
+    sourceLanguage: sourceId
+      ? repository.getSource(sourceId)?.language
+      : undefined,
+  })
 }
 
 async function executeTask(
@@ -999,7 +1019,14 @@ async function executeTask(
             : 'article-enrichment'
     if (mode === 'article-enrichment') {
       if (!content.canonicalUrl) throw new Error('Article URL is missing')
-      const enriched = await enrichArticle(content.canonicalUrl)
+      const enriched =
+        source.type === 'x' && isXArticleUrl(content.canonicalUrl)
+          ? await fetchTwitterApiIoArticle({
+              apiKey: process.env.TWITTERAPI_IO_KEY ?? '',
+              tweetId: content.externalId ?? '',
+              canonicalUrl: content.canonicalUrl,
+            })
+          : await enrichArticle(content.canonicalUrl)
       if (source.type === 'rss') {
         const canonicalId = `rss-${createHash('sha256')
           .update(`article:${enriched.canonicalUrl}`)
@@ -1015,7 +1042,7 @@ async function executeTask(
       } else {
         await repository.completeContentEnrichment(contentId, enriched)
       }
-    } else if (source.type === 'youtube') {
+    } else if (source.type === 'youtube' || contentId.startsWith('youtube:')) {
       const token = process.env.TIKHUB_API_KEY
       if (!token)
         throw new Error('YouTube transcript provider is not configured')
@@ -1149,6 +1176,7 @@ async function executeTask(
 async function ensureInitialState(
   repository: RuntimeRepository
 ): Promise<void> {
+  await repository.retireSourceConfigs(retiredSourceIds)
   await repository.importSources(initialSources)
   if (repository.listParameterVersions({ level: 'global' }).length === 0) {
     await repository.saveParameterVersion({
@@ -1158,6 +1186,58 @@ async function ensureInitialState(
       description: 'AI Radar 初始运行参数',
     })
   }
+}
+
+async function enqueueTranslationBackfill(
+  repository: RuntimeRepository
+): Promise<number> {
+  const sources = new Map(
+    repository.listSources().map((source) => [source.id, source])
+  )
+  const analyses = new Map<string, Record<string, unknown>>()
+  for (const analysis of repository.listAnalyses()) {
+    if (!analyses.has(analysis.contentId)) {
+      analyses.set(analysis.contentId, asRecord(analysis.result))
+    }
+  }
+  let queued = 0
+  for (const content of repository.listContents()) {
+    const sourceId = content.sourceId
+      ? (acceptanceSourceAliases[content.sourceId] ?? content.sourceId)
+      : undefined
+    const source = sourceId ? sources.get(sourceId) : undefined
+    if (
+      !source ||
+      source.language !== 'en' ||
+      content.enrichmentStatus !== 'succeeded' ||
+      !content.body.trim() ||
+      detectOriginalLanguage(content.body) === 'zh'
+    )
+      continue
+    const result = analyses.get(content.id) ?? {}
+    if (
+      effectiveJunk(repository.getContentUserState(content.id), result, content)
+        .isJunk
+    )
+      continue
+    if (
+      typeof result.chineseTitle === 'string' &&
+      result.chineseTitle.trim() &&
+      typeof result.chineseTranslation === 'string' &&
+      result.chineseTranslation.trim()
+    )
+      continue
+    const task = await repository.enqueueTask({
+      id: `translation-backfill-${createHash('sha256').update(content.id).digest('hex').slice(0, 24)}`,
+      type: 'analyze',
+      sourceId: source.id,
+      sourceType: source.type,
+      idempotencyKey: `translation-backfill:english-full-translation-v2:${content.id}`,
+      payload: { contentId: content.id },
+    })
+    if (task.status === 'pending') queued += 1
+  }
+  return queued
 }
 
 async function enqueueRetry(
@@ -1619,6 +1699,7 @@ export function createServiceApp(
       if (server) throw new Error('AI Radar service is already running')
       repository = await RuntimeRepository.open(dataRoot)
       await ensureInitialState(repository)
+      await enqueueTranslationBackfill(repository)
       server = createServer((request, response) => {
         response.setHeader('content-type', 'application/json; charset=utf-8')
         const allowedOrigin = allowLocalWebOrigin(request.headers.origin)

@@ -27,13 +27,7 @@ await mkdir(packRoot, { recursive: true })
 await mkdir(previousSource, { recursive: true })
 
 async function installPackage(tarball: string): Promise<void> {
-  const args = [
-    'install',
-    '--prefix',
-    installRoot,
-    '--ignore-scripts',
-    tarball,
-  ]
+  const args = ['install', '--prefix', installRoot, '--ignore-scripts', tarball]
   if (process.platform === 'win32') {
     const npmCli = join(
       dirname(process.execPath),
@@ -151,6 +145,15 @@ try {
     'dist',
     'cli.js'
   )
+  await execute(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      "import('@earendil-works/pi-ai/providers/openai-codex').then((module) => { if (typeof module.openaiCodexProvider !== 'function') process.exit(1) })",
+    ],
+    { cwd: join(installRoot, 'node_modules', '@airadar', 'cli') }
+  )
   const { stdout } = await execute(process.execPath, [cliPath, 'status'])
   const status = JSON.parse(stdout) as { name?: string; status?: string }
   if (status.name !== 'airadar' || status.status !== 'ready') {
@@ -171,8 +174,18 @@ try {
       throw new Error('Installed service did not serve the bundled Web app')
     }
     const sourcesResponse = await fetch(`${origin}/api/sources`)
-    const sources = (await sourcesResponse.json()) as { items?: unknown[] }
-    if (!sourcesResponse.ok || (sources.items?.length ?? 0) < 36) {
+    const sources = (await sourcesResponse.json()) as {
+      items?: Array<{ id?: string; language?: string }>
+    }
+    const sourceIds = new Set(sources.items?.map((source) => source.id))
+    if (
+      !sourcesResponse.ok ||
+      sourceIds.size < 33 ||
+      sources.items?.some((source) => source.language !== 'en') ||
+      ['douyin_qinghua_jiang', 'wechat_zhangzhang_ai', 'xhs_itechtokai'].some(
+        (id) => sourceIds.has(id)
+      )
+    ) {
       throw new Error('Current release did not recover previous authority data')
     }
   } finally {

@@ -166,6 +166,10 @@ export function SourcesPage() {
                           <p className='mt-1 text-sm text-muted-foreground'>
                             {source.externalIdentity}
                           </p>
+                          <p className='mt-1 text-sm text-muted-foreground'>
+                            内容语言：
+                            {source.language === 'en' ? '英文' : '中文'}
+                          </p>
                         </div>
                         <div className='flex gap-2'>
                           <Button

@@ -46,6 +46,52 @@ afterEach(async () => {
 })
 
 describe('X and YouTube discovery gate', () => {
+  it('does not enqueue article enrichment for a confirmed non-article page', async () => {
+    const runtime = await repository()
+    await runPlatformDiscovery({
+      repository: runtime,
+      source: {
+        id: 'x-non-article',
+        slug: 'x-non-article',
+        name: 'X non-article',
+        type: 'x',
+        externalIdentity: 'example',
+        status: 'enabled',
+      },
+      limit: 1,
+      runner: {
+        async discover() {
+          return {
+            providerId: 'provider-1',
+            items: [
+              {
+                externalId: 'post-1',
+                platformIdentity:
+                  'url:https://events.ycombinator.com/MakeSomethingAgentsWant',
+                content: {
+                  kind: 'article',
+                  canonicalUrl:
+                    'https://events.ycombinator.com/MakeSomethingAgentsWant',
+                  title: 'Event',
+                },
+              },
+            ],
+          }
+        },
+      },
+    })
+    expect(
+      runtime.getContent(
+        'url:https://events.ycombinator.com/MakeSomethingAgentsWant'
+      )
+    ).toMatchObject({
+      enrichmentStatus: 'failed',
+      enrichmentError: '活动页：活动报名与介绍，不是文章正文',
+    })
+    expect(runtime.indexedTaskCount()).toBe(0)
+    await runtime.close()
+  })
+
   it('clears a persisted provider cursor after reaching the last page', async () => {
     const runtime = await repository()
     await runtime.advanceProgress('x-last-page', 'old-page')
@@ -383,9 +429,18 @@ describe('X and YouTube discovery gate', () => {
       { enrichmentStatus: 'pending', body: '' }
     )
     expect(runtime.getContent('youtube:dQw4w9WgXcQ')).toMatchObject({
-      enrichmentStatus: 'waiting-manual-transcription',
+      enrichmentStatus: 'pending',
       body: '',
     })
+    expect(
+      runtime
+        .listTasks()
+        .some(
+          (task) =>
+            task.type === 'enrich' &&
+            task.payload.contentId === 'youtube:dQw4w9WgXcQ'
+        )
+    ).toBe(true)
 
     await runPlatformDiscovery({
       repository: runtime,
@@ -1095,33 +1150,54 @@ const analysisArguments = {
 
 describe('X short-post translation', () => {
   it('recognizes the original language without treating links as English prose', () => {
-    expect(detectOriginalLanguage('今天发布了新功能 https://example.com')).toBe('zh')
-    expect(detectOriginalLanguage('We shipped a useful new feature.')).toBe('en')
+    expect(detectOriginalLanguage('今天发布了新功能 https://example.com')).toBe(
+      'zh'
+    )
+    expect(detectOriginalLanguage('We shipped a useful new feature.')).toBe(
+      'en'
+    )
     expect(detectOriginalLanguage('https://example.com')).toBe('unknown')
   })
 
   it('stores a full Chinese paraphrase in the existing analysis call', async () => {
     const runtime = await repository()
+    await runtime.importSources([
+      {
+        id: 'x-openai',
+        slug: 'x-openai',
+        name: 'X OpenAI',
+        type: 'x',
+        externalIdentity: 'OpenAI',
+        status: 'enabled',
+        language: 'en',
+      },
+    ])
     await runtime.commitDiscoveryBatch({
       sourceId: 'x-openai',
-      contents: [{
-        id: 'x:translation-test',
-        title: 'A product update',
-        body: 'We shipped a useful new feature for everyone today.',
-        canonicalUrl: 'https://x.com/example/status/translation-test',
-        enrichmentStatus: 'succeeded',
-        kind: 'short_post',
-      }],
+      contents: [
+        {
+          id: 'x:translation-test',
+          sourceId: 'x-openai',
+          title: 'A product update',
+          body: 'We shipped a useful new feature for everyone today.',
+          canonicalUrl: 'https://x.com/example/status/translation-test',
+          enrichmentStatus: 'succeeded',
+          kind: 'short_post',
+        },
+      ],
       discoveries: [],
     })
     const models = createModels()
     const faux = fauxProvider()
     models.setProvider(faux.provider)
     faux.setResponses([
-      fauxAssistantMessage(fauxToolCall('submit_analysis', {
-        ...analysisArguments,
-        chineseTranslation: '我们今天向所有用户推出了一项实用的新功能。',
-      })),
+      fauxAssistantMessage(
+        fauxToolCall('submit_analysis', {
+          ...analysisArguments,
+          chineseTitle: '产品更新',
+          chineseTranslation: '我们今天向所有用户推出了一项实用的新功能。',
+        })
+      ),
     ])
     const analysis = await analyzeStoredContent(runtime, 'x:translation-test', {
       modelGateway: createPiModelGateway(models, faux.getModel()),
@@ -1132,10 +1208,192 @@ describe('X short-post translation', () => {
       manual: false,
     })
     expect(analysis.result).toMatchObject({
+      chineseTitle: '产品更新',
       chineseTranslation: '我们今天向所有用户推出了一项实用的新功能。',
     })
-    expect(analysis.promptVersion).toBe('x-short-translation-v1')
+    expect(analysis.promptVersion).toBe('english-full-translation-v2')
     expect(faux.state.callCount).toBe(1)
+    await runtime.close()
+  })
+
+  it.each([
+    ['article', 'rss'],
+    ['video', 'youtube'],
+  ] as const)(
+    'requires a full translation for a non-junk English %s',
+    async (kind, type) => {
+      const runtime = await repository()
+      await runtime.importSources([
+        {
+          id: `${type}-english`,
+          slug: `${type}-english`,
+          name: 'English source',
+          type,
+          externalIdentity: 'example',
+          status: 'enabled',
+          language: 'en',
+        },
+      ])
+      await runtime.commitDiscoveryBatch({
+        sourceId: `${type}-english`,
+        contents: [
+          {
+            id: `${type}:translation-test`,
+            sourceId: `${type}-english`,
+            title: 'Product update',
+            body: 'We shipped a useful feature for everyone today.',
+            canonicalUrl: 'https://example.com/update',
+            enrichmentStatus: 'succeeded',
+            kind,
+          },
+        ],
+        discoveries: [],
+      })
+      const models = createModels()
+      const faux = fauxProvider()
+      models.setProvider(faux.provider)
+      faux.setResponses([
+        fauxAssistantMessage(
+          fauxToolCall('submit_analysis', {
+            ...analysisArguments,
+            chineseTitle: '产品更新',
+            chineseTranslation: '我们今天向所有人推出了一项实用功能。',
+          })
+        ),
+      ])
+      const analysis = await analyzeStoredContent(
+        runtime,
+        `${type}:translation-test`,
+        {
+          modelGateway: createPiModelGateway(models, faux.getModel()),
+          profile: '关注产品更新',
+          profileVersionId: 'profile-1',
+          ruleVersion: 'rules-1',
+          modelRouteVersion: 'route-1',
+          manual: false,
+        }
+      )
+      expect(analysis.result.chineseTitle).toBe('产品更新')
+      expect(analysis.result.chineseTranslation).toBe(
+        '我们今天向所有人推出了一项实用功能。'
+      )
+      expect(faux.state.callCount).toBe(1)
+      await runtime.close()
+    }
+  )
+
+  it('does not require a translation when analysis marks content as junk', async () => {
+    const runtime = await repository()
+    await runtime.importSources([
+      {
+        id: 'rss-english',
+        slug: 'rss-english',
+        name: 'English source',
+        type: 'rss',
+        externalIdentity: 'https://example.com/rss',
+        status: 'enabled',
+        language: 'en',
+      },
+    ])
+    await runtime.commitDiscoveryBatch({
+      sourceId: 'rss-english',
+      contents: [
+        {
+          id: 'rss:junk-test',
+          sourceId: 'rss-english',
+          title: 'Sign up',
+          body: 'Sign up now for this event.',
+          canonicalUrl: 'https://example.com/signup',
+          enrichmentStatus: 'succeeded',
+          kind: 'article',
+        },
+      ],
+      discoveries: [],
+    })
+    const models = createModels()
+    const faux = fauxProvider()
+    models.setProvider(faux.provider)
+    faux.setResponses([
+      fauxAssistantMessage(
+        fauxToolCall('submit_analysis', {
+          ...analysisArguments,
+          spam: { isSpam: true, reason: '活动广告' },
+        })
+      ),
+    ])
+    const analysis = await analyzeStoredContent(runtime, 'rss:junk-test', {
+      modelGateway: createPiModelGateway(models, faux.getModel()),
+      profile: '关注产品更新',
+      profileVersionId: 'profile-1',
+      ruleVersion: 'rules-1',
+      modelRouteVersion: 'route-1',
+      manual: false,
+    })
+    expect(analysis.result.chineseTranslation).toBeUndefined()
+    expect(faux.state.callCount).toBe(1)
+    await runtime.close()
+  })
+
+  it('still translates content manually cleared as non-junk', async () => {
+    const runtime = await repository()
+    await runtime.importSources([
+      {
+        id: 'rss-english',
+        slug: 'rss-english',
+        name: 'English source',
+        type: 'rss',
+        externalIdentity: 'https://example.com/rss',
+        status: 'enabled',
+        language: 'en',
+      },
+    ])
+    await runtime.commitDiscoveryBatch({
+      sourceId: 'rss-english',
+      contents: [
+        {
+          id: 'rss:manual-not-junk',
+          sourceId: 'rss-english',
+          title: 'Product update',
+          body: 'We released an important update for all users.',
+          canonicalUrl: 'https://example.com/update',
+          enrichmentStatus: 'succeeded',
+          kind: 'article',
+        },
+      ],
+      discoveries: [],
+    })
+    await runtime.setManualJunk('rss:manual-not-junk', { isJunk: false })
+    const models = createModels()
+    const faux = fauxProvider()
+    models.setProvider(faux.provider)
+    faux.setResponses([
+      fauxAssistantMessage(
+        fauxToolCall('submit_analysis', {
+          ...analysisArguments,
+          spam: { isSpam: true, reason: '模型误判' },
+          chineseTitle: '产品更新',
+          chineseTranslation: '我们向所有用户发布了一项重要更新。',
+        })
+      ),
+    ])
+    const analysis = await analyzeStoredContent(
+      runtime,
+      'rss:manual-not-junk',
+      {
+        modelGateway: createPiModelGateway(models, faux.getModel()),
+        profile: '关注产品更新',
+        profileVersionId: 'profile-1',
+        ruleVersion: 'rules-1',
+        modelRouteVersion: 'route-1',
+        manual: false,
+      }
+    )
+    expect(analysis.result.chineseTranslation).toBe(
+      '我们向所有用户发布了一项重要更新。'
+    )
+    expect(analysis.promptVersion).toBe(
+      'english-full-translation-v2-manual-not-junk'
+    )
     await runtime.close()
   })
 })
@@ -1298,6 +1556,19 @@ describe('RSS discovery and enrichment', () => {
           })
       )
     ).rejects.toThrow(/complete article body/i)
+  })
+
+  it('keeps every inline article image in reading order', async () => {
+    const paragraph = 'A complete article paragraph with enough useful words to pass readability extraction. '.repeat(5)
+    const result = await enrichArticle('https://example.com/story', async () =>
+      new Response(`<html><head><title>Story</title></head><body><article><h1>Story</h1><p>${paragraph}</p><img src="/first.jpg"><p>${paragraph}</p><img src="https://cdn.example.com/second.png"></article></body></html>`, {
+        headers: { 'content-type': 'text/html' },
+      })
+    )
+    expect(result.images).toEqual([
+      { order: 0, url: 'https://example.com/first.jpg' },
+      { order: 1, url: 'https://cdn.example.com/second.png' },
+    ])
   })
 
   it('rejects private article targets before making a request', async () => {

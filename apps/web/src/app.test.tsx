@@ -49,19 +49,42 @@ describe('complete web shell', () => {
     expect(html).toContain('80 分')
   })
 
+  it('shows why a rule classified a page as junk', () => {
+    const html = renderToStaticMarkup(
+      <ContentCard
+        item={{
+          ...item,
+          junk: {
+            isJunk: true,
+            source: 'rule',
+            reason: 'other',
+            note: '活动页：活动报名与介绍，不是文章正文',
+          },
+        }}
+      />
+    )
+    expect(html).toContain('垃圾内容 · 活动页：活动报名与介绍，不是文章正文')
+  })
+
   it('shows the Chinese paraphrase and translation status for English X posts', () => {
-    const html = renderToStaticMarkup(<ContentCard item={{
-      ...item,
-      id: 'x:translated',
-      kind: 'short_post',
-      source: { id: 'x-test', name: 'X', type: 'x' },
-      title: 'We shipped a new feature',
-      body: 'We shipped a new feature today.',
-      originalLanguage: 'en',
-      chineseTranslation: '我们今天推出了一项新功能。',
-      translatedToChinese: true,
-    }} />)
+    const html = renderToStaticMarkup(
+      <ContentCard
+        item={{
+          ...item,
+          id: 'x:translated',
+          kind: 'short_post',
+          source: { id: 'x-test', name: 'X', type: 'x' },
+          title: 'We shipped a new feature',
+          chineseTitle: '我们推出了一项新功能',
+          body: 'We shipped a new feature today.',
+          originalLanguage: 'en',
+          chineseTranslation: '我们今天推出了一项新功能。',
+          translatedToChinese: true,
+        }}
+      />
+    )
     expect(html).toContain('我们今天推出了一项新功能。')
+    expect(html).toContain('我们推出了一项新功能')
     expect(html).toContain('原文英文 · 已意译')
     expect(html).not.toContain('We shipped a new feature</h2>')
   })

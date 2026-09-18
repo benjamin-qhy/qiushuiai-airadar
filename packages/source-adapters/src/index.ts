@@ -6,6 +6,31 @@ import {
   type SourceType,
 } from '@airadar/domain'
 
+/** Confirmed destinations that cannot provide a standalone article body. */
+export function classifyNonArticlePage(value: string): string | undefined {
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    return undefined
+  }
+  const host = url.hostname.toLowerCase()
+  const pathname = url.pathname.replace(/\/+$/, '') || '/'
+  if (host === 'events.ycombinator.com') {
+    return '活动页：活动报名与介绍，不是文章正文'
+  }
+  if (
+    host === 'chatgpt.com' &&
+    (pathname === '/plugins' || pathname.startsWith('/plugins/'))
+  ) {
+    return '目录页：插件列表，不是单篇文章'
+  }
+  if (host === 'openai.com' && pathname === '/gpt-tv') {
+    return '互动页：播放器与操作界面，不是文章正文'
+  }
+  return undefined
+}
+
 export interface DiscoveryRequest {
   source: Source
   cursor?: string
@@ -28,6 +53,8 @@ export interface DiscoveredItem {
     providerReference?: string
   }
   images?: Array<{ order: number; url: string }>
+  quotedPost?: XQuotedPost
+  repostedBy?: { name: string; handle?: string; url: string }
   thread?: {
     conversationId: string
     complete: boolean
@@ -39,6 +66,14 @@ export interface DiscoveredItem {
     sourceText?: string
     interaction?: InteractionSnapshot
   }>
+}
+
+export interface XQuotedPost {
+  url: string
+  authorName?: string
+  authorHandle?: string
+  text: string
+  images: Array<{ order: number; url: string }>
 }
 
 export interface DiscoveryBatch {
@@ -482,6 +517,19 @@ function canonicalArticleUrl(value: string): string {
   return canonicalizeContentUrl(value)
 }
 
+export function isXArticleUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return (
+      ['x.com', 'www.x.com', 'twitter.com', 'www.twitter.com'].includes(
+        url.hostname.toLowerCase()
+      ) && /^\/i\/article\/\d+\/?$/u.test(url.pathname)
+    )
+  } catch {
+    return false
+  }
+}
+
 export function selectXCarrier(input: XCarrierInput): XCarrier {
   for (const link of input.urls ?? []) {
     const videoId = youtubeVideoId(link.expandedUrl)
@@ -490,12 +538,14 @@ export function selectXCarrier(input: XCarrierInput): XCarrier {
       return { kind: 'video', carrier: 'youtube', ...identity }
     }
   }
-  const xArticle = (input.urls ?? []).find((link) => link.kind === 'x-article')
+  const xArticle = (input.urls ?? []).find(
+    (link) => link.kind === 'x-article' || isXArticleUrl(link.expandedUrl)
+  )
   if (xArticle) {
     return {
       kind: 'article',
       carrier: 'x-article',
-      platformIdentity: `x-article:${canonicalArticleUrl(xArticle.expandedUrl)}`,
+      platformIdentity: `url:${canonicalArticleUrl(xArticle.expandedUrl)}`,
       canonicalUrl: canonicalArticleUrl(xArticle.expandedUrl),
     }
   }
@@ -611,6 +661,47 @@ function xLinks(tweet: Record<string, unknown>): XCarrierInput['urls'] {
   return links
 }
 
+function xPostText(tweet: Record<string, unknown>): string | undefined {
+  const note = record(tweet.note_tweet ?? tweet.noteTweet)
+  return [
+    text(tweet.text),
+    text(tweet.fullText),
+    text(tweet.full_text),
+    text(note.text),
+  ].sort((left, right) => (right?.length ?? 0) - (left?.length ?? 0))[0]
+}
+
+function xImages(tweet: Record<string, unknown>): Array<{ order: number; url: string }> {
+  const media = [
+    ...array(record(tweet.extendedEntities).media),
+    ...array(record(tweet.extended_entities).media),
+    ...array(record(tweet.entities).media),
+    ...array(tweet.media),
+  ]
+  const seen = new Set<string>()
+  return media.flatMap((entry) => {
+    const item = record(entry)
+    const url = text(item.media_url_https) ?? text(item.media_url) ?? text(item.image_url)
+    if (item.type !== 'photo' || !url || seen.has(url)) return []
+    seen.add(url)
+    return [{ order: seen.size - 1, url }]
+  })
+}
+
+function xQuotedPost(tweet: Record<string, unknown>): XQuotedPost | undefined {
+  const quoted = record(tweet.quoted_tweet ?? tweet.quotedTweet)
+  const id = tweetId(quoted)
+  if (!id) return undefined
+  const author = record(quoted.author)
+  return {
+    url: text(quoted.url) ?? text(quoted.twitterUrl) ?? `https://x.com/i/status/${id}`,
+    authorName: text(author.name),
+    authorHandle: text(author.userName) ?? text(author.user_name) ?? text(author.screen_name),
+    text: xPostText(quoted) ?? '',
+    images: xImages(quoted),
+  }
+}
+
 function mapTweet(
   tweetValue: unknown,
   capturedAt: string
@@ -622,8 +713,7 @@ function mapTweet(
     text(tweet.tweet_id) ??
     text(tweet.rest_id)
   if (!externalId) return undefined
-  const sourceText =
-    text(tweet.text) ?? text(tweet.fullText) ?? text(tweet.full_text) ?? ''
+  const sourceText = xPostText(tweet) ?? ''
   const tweetUrl = text(tweet.url) ?? text(tweet.twitterUrl)
   const media =
     array(record(tweet.extendedEntities).media).length > 0 ||
@@ -647,6 +737,8 @@ function mapTweet(
     },
     publishedAt: isoDate(tweet.createdAt ?? tweet.created_at),
     description: sourceText || undefined,
+    images: xImages(tweet),
+    quotedPost: xQuotedPost(tweet),
     interaction: {
       capturedAt,
       views: numberOrNull(tweet.viewCount ?? tweet.view_count ?? tweet.views),
@@ -683,7 +775,7 @@ function tweetId(tweet: Record<string, unknown>): string | undefined {
   )
 }
 
-function mapXTweets(values: unknown[], capturedAt: string): DiscoveredItem[] {
+export function mapXTweets(values: unknown[], capturedAt: string): DiscoveredItem[] {
   const threads = new Map<string, Record<string, unknown>[]>()
   const results: DiscoveredItem[] = []
   for (const tweet of values.map(record)) {
@@ -695,7 +787,11 @@ function mapXTweets(values: unknown[], capturedAt: string): DiscoveredItem[] {
       if (mapped && discoveryId) {
         results.push({
           ...mapped,
-          externalId: discoveryId,
+          repostedBy: {
+            name: text(record(tweet.author).name) ?? text(record(tweet.author).userName) ?? 'X 用户',
+            handle: text(record(tweet.author).userName),
+            url: text(tweet.url) ?? text(tweet.twitterUrl) ?? `https://x.com/i/status/${discoveryId}`,
+          },
           evidence: {
             carrier: mapped.evidence?.carrier ?? 'x-short',
             sourceText: mapped.evidence?.sourceText,
@@ -712,7 +808,7 @@ function mapXTweets(values: unknown[], capturedAt: string): DiscoveredItem[] {
                 text(tweet.url) ??
                 text(tweet.twitterUrl) ??
                 `https://x.com/i/status/${discoveryId}`,
-              sourceText: text(tweet.text ?? tweet.fullText ?? tweet.full_text),
+              sourceText: xPostText(tweet),
               interaction: discoveryItem?.interaction,
             },
           ],
@@ -775,7 +871,7 @@ function mapXTweets(values: unknown[], capturedAt: string): DiscoveredItem[] {
       tweets[0]
     if (!root) continue
     const combinedText = tweets
-      .map((tweet) => text(tweet.text ?? tweet.fullText ?? tweet.full_text))
+      .map((tweet) => xPostText(tweet))
       .filter((value): value is string => Boolean(value))
       .join('\n\n')
     const combinedUrls = tweets.flatMap((tweet) => xLinks(tweet) ?? [])
@@ -794,6 +890,7 @@ function mapXTweets(values: unknown[], capturedAt: string): DiscoveredItem[] {
       const discoveryId = tweetId(root) ?? conversationId
       results.push({
         ...mapped,
+        images: tweets.flatMap((tweet) => xImages(tweet)).map((image, order) => ({ ...image, order })),
         externalId: discoveryId,
         evidence: {
           carrier: mapped.evidence?.carrier ?? 'x-short',
@@ -811,9 +908,7 @@ function mapXTweets(values: unknown[], capturedAt: string): DiscoveredItem[] {
                 complete: Boolean(exactRoot),
                 parts: tweets.flatMap((tweet) => {
                   const id = tweetId(tweet)
-                  const partText = text(
-                    tweet.text ?? tweet.fullText ?? tweet.full_text
-                  )
+                  const partText = text(xPostText(tweet))
                   return id && partText
                     ? [
                         {
@@ -838,7 +933,7 @@ function mapXTweets(values: unknown[], capturedAt: string): DiscoveredItem[] {
                 text(tweet.url) ??
                 text(tweet.twitterUrl) ??
                 `https://x.com/i/status/${externalId}`,
-              sourceText: text(tweet.text ?? tweet.fullText ?? tweet.full_text),
+              sourceText: xPostText(tweet),
               interaction: mapTweet(tweet, capturedAt)?.interaction,
             },
           ]
@@ -946,6 +1041,96 @@ export function createTwitterApiIoProvider(options: {
       }
     },
   })
+}
+
+export async function fetchTwitterApiIoArticle(options: {
+  apiKey: string
+  tweetId: string
+  canonicalUrl: string
+  fetch?: typeof fetch
+  baseUrl?: string
+  captureResponse?: CaptureProviderResponse
+}): Promise<{ title: string; body: string; canonicalUrl: string }> {
+  if (!options.apiKey) {
+    throw new ProviderDiscoveryError(
+      'credential',
+      'X Article provider is not configured'
+    )
+  }
+  if (!/^\d+$/u.test(options.tweetId) || !isXArticleUrl(options.canonicalUrl)) {
+    throw new ProviderDiscoveryError(
+      'invalid-response',
+      'X Article identity is invalid'
+    )
+  }
+  const baseUrl = options.baseUrl ?? 'https://api.twitterapi.io'
+  const fetcher = options.fetch ?? fetch
+  const headers = { 'X-API-Key': options.apiKey }
+  const fetchArticle = async (tweetId: string) => {
+    const url = new URL('/twitter/article', baseUrl)
+    url.searchParams.set('tweet_id', tweetId)
+    return fetchJson(
+      fetcher,
+      url,
+      { headers },
+      {
+        providerId: 'twitterapi.io-article',
+        callback: options.captureResponse,
+      }
+    )
+  }
+  let payload = await fetchArticle(options.tweetId)
+  if (payload.status === 'failed') {
+    // Older records saved the repost ID as the content's external ID.
+    // Resolve it once; discovery records continue to retain the repost ID.
+    const tweetUrl = new URL('/twitter/tweets', baseUrl)
+    tweetUrl.searchParams.set('tweet_ids', options.tweetId)
+    const tweets = await fetchJson(
+      fetcher,
+      tweetUrl,
+      { headers },
+      {
+        providerId: 'twitterapi.io-tweets',
+        callback: options.captureResponse,
+      }
+    )
+    const tweet = array(tweets.tweets)
+      .map(record)
+      .find((candidate) => tweetId(candidate) === options.tweetId)
+    const originalId = tweetId(
+      record(tweet?.retweeted_tweet ?? tweet?.retweetedTweet)
+    )
+    if (
+      originalId &&
+      /^\d+$/u.test(originalId) &&
+      originalId !== options.tweetId
+    ) {
+      payload = await fetchArticle(originalId)
+    }
+  }
+  if (payload.status !== 'success') {
+    throw new ProviderDiscoveryError(
+      'invalid-response',
+      'X Article provider did not succeed'
+    )
+  }
+  const article = record(payload.article)
+  const title = text(article.title)
+  const body = array(article.contents)
+    .map((entry) => text(record(entry).text))
+    .filter((part): part is string => Boolean(part))
+    .join('\n\n')
+  if (!title || body.length < 200) {
+    throw new ProviderDiscoveryError(
+      'invalid-response',
+      'X Article body is incomplete'
+    )
+  }
+  return {
+    title,
+    body,
+    canonicalUrl: canonicalArticleUrl(options.canonicalUrl),
+  }
 }
 
 function channelHandle(identity: string): string {

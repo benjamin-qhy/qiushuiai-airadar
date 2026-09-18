@@ -2,8 +2,10 @@ import { describe, expect, it, vi } from 'vitest'
 
 import {
   ProviderDiscoveryError,
+  classifyNonArticlePage,
   createProviderRouter,
   createTwitterApiIoProvider,
+  fetchTwitterApiIoArticle,
   createTikHubXProvider,
   createTikHubYouTubeProvider,
   createTikHubYouTubeTranscriptProvider,
@@ -180,6 +182,24 @@ describe('provider routing', () => {
 })
 
 describe('stable platform identity', () => {
+  it('identifies confirmed non-article destinations without catching articles', () => {
+    expect(
+      classifyNonArticlePage(
+        'https://events.ycombinator.com/MakeSomethingAgentsWant'
+      )
+    ).toBe('活动页：活动报名与介绍，不是文章正文')
+    expect(
+      classifyNonArticlePage(
+        'https://chatgpt.com/plugins?category=small-business'
+      )
+    ).toBe('目录页：插件列表，不是单篇文章')
+    expect(classifyNonArticlePage('https://openai.com/gpt-tv/')).toBe(
+      '互动页：播放器与操作界面，不是文章正文'
+    )
+    expect(
+      classifyNonArticlePage('https://openai.com/index/gpt-6-astra')
+    ).toBeUndefined()
+  })
   it('normalizes all supported YouTube URLs to one video identity', () => {
     const urls = [
       'https://youtu.be/dQw4w9WgXcQ?t=30',
@@ -226,10 +246,96 @@ describe('stable platform identity', () => {
       'url:https://example.com/story?a=1&b=2',
       'url:https://example.com/story?a=1&b=2',
     ])
+    expect(
+      selectXCarrier({
+        tweetId: '2093022448132452398',
+        text: 'Read the full article',
+        urls: [
+          {
+            expandedUrl: 'https://x.com/i/article/2093011711712456704',
+            kind: 'external',
+          },
+        ],
+      })
+    ).toMatchObject({
+      kind: 'article',
+      carrier: 'x-article',
+      canonicalUrl: 'https://x.com/i/article/2093011711712456704',
+    })
   })
 })
 
 describe('redacted real provider samples', () => {
+  it('uses the original tweet id for an X Article found through a retweet', async () => {
+    const provider = createTwitterApiIoProvider({
+      apiKey: 'runtime-only',
+      fetch: async (url) =>
+        Response.json(
+          String(url).includes('/user/info')
+            ? { data: { id: 'author-1' } }
+            : {
+                data: {
+                  tweets: [
+                    {
+                      id: '2093022448132452398',
+                      text: 'RT: Read the article',
+                      retweeted_tweet: {
+                        id: '2093021551855812842',
+                        text: 'Read the article',
+                        entities: {
+                          urls: [
+                            {
+                              expanded_url:
+                                'https://x.com/i/article/2093011711712456704',
+                            },
+                          ],
+                        },
+                      },
+                    },
+                  ],
+                },
+              }
+        ),
+    })
+    const batch = await provider.discover({ source: xSource, limit: 20 })
+    expect(batch.items[0]).toMatchObject({
+      externalId: '2093021551855812842',
+      platformIdentity: 'url:https://x.com/i/article/2093011711712456704',
+      discoveryParts: [{ externalId: '2093022448132452398' }],
+    })
+  })
+
+  it('keeps the complete X post text when the preview is shorter', async () => {
+    const provider = createTwitterApiIoProvider({
+      apiKey: 'runtime-only',
+      fetch: async (url) =>
+        Response.json(
+          String(url).includes('/user/info')
+            ? { data: { id: '1', userName: 'Example' } }
+            : {
+                data: {
+                  tweets: [
+                    {
+                      id: '123',
+                      text: 'Short preview',
+                      fullText:
+                        'The complete original post is substantially longer than the preview.',
+                      url: 'https://x.com/Example/status/123',
+                    },
+                  ],
+                },
+              }
+        ),
+    })
+    const batch = await provider.discover({
+      source: { ...xSource, externalIdentity: 'Example' },
+      limit: 20,
+    })
+    expect(batch.items[0]?.evidence?.sourceText).toBe(
+      'The complete original post is substantially longer than the preview.'
+    )
+  })
+
   it('maps TwitterAPI.io list metrics without per-item requests', async () => {
     const calls: string[] = []
     const provider = createTwitterApiIoProvider({
@@ -353,6 +459,40 @@ describe('redacted real provider samples', () => {
         ?.discoveryParts?.map((part) => part.externalId)
         .sort()
     ).toEqual(['original-1', 'retweet-evidence'])
+  })
+
+  it('keeps X photos and the complete quoted post with its photos', async () => {
+    const provider = createTwitterApiIoProvider({
+      apiKey: 'runtime-only',
+      fetch: async (url) =>
+        String(url).includes('/user/info')
+          ? Response.json({ data: { id: 'author-1' } })
+          : Response.json({
+              data: {
+                tweets: [{
+                  id: 'quote-2',
+                  text: 'My comment',
+                  author: { userName: 'alice', name: 'Alice' },
+                  extendedEntities: { media: [{ type: 'photo', media_url_https: 'https://pbs.twimg.com/media/main.jpg' }] },
+                  quoted_tweet: {
+                    id: 'original-2',
+                    text: 'The complete quoted text',
+                    author: { userName: 'bob', name: 'Bob' },
+                    extendedEntities: { media: [{ type: 'photo', media_url_https: 'https://pbs.twimg.com/media/quoted.jpg' }] },
+                  },
+                }],
+              },
+            }),
+    })
+    const item = (await provider.discover({ source: xSource, limit: 20 })).items[0]
+    expect(item?.images).toEqual([{ order: 0, url: 'https://pbs.twimg.com/media/main.jpg' }])
+    expect(item?.quotedPost).toEqual({
+      url: 'https://x.com/i/status/original-2',
+      authorName: 'Bob',
+      authorHandle: 'bob',
+      text: 'The complete quoted text',
+      images: [{ order: 0, url: 'https://pbs.twimg.com/media/quoted.jpg' }],
+    })
   })
 
   it('keeps both X discovery records when two posts link the same YouTube video', async () => {
@@ -738,6 +878,88 @@ describe('redacted real provider samples', () => {
     })
     expect(calls).toHaveLength(2)
     expect(calls[1]).toContain('format=txt')
+  })
+
+  it('gets the complete X Article by its originating tweet id', async () => {
+    const calls: string[] = []
+    const article = await fetchTwitterApiIoArticle({
+      apiKey: 'runtime-only',
+      tweetId: '2093022448132452398',
+      canonicalUrl: 'https://x.com/i/article/2093011711712456704',
+      fetch: async (url, init) => {
+        calls.push(String(url))
+        expect(new Headers(init?.headers).get('X-API-Key')).toBe('runtime-only')
+        return Response.json({
+          status: 'success',
+          article: {
+            title: 'A complete long article',
+            contents: [
+              { type: 'header-one', text: 'Introduction' },
+              {
+                type: 'unstyled',
+                text: 'The complete first paragraph contains substantial original details rather than a preview. '.repeat(
+                  2
+                ),
+              },
+              {
+                type: 'unstyled',
+                text: 'The second paragraph follows in the same order and preserves the rest of the article.',
+              },
+            ],
+          },
+        })
+      },
+    })
+    expect(calls).toEqual([
+      'https://api.twitterapi.io/twitter/article?tweet_id=2093022448132452398',
+    ])
+    expect(article.title).toBe('A complete long article')
+    expect(article.body).toContain('The second paragraph follows')
+    expect(article.body).not.toContain('undefined')
+  })
+
+  it('resolves an old retweet id before retrying a missing X Article', async () => {
+    const calls: string[] = []
+    const article = await fetchTwitterApiIoArticle({
+      apiKey: 'runtime-only',
+      tweetId: '2093022448132452398',
+      canonicalUrl: 'https://x.com/i/article/2093011711712456704',
+      fetch: async (url) => {
+        calls.push(String(url))
+        if (String(url).includes('/twitter/tweets?')) {
+          return Response.json({
+            status: 'success',
+            tweets: [
+              {
+                id: '2093022448132452398',
+                retweeted_tweet: { id: '2093021551855812842' },
+              },
+            ],
+          })
+        }
+        return Response.json(
+          String(url).includes('2093021551855812842')
+            ? {
+                status: 'success',
+                article: {
+                  title: 'Recovered article',
+                  contents: [
+                    {
+                      text: 'Complete original article paragraph. '.repeat(10),
+                    },
+                  ],
+                },
+              }
+            : { status: 'failed', msg: 'article not found' }
+        )
+      },
+    })
+    expect(article.body).toContain('Complete original article')
+    expect(calls).toEqual([
+      'https://api.twitterapi.io/twitter/article?tweet_id=2093022448132452398',
+      'https://api.twitterapi.io/twitter/tweets?tweet_ids=2093022448132452398',
+      'https://api.twitterapi.io/twitter/article?tweet_id=2093021551855812842',
+    ])
   })
 })
 

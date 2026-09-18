@@ -11,6 +11,8 @@ import {
 } from '@airadar/domain'
 import { z } from 'zod'
 
+export * from './single-table.js'
+
 const timestampSchema = z.iso.datetime()
 const taskTypeSchema = z.enum(['discover', 'enrich', 'analyze'])
 const taskStatusSchema = z.enum(['pending', 'running', 'succeeded', 'failed'])

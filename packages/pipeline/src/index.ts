@@ -21,6 +21,9 @@ import { XMLParser } from 'fast-xml-parser'
 import { parseHTML } from 'linkedom'
 import { z } from 'zod'
 
+export * from './single-table-flow.js'
+export * from './single-table-collector.js'
+
 import { canonicalizeContentUrl, type Source } from '@airadar/domain'
 import type { AnalysisRecord, RuntimeRepository } from '@airadar/runtime'
 import {

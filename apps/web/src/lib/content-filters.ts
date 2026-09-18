@@ -48,7 +48,7 @@ export function filterContentItems(
     const inflowDate = localDateKey(item.firstInflowAt)
     return (
       (!query ||
-        `${item.title} ${item.summary} ${item.chineseTranslation ?? ''} ${item.source?.name ?? ''}`
+        `${item.title} ${item.chineseTitle ?? ''} ${item.summary} ${item.keywordsText ?? ''} ${item.valueSummary ?? ''} ${item.source?.name ?? ''}`
           .toLowerCase()
           .includes(query)) &&
       (filters.processStatus === 'all' ||

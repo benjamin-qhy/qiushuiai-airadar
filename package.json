@@ -19,6 +19,8 @@
     "dev": "pnpm --filter @airadar/web dev",
     "dev:cli": "pnpm --filter @airadar/cli dev",
     "dev:service": "pnpm --filter @airadar/service dev",
+    "collect:v2": "tsx scripts/run-single-table.ts",
+    "serve:v2": "tsx scripts/serve-single-table.ts",
     "lint": "eslint .",
     "smoke:source": "tsx scripts/source-smoke.ts",
     "smoke:built": "node apps/cli/dist/cli.js status",

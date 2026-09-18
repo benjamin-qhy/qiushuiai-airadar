@@ -199,6 +199,17 @@ function scoreParts(value: unknown): { level: string; reason?: string } {
   return { level: String(value) }
 }
 
+const scoreLabels: Record<string, string> = {
+  interestFit: '兴趣匹配',
+  concreteGain: '具体收获',
+  substance: '内容扎实度',
+  newInformation: '新信息',
+}
+
+function scoreLabel(value: number | null): string {
+  return value === null ? '未评分' : `${value} 分`
+}
+
 function useMobile() {
   const [mobile, setMobile] = useState(false)
   useEffect(() => {
@@ -318,7 +329,7 @@ export function ContentCard({
                 : '普通'}
           </Badge>
           <span className='absolute right-2 top-2 rounded bg-code-surface/70 px-1.5 py-0.5 text-[11px] font-medium text-code-foreground backdrop-blur'>
-            {item.totalScore} 分
+            {scoreLabel(item.totalScore)}
           </span>
           {!compact && (item.chineseTranslation || item.summary) && (
             <p className='absolute inset-x-2 top-10 line-clamp-4 text-[11px] font-medium leading-4 text-code-foreground/95'>
@@ -371,7 +382,7 @@ export function ContentCard({
               <span
                 className={`shrink-0 font-semibold text-foreground ${cover ? 'sr-only' : ''}`}
               >
-                {item.totalScore} 分
+                {scoreLabel(item.totalScore)}
               </span>
               {!item.read && (
                 <span
@@ -704,7 +715,7 @@ function Detail({
           <div className='px-5 pb-4 pt-4 md:px-6'>
             <div className='mb-3 flex flex-wrap items-center justify-between gap-2'>
               <div className='flex flex-wrap items-center gap-2'>
-                <Badge>{item.totalScore} 分</Badge>
+                <Badge>{scoreLabel(item.totalScore)}</Badge>
                 {item.kind && (
                   <Badge variant='secondary'>{kindLabels[item.kind]}</Badge>
                 )}
@@ -821,32 +832,86 @@ function Detail({
               )}
               {item.repostedBy && (
                 <p className='text-sm text-muted-foreground'>
-                  由 <a className='underline underline-offset-2' href={item.repostedBy.url} target='_blank' rel='noreferrer'>{item.repostedBy.name}</a> 转发
+                  由{' '}
+                  <a
+                    className='underline underline-offset-2'
+                    href={item.repostedBy.url}
+                    target='_blank'
+                    rel='noreferrer'
+                  >
+                    {item.repostedBy.name}
+                  </a>{' '}
+                  转发
                 </p>
               )}
               {item.quotedPost && (
-                <section className='space-y-3 border-l-2 border-foreground/20 bg-foreground/[0.025] p-4' aria-label='引用的帖子'>
+                <section
+                  className='space-y-3 border-l-2 border-foreground/20 bg-foreground/[0.025] p-4'
+                  aria-label='引用的帖子'
+                >
                   <div className='text-sm'>
-                    <span className='font-semibold'>{item.quotedPost.authorName ?? item.quotedPost.authorHandle ?? 'X 用户'}</span>
-                    {item.quotedPost.authorHandle && <span className='ml-2 text-muted-foreground'>@{item.quotedPost.authorHandle}</span>}
-                    <span className='ml-2 text-muted-foreground'>引用的帖子</span>
+                    <span className='font-semibold'>
+                      {item.quotedPost.authorName ??
+                        item.quotedPost.authorHandle ??
+                        'X 用户'}
+                    </span>
+                    {item.quotedPost.authorHandle && (
+                      <span className='ml-2 text-muted-foreground'>
+                        @{item.quotedPost.authorHandle}
+                      </span>
+                    )}
+                    <span className='ml-2 text-muted-foreground'>
+                      引用的帖子
+                    </span>
                   </div>
-                  {item.quotedPost.text && <p className='whitespace-pre-wrap leading-7'>{item.quotedPost.text}</p>}
+                  {item.quotedPost.text && (
+                    <p className='whitespace-pre-wrap leading-7'>
+                      {item.quotedPost.text}
+                    </p>
+                  )}
                   {item.quotedPost.images.map((image, index) => (
-                    <a key={`${image.url}-${index}`} href={image.url} target='_blank' rel='noreferrer' className='block' title='查看引用帖原图'>
-                      <img src={image.url} alt={`引用帖配图 ${index + 1}`} className='max-h-[520px] w-full object-contain' />
+                    <a
+                      key={`${image.url}-${index}`}
+                      href={image.url}
+                      target='_blank'
+                      rel='noreferrer'
+                      className='block'
+                      title='查看引用帖原图'
+                    >
+                      <img
+                        src={image.url}
+                        alt={`引用帖配图 ${index + 1}`}
+                        className='max-h-[520px] w-full object-contain'
+                      />
                     </a>
                   ))}
-                  <a href={item.quotedPost.url} target='_blank' rel='noreferrer' className='inline-block text-sm underline underline-offset-2'>查看引用帖原文</a>
+                  <a
+                    href={item.quotedPost.url}
+                    target='_blank'
+                    rel='noreferrer'
+                    className='inline-block text-sm underline underline-offset-2'
+                  >
+                    查看引用帖原文
+                  </a>
                 </section>
               )}
             </TabsContent>
             <TabsContent value='ai' className='m-0 space-y-4'>
-              <p className='leading-7'>{item.summary}</p>
+              {item.valueSummary && (
+                <p className='leading-7'>{item.valueSummary}</p>
+              )}
+              <p className='whitespace-pre-wrap leading-7'>{item.summary}</p>
+              {item.keywordsText && (
+                <p className='text-sm text-muted-foreground'>
+                  关键词：{item.keywordsText}
+                </p>
+              )}
               <div className='grid gap-3 sm:grid-cols-2'>
                 {Object.entries(item.scores).map(([key, value]) => (
                   <div key={key} className='border-l px-3 py-2'>
-                    <div className='text-xs text-muted-foreground'>{key}</div>
+                    <div className='text-xs text-muted-foreground'>
+                      {scoreLabels[key] ?? key}
+                    </div>
                     <div className='mt-1 font-semibold'>
                       {scoreParts(value).level}
                     </div>
@@ -995,17 +1060,21 @@ export function ContentWorkspace({ scope }: { scope: ContentScope }) {
   }, [])
   const load = useCallback(
     () =>
-      api<{ items: FeedItem[] }>('/api/contents')
+      api<{ items: FeedItem[] }>(
+        filters.query.trim()
+          ? `/api/contents?keyword=${encodeURIComponent(filters.query.trim())}`
+          : '/api/contents'
+      )
         .then((data) => setItems(data.items))
         .catch((reason) => setError(String(reason))),
-    []
+    [filters.query]
   )
   const visible = useMemo(() => {
     const scoped = filterContentScope(items ?? [], scope)
     const filtered = filterContentItems(scoped, { ...filters, junk: 'all' })
     return [...filtered].sort((left, right) => {
       if (filters.sort === 'score-desc')
-        return right.totalScore - left.totalScore
+        return (right.totalScore ?? -1) - (left.totalScore ?? -1)
       const leftTime =
         Date.parse(left.publishedAt ?? left.discoveredAt ?? '') || 0
       const rightTime =
@@ -1231,7 +1300,7 @@ export function ContentWorkspace({ scope }: { scope: ContentScope }) {
                 {item.kind ? kindLabels[item.kind] : '未知'}
               </TableCell>
               <TableCell className='text-right font-medium'>
-                {item.totalScore}
+                {item.totalScore ?? '未评分'}
               </TableCell>
               <TableCell>
                 <Badge

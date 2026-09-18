@@ -13,12 +13,14 @@ export interface FeedItem {
   firstInflowAt?: string
   body: string
   summary: string
+  keywordsText?: string
+  valueSummary?: string
   originalLanguage?: 'zh' | 'en' | 'unknown'
   chineseTranslation?: string
   translatedToChinese?: boolean
   topics: string[]
   scores: Record<string, unknown>
-  totalScore: number
+  totalScore: number | null
   recommendation: 'core' | 'explore' | 'none'
   kind?: 'short_post' | 'video' | 'image_post' | 'article'
   source?: { id: string; name: string; type: string; language?: 'en' | 'zh' }

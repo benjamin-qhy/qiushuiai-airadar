@@ -1,0 +1,200 @@
+# 信源按此顺序依次运行；每个信源只请求一次列表，不翻页。
+sources:
+  - id: x_openai
+    platform: x
+    account_name: 'X / OpenAI'
+    external_identity: 'OpenAI'
+    language: en
+    enabled: true
+  - id: x_anthropic
+    platform: x
+    account_name: 'X / Anthropic'
+    external_identity: 'AnthropicAI'
+    language: en
+    enabled: false
+  - id: x_karpathy
+    platform: x
+    account_name: 'X / Andrej Karpathy'
+    external_identity: 'karpathy'
+    language: en
+    enabled: false
+  - id: x_ilyasut
+    platform: x
+    account_name: 'X / Ilya Sutskever'
+    external_identity: 'ilyasut'
+    language: en
+    enabled: false
+  - id: x_akshay_pachaar
+    platform: x
+    account_name: 'X / Akshay Pachaar'
+    external_identity: 'akshay_pachaar'
+    language: en
+    enabled: false
+  - id: x_saboo_shubham
+    platform: x
+    account_name: 'X / Shubham Saboo'
+    external_identity: 'Saboo_Shubham_'
+    language: en
+    enabled: false
+  - id: x_langchain
+    platform: x
+    account_name: 'X / LangChain'
+    external_identity: 'LangChain'
+    language: en
+    enabled: false
+  - id: x_llama_index
+    platform: x
+    account_name: 'X / LlamaIndex'
+    external_identity: 'llama_index'
+    language: en
+    enabled: false
+  - id: x_ycombinator
+    platform: x
+    account_name: 'X / Y Combinator'
+    external_identity: 'ycombinator'
+    language: en
+    enabled: false
+  - id: x_garrytan
+    platform: x
+    account_name: 'X / Garry Tan'
+    external_identity: 'garrytan'
+    language: en
+    enabled: false
+  - id: x_levie
+    platform: x
+    account_name: 'X / Aaron Levie'
+    external_identity: 'levie'
+    language: en
+    enabled: false
+  - id: x_amanda_askell
+    platform: x
+    account_name: 'X / Amanda Askell'
+    external_identity: 'AmandaAskell'
+    language: en
+    enabled: false
+  - id: x_petergyang
+    platform: x
+    account_name: 'X / Peter G. Yang'
+    external_identity: 'petergyang'
+    language: en
+    enabled: false
+  - id: x_bcherny
+    platform: x
+    account_name: 'X / Brian Cherny'
+    external_identity: 'bcherny'
+    language: en
+    enabled: false
+  - id: x_catwu
+    platform: x
+    account_name: 'X / Cat Wu'
+    external_identity: '_catwu'
+    language: en
+    enabled: false
+  - id: x_gregisenberg
+    platform: x
+    account_name: 'X / Greg Isenberg'
+    external_identity: 'gregisenberg'
+    language: en
+    enabled: false
+  - id: yt_anthropic
+    platform: youtube
+    account_name: 'YouTube / Anthropic'
+    external_identity: 'https://www.youtube.com/@anthropic-ai'
+    language: en
+    enabled: false
+  - id: yt_claude
+    platform: youtube
+    account_name: 'YouTube / Claude'
+    external_identity: 'https://www.youtube.com/@claude/videos'
+    language: en
+    enabled: false
+  - id: yt_openai
+    platform: youtube
+    account_name: 'YouTube / OpenAI'
+    external_identity: 'https://www.youtube.com/@OpenAI'
+    language: en
+    enabled: true
+  - id: yt_ibm_tech
+    platform: youtube
+    account_name: 'YouTube / IBM Technology'
+    external_identity: 'https://www.youtube.com/@IBMTechnology'
+    language: en
+    enabled: false
+  - id: yt_ycombinator
+    platform: youtube
+    account_name: 'YouTube / Y Combinator'
+    external_identity: 'https://www.youtube.com/@ycombinator'
+    language: en
+    enabled: false
+  - id: yt_lennys_podcast
+    platform: youtube
+    account_name: "YouTube / Lenny's Podcast"
+    external_identity: 'https://www.youtube.com/@LennysPodcast'
+    language: en
+    enabled: false
+  - id: yt_sequoia
+    platform: youtube
+    account_name: 'YouTube / Sequoia Capital'
+    external_identity: 'https://www.youtube.com/@sequoiacapital'
+    language: en
+    enabled: false
+  - id: yt_ai_advantage
+    platform: youtube
+    account_name: 'YouTube / AI Advantage'
+    external_identity: 'https://www.youtube.com/@aiadvantage'
+    language: en
+    enabled: false
+  - id: yt_tiago_forte
+    platform: youtube
+    account_name: 'YouTube / Tiago Forte'
+    external_identity: 'https://www.youtube.com/@TiagoForte'
+    language: en
+    enabled: false
+  - id: yt_nate_herk
+    platform: youtube
+    account_name: 'YouTube / Nate Herk'
+    external_identity: 'https://www.youtube.com/@nateherk'
+    language: en
+    enabled: false
+  - id: yt_cole_medin
+    platform: youtube
+    account_name: 'YouTube / Cole Medin'
+    external_identity: 'https://www.youtube.com/@ColeMedin'
+    language: en
+    enabled: false
+  - id: yt_jeff_su
+    platform: youtube
+    account_name: 'YouTube / Jeff Su'
+    external_identity: 'https://www.youtube.com/@JeffSu'
+    language: en
+    enabled: false
+  - id: yt_ali_abdaal
+    platform: youtube
+    account_name: 'YouTube / Ali Abdaal'
+    external_identity: 'https://www.youtube.com/@aliabdaal'
+    language: en
+    enabled: false
+  - id: yt_dan_koe
+    platform: youtube
+    account_name: 'YouTube / Dan Koe'
+    external_identity: 'https://www.youtube.com/@DanKoeTalks'
+    language: en
+    enabled: false
+  - id: yt_greg_isenberg
+    platform: youtube
+    account_name: 'YouTube / Greg Isenberg'
+    external_identity: 'https://www.youtube.com/@GregIsenberg'
+    language: en
+    enabled: false
+  - id: yt_ishan_sharma
+    platform: youtube
+    account_name: 'YouTube / Ishan Sharma'
+    external_identity: 'https://www.youtube.com/@IshanSharma7390'
+    language: en
+    enabled: false
+  - id: openai_news
+    platform: rss
+    account_name: 'OpenAI News'
+    external_identity: 'https://openai.com/news/rss.xml'
+    language: en
+    enabled: true

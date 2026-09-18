@@ -1,5 +1,7 @@
 import { readFile, stat } from 'node:fs/promises'
 
+export * from './single-table-config.js'
+
 export interface SecretReader {
   get(name: string): Promise<string | undefined>
 }

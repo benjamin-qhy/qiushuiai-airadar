@@ -1,0 +1,659 @@
+import { createServer, type IncomingMessage, type Server } from 'node:http'
+import { readFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import path from 'node:path'
+
+import {
+  createFileSecretReader,
+  loadSingleTableConfig,
+  loadSourceState,
+  saveSourceState,
+  type SingleTableConfig,
+} from '@airadar/config'
+import { SingleTableRepository, type ContentRow } from '@airadar/runtime'
+import {
+  createSingleTableCodexGateway,
+  processSingleTableContent,
+  type SingleTableModelGateway,
+} from '@airadar/pipeline'
+import { createSingleTableSourceProvider } from './single-table-provider.js'
+
+const scoreNames = {
+  interest_fit: 'interestFit',
+  concrete_gain: 'concreteGain',
+  substance: 'substance',
+  new_information: 'newInformation',
+} as const
+
+function arrayValue(value: unknown): unknown[] {
+  try {
+    const parsed = JSON.parse(String(value ?? '[]')) as unknown
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+async function feedItem(
+  repository: SingleTableRepository,
+  row: ContentRow,
+  sources: SingleTableConfig['sources']['sources']
+) {
+  const source = sources.find(
+    (candidate) => candidate.id === row.source_account_id
+  )
+  const scores = Object.fromEntries(
+    Object.entries(scoreNames).flatMap(([column, name]) => {
+      const level = row[`${column}_level`]
+      return typeof level === 'number'
+        ? [[name, { level, reason: row[`${column}_reason`] }]]
+        : []
+    })
+  )
+  const chinese = await repository.readBody(row.id, 'zh')
+  const english = await repository.readBody(row.id, 'en')
+  return {
+    id: row.id,
+    title: row.title,
+    chineseTitle: row.chinese_title ?? undefined,
+    url: row.canonical_url ?? undefined,
+    publishedAt: row.published_at ?? undefined,
+    discoveredAt: row.discovered_at,
+    firstInflowAt: row.first_inflow_at,
+    body: english ?? chinese ?? '',
+    summary: row.summary ?? '',
+    keywordsText: row.keywords_text,
+    valueSummary: row.value_summary ?? undefined,
+    originalLanguage: row.original_language,
+    chineseTranslation: row.original_language === 'en' ? chinese : undefined,
+    translatedToChinese: Boolean(row.translated_to_chinese),
+    topics: arrayValue(row.keywords_json),
+    scores,
+    totalScore: row.total_score,
+    recommendation: row.recommendation,
+    kind: row.content_kind,
+    source: source
+      ? {
+          id: source.id,
+          name: source.account_name,
+          type: source.platform,
+          language: source.language,
+        }
+      : {
+          id: row.source_account_id,
+          name: row.source_account_name,
+          type: row.source_platform,
+          language: row.original_language,
+        },
+    images: arrayValue(row.images_json),
+    quotedPost: row.quoted_post_json
+      ? JSON.parse(String(row.quoted_post_json))
+      : undefined,
+    repostedBy: row.reposted_by_json
+      ? JSON.parse(String(row.reposted_by_json))
+      : undefined,
+    video:
+      row.video_duration_seconds ||
+      row.video_thumbnail_url ||
+      row.video_media_url
+        ? {
+            durationSeconds: row.video_duration_seconds,
+            thumbnailUrl: row.video_thumbnail_url,
+            mediaUrl: row.video_media_url,
+          }
+        : undefined,
+    processStatus: row.process_status,
+    originalStatus: row.original_status,
+    read: Boolean(row.read),
+    utilizationActions: arrayValue(row.utilization_actions_json),
+    junk: {
+      isJunk: Boolean(row.is_junk),
+      source: row.junk_source,
+      reason: row.junk_reason ?? undefined,
+      note: row.junk_note ?? undefined,
+    },
+    interaction: row.interaction_captured_at
+      ? {
+          capturedAt: row.interaction_captured_at,
+          views: row.views,
+          likes: row.likes,
+          comments: row.comments,
+          shares: row.shares,
+          saves: row.saves,
+        }
+      : undefined,
+    analysis: row.analysis_provider
+      ? {
+          provider: row.analysis_provider,
+          model: row.analysis_model,
+          profileVersionId: row.analysis_profile_version_id,
+          ruleVersion: row.analysis_rule_version,
+        }
+      : undefined,
+  }
+}
+
+async function bodyOf(
+  request: IncomingMessage
+): Promise<Record<string, unknown>> {
+  let body = ''
+  for await (const chunk of request) {
+    body += String(chunk)
+    if (body.length > 1_000_000) throw new Error('Request is too large')
+  }
+  const parsed = JSON.parse(body || '{}') as unknown
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+    throw new Error('JSON object required')
+  return parsed as Record<string, unknown>
+}
+
+function send(
+  response: import('node:http').ServerResponse,
+  status: number,
+  body: unknown
+): void {
+  response.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+  })
+  response.end(JSON.stringify(body))
+}
+
+export function createSingleTableServiceApp(options: {
+  dataRoot: string
+  configRoot: string
+  secretFile?: string
+  promptsRoot?: string
+  gateway?: SingleTableModelGateway
+}) {
+  let repository: SingleTableRepository | undefined
+  let server: Server | undefined
+  const retrying = new Set<string>()
+  return {
+    async start(address: { host: string; port: number }) {
+      if (server) throw new Error('Service is already running')
+      if (!['127.0.0.1', '::1'].includes(address.host))
+        throw new Error('Single-table service only binds locally')
+      repository = await SingleTableRepository.open(options.dataRoot)
+      const activeRepository = repository
+      server = createServer((request, response) => {
+        void (async () => {
+          const url = new URL(request.url ?? '/', `http://${address.host}`)
+          const method = request.method ?? 'GET'
+          if (method === 'GET' && url.pathname === '/health')
+            return send(response, 200, {
+              service: 'airadar-single-table',
+              status: 'ready',
+            })
+          if (
+            method === 'GET' &&
+            (url.pathname === '/api/contents' || url.pathname === '/api/daily')
+          ) {
+            const config = await loadSingleTableConfig(options.configRoot)
+            const rows = activeRepository
+              .search({
+                keyword: url.searchParams.get('keyword') ?? undefined,
+                isJunk: url.pathname === '/api/daily' ? false : undefined,
+                limit: 500,
+              })
+              .filter(
+                (row) =>
+                  url.pathname !== '/api/daily' ||
+                  (row.process_status === 'completed' &&
+                    row.recommendation !== 'none')
+              )
+            return send(response, 200, {
+              items: await Promise.all(
+                rows.map((row) =>
+                  feedItem(activeRepository, row, config.sources.sources)
+                )
+              ),
+            })
+          }
+          if (method === 'GET' && url.pathname === '/api/sources') {
+            const config = await loadSingleTableConfig(options.configRoot)
+            const state = await loadSourceState(options.configRoot)
+            return send(response, 200, {
+              items: config.sources.sources.map((source) => ({
+                id: source.id,
+                name: source.account_name,
+                type: source.platform,
+                language: source.language,
+                externalIdentity: source.external_identity,
+                status:
+                  (state.sources[source.id]?.enabled_override ?? source.enabled)
+                    ? 'enabled'
+                    : 'disabled',
+                health: source.enabled ? 'healthy' : 'disabled',
+                effectiveParameters: { ids: [], values: {} },
+              })),
+            })
+          }
+          if (method === 'GET' && url.pathname === '/api/providers') {
+            const reader = createFileSecretReader(
+              options.secretFile ?? path.join(options.dataRoot, '.env')
+            )
+            const definitions = [
+              {
+                id: 'twitterapi.io',
+                name: 'TwitterAPI.io',
+                sourceType: 'x',
+                secret: 'TWITTERAPI_IO_KEY',
+              },
+              {
+                id: 'tikhub-x',
+                name: 'TikHub X',
+                sourceType: 'x',
+                secret: 'TIKHUB_API_KEY',
+              },
+              {
+                id: 'youtube-data-api',
+                name: 'YouTube Data API',
+                sourceType: 'youtube',
+                secret: 'YOUTUBE_API_KEY',
+              },
+              {
+                id: 'tikhub-youtube',
+                name: 'TikHub YouTube',
+                sourceType: 'youtube',
+                secret: 'TIKHUB_API_KEY',
+              },
+              {
+                id: 'native-rss',
+                name: '原生 RSS',
+                sourceType: 'rss',
+                secret: undefined,
+              },
+            ]
+            const items = await Promise.all(
+              definitions.map(async (provider, index) => {
+                let configured = !provider.secret
+                if (provider.secret) {
+                  try {
+                    configured = Boolean(await reader.get(provider.secret))
+                  } catch (error) {
+                    if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
+                      throw error
+                  }
+                }
+                return {
+                  id: provider.id,
+                  name: provider.name,
+                  sourceType: provider.sourceType,
+                  priority: index + 1,
+                  health: { state: configured ? 'healthy' : 'unconfigured' },
+                  secretStatus: { configured },
+                }
+              })
+            )
+            return send(response, 200, { items })
+          }
+          if (method === 'GET' && url.pathname === '/api/runtime')
+            return send(response, 200, {
+              mode: 'single-table',
+              ...activeRepository.runtimeOverview(),
+            })
+          if (method === 'GET' && url.pathname === '/api/config') {
+            const files = await Promise.all(
+              [
+                'sources.yaml',
+                'runtime.yaml',
+                'analysis.yaml',
+                'profile.yaml',
+                'retention.yaml',
+              ].map(async (name) => ({
+                name,
+                content: await readFile(
+                  path.join(options.configRoot, name),
+                  'utf8'
+                ),
+              }))
+            )
+            return send(response, 200, { mode: 'file', files })
+          }
+          if (method === 'POST') {
+            const origin = request.headers.origin
+            if (
+              origin &&
+              !/^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$/u.test(origin)
+            )
+              return send(response, 403, { error: 'origin_not_allowed' })
+            if (
+              !request.headers['content-type']?.startsWith('application/json')
+            )
+              return send(response, 415, { error: 'json_required' })
+            const sourceMatch = /^\/api\/sources\/([^/]+)\/status$/u.exec(
+              url.pathname
+            )
+            if (sourceMatch) {
+              const id = decodeURIComponent(sourceMatch[1]!)
+              const body = await bodyOf(request)
+              if (body.status !== 'enabled' && body.status !== 'disabled')
+                return send(response, 400, {
+                  error: 'Only enabled and disabled are supported in file mode',
+                })
+              const config = await loadSingleTableConfig(options.configRoot)
+              const source = config.sources.sources.find(
+                (candidate) => candidate.id === id
+              )
+              if (!source)
+                return send(response, 404, { error: 'source_not_found' })
+              const state = await loadSourceState(options.configRoot)
+              state.sources[id] = {
+                ...state.sources[id],
+                enabled_override: body.status === 'enabled',
+              }
+              await saveSourceState(options.configRoot, state)
+              return send(response, 200, {
+                source: {
+                  id,
+                  name: source.account_name,
+                  type: source.platform,
+                  externalIdentity: source.external_identity,
+                  language: source.language,
+                  status: body.status,
+                },
+              })
+            }
+            const sourceTest = /^\/api\/sources\/([^/]+)\/test-fetch$/u.exec(
+              url.pathname
+            )
+            if (sourceTest) {
+              await bodyOf(request)
+              const id = decodeURIComponent(sourceTest[1]!)
+              const config = await loadSingleTableConfig(options.configRoot)
+              const source = config.sources.sources.find(
+                (candidate) => candidate.id === id
+              )
+              if (!source)
+                return send(response, 404, { error: 'source_not_found' })
+              const reader = createFileSecretReader(
+                options.secretFile ?? path.join(options.dataRoot, '.env')
+              )
+              const credential = async (name: string) => {
+                try {
+                  return await reader.get(name)
+                } catch (error) {
+                  if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+                    return undefined
+                  throw error
+                }
+              }
+              const provider = createSingleTableSourceProvider({
+                tikHubToken: await credential('TIKHUB_API_KEY'),
+                twitterApiKey: await credential('TWITTERAPI_IO_KEY'),
+                youtubeApiKey: await credential('YOUTUBE_API_KEY'),
+              })
+              try {
+                const page = await provider.discover(source, 3)
+                return send(response, 200, {
+                  status: 'succeeded',
+                  providerId: page.providerId,
+                  items: page.items.map((item) => ({
+                    title: item.title,
+                    url: item.url,
+                    publishedAt: item.publishedAt,
+                  })),
+                })
+              } catch {
+                return send(response, 502, {
+                  status: 'failed',
+                  message: '远端试抓失败，请检查凭据、余额和供应商状态。',
+                })
+              }
+            }
+            if (url.pathname === '/api/contents/batch') {
+              const body = await bodyOf(request)
+              if (
+                !Array.isArray(body.ids) ||
+                body.ids.length === 0 ||
+                body.ids.length > 100 ||
+                body.ids.some((id) => typeof id !== 'string')
+              )
+                return send(response, 400, { error: 'invalid_content_ids' })
+              if (
+                body.operation !== 'mark-read' &&
+                body.operation !== 'mark-unread'
+              )
+                return send(response, 400, {
+                  error: 'unsupported_batch_operation',
+                })
+              for (const id of body.ids)
+                activeRepository.setRead(
+                  String(id),
+                  body.operation === 'mark-read'
+                )
+              return send(response, 200, { updated: body.ids.length })
+            }
+            const retryMatch = /^\/api\/contents\/([^/]+)\/retry$/u.exec(
+              url.pathname
+            )
+            if (retryMatch) {
+              await bodyOf(request)
+              const id = decodeURIComponent(retryMatch[1]!)
+              const row = activeRepository.getById(id)
+              if (!row)
+                return send(response, 404, { error: 'content_not_found' })
+              if (retrying.has(id))
+                return send(response, 409, { error: 'retry_already_running' })
+              if (
+                row.process_status !== 'failed' &&
+                row.process_status !== 'waiting-manual-transcription'
+              )
+                return send(response, 409, { error: 'content_not_retryable' })
+              retrying.add(id)
+              try {
+                const config = await loadSingleTableConfig(options.configRoot)
+                const source = config.sources.sources.find(
+                  (item) => item.id === row.source_account_id
+                )
+                if (!source)
+                  return send(response, 409, { error: 'source_not_configured' })
+                const reader = createFileSecretReader(
+                  options.secretFile ?? path.join(options.dataRoot, '.env')
+                )
+                const credential = async (name: string) => {
+                  try {
+                    return await reader.get(name)
+                  } catch (error) {
+                    if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+                      return undefined
+                    throw error
+                  }
+                }
+                const provider = createSingleTableSourceProvider({
+                  tikHubToken: await credential('TIKHUB_API_KEY'),
+                  twitterApiKey: await credential('TWITTERAPI_IO_KEY'),
+                  youtubeApiKey: await credential('YOUTUBE_API_KEY'),
+                })
+                const originalBody = await activeRepository.readBody(
+                  id,
+                  row.original_language === 'zh' ? 'zh' : 'en'
+                )
+                let original: import('@airadar/runtime').OriginalContent
+                let capturedCalls: import('@airadar/runtime').LogEvent[] = []
+                if (originalBody) {
+                  original = {
+                    platform: String(row.source_platform),
+                    sourceType: String(row.source_type),
+                    sourceAccountId: String(row.source_account_id),
+                    sourceAccountName: String(row.source_account_name),
+                    externalContentId: row.external_content_id as
+                      string | undefined,
+                    canonicalUrl: row.canonical_url as string | undefined,
+                    title: row.title,
+                    originalTitle: row.original_title ?? undefined,
+                    body: originalBody,
+                    kind: row.content_kind,
+                    format:
+                      row.original_format as import('@airadar/runtime').OriginalContent['format'],
+                    language: row.original_language === 'zh' ? 'zh' : 'en',
+                    publishedAt: row.published_at as string | undefined,
+                  }
+                } else {
+                  const page = await provider.discover(
+                    source,
+                    config.runtime.collection.per_source_limit
+                  )
+                  const item = page.items.find(
+                    (candidate) =>
+                      candidate.externalId === row.external_content_id ||
+                      candidate.url === row.canonical_url
+                  )
+                  if (!item)
+                    return send(response, 409, {
+                      error: 'original_not_in_current_source_page',
+                    })
+                  const resolved = await provider.resolve(source, item)
+                  original = resolved.original
+                  capturedCalls = [
+                    {
+                      action: 'discover',
+                      stage: 'discovered',
+                      status: 'succeeded',
+                      trigger: 'manual-retry',
+                      request: page.request,
+                      response: page.response,
+                    },
+                    ...(resolved.calls ?? []).map((call) => ({
+                      ...call,
+                      trigger: 'manual-retry' as const,
+                    })),
+                  ]
+                }
+                await activeRepository.appendLog(id, {
+                  action: 'manual-retry',
+                  stage: 'discovered',
+                  status: 'succeeded',
+                  trigger: 'manual-retry',
+                  request: { contentId: id },
+                  response: { accepted: true },
+                })
+                const gateway =
+                  options.gateway ??
+                  createSingleTableCodexGateway(
+                    (await credential('CODEX_AUTH_PATH')) ??
+                      path.join(homedir(), '.codex', 'auth.json'),
+                    config.analysis.model.name
+                  )
+                const completed = await processSingleTableContent({
+                  repository: activeRepository,
+                  gateway,
+                  promptsRoot:
+                    options.promptsRoot ??
+                    path.resolve(
+                      import.meta.dirname,
+                      '../../../docs/prompts/single-table-content'
+                    ),
+                  original,
+                  capturedCalls,
+                  profile: config.profile,
+                  profileVersion: String(config.profile.version),
+                  scoring: {
+                    weights: config.analysis.scoring.weights,
+                    coreThreshold: config.analysis.scoring.core_threshold,
+                    exploreThreshold: config.analysis.scoring.explore_threshold,
+                    coreMinLevels: config.analysis.scoring.core_min_levels,
+                    exploreMinLevels:
+                      config.analysis.scoring.explore_min_levels,
+                  },
+                  longContentMinChars:
+                    config.analysis.summarization.long_content_min_chars,
+                  translationMinimumTotalScore:
+                    config.analysis.translation.minimum_total_score,
+                })
+                return send(response, 200, {
+                  item: await feedItem(
+                    activeRepository,
+                    completed,
+                    config.sources.sources
+                  ),
+                })
+              } catch {
+                return send(response, 502, {
+                  error: 'manual_retry_failed',
+                  message: '重试失败，详情见该内容的执行日志。',
+                })
+              } finally {
+                retrying.delete(id)
+              }
+            }
+            const match =
+              /^\/api\/contents\/([^/]+)\/(read|actions|junk)$/u.exec(
+                url.pathname
+              )
+            if (match) {
+              const id = decodeURIComponent(match[1]!)
+              const body = await bodyOf(request)
+              if (match[2] === 'read')
+                activeRepository.setRead(id, body.read === true)
+              if (match[2] === 'actions') {
+                const allowed = new Set([
+                  'favorite',
+                  'card',
+                  'video',
+                  'article',
+                  'project',
+                ])
+                if (
+                  !Array.isArray(body.actions) ||
+                  body.actions.some((action) => !allowed.has(String(action)))
+                )
+                  throw new Error('Invalid utilization action')
+                activeRepository.setUtilizationActions(
+                  id,
+                  body.actions as Array<
+                    'favorite' | 'card' | 'video' | 'article' | 'project'
+                  >
+                )
+              }
+              if (match[2] === 'junk')
+                await activeRepository.setManualJunk(
+                  id,
+                  body.isJunk === true,
+                  typeof body.reason === 'string' ? body.reason : undefined,
+                  typeof body.note === 'string' ? body.note : undefined
+                )
+              const config = await loadSingleTableConfig(options.configRoot)
+              return send(response, 200, {
+                item: await feedItem(
+                  activeRepository,
+                  activeRepository.getById(id)!,
+                  config.sources.sources
+                ),
+              })
+            }
+          }
+          return send(response, 404, { error: 'not_found' })
+        })().catch(() => {
+          if (!response.headersSent)
+            send(response, 400, { error: 'request_failed' })
+          else response.end()
+        })
+      })
+      try {
+        await new Promise<void>((resolve, reject) => {
+          server?.once('error', reject)
+          server?.listen(address.port, address.host, resolve)
+        })
+      } catch (error) {
+        server = undefined
+        repository.close()
+        repository = undefined
+        throw error
+      }
+      const bound = server.address()
+      if (!bound || typeof bound === 'string')
+        throw new Error('Invalid listen address')
+      return { host: address.host, port: bound.port }
+    },
+    async stop() {
+      const current = server
+      server = undefined
+      if (current)
+        await new Promise<void>((resolve) => current.close(() => resolve()))
+      repository?.close()
+      repository = undefined
+    },
+  }
+}

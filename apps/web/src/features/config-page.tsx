@@ -29,8 +29,13 @@ interface ConfigData {
   }[]
   fixedRules: string[]
 }
+interface FileConfigData {
+  mode: 'file'
+  files: Array<{ name: string; content: string }>
+}
 export function ConfigPage() {
   const [data, setData] = useState<ConfigData>()
+  const [fileData, setFileData] = useState<FileConfigData>()
   const [draft, setDraft] = useState('')
   const [preview, setPreview] = useState<{
     before: unknown
@@ -54,10 +59,16 @@ export function ConfigPage() {
     const query = new URLSearchParams({ level: scopeLevel })
     if (scopeLevel === 'sourceType') query.set('sourceType', sourceType)
     if (scopeLevel === 'source' && sourceId) query.set('sourceId', sourceId)
-    return api<ConfigData>(`/api/config?${query}`).then((value) => {
-      setData(value)
-      setDraft(JSON.stringify(value.own, null, 2))
-    })
+    return api<ConfigData | FileConfigData>(`/api/config?${query}`).then(
+      (value) => {
+        if ('files' in value) {
+          setFileData(value)
+          return
+        }
+        setData(value)
+        setDraft(JSON.stringify(value.own, null, 2))
+      }
+    )
   }, [scopeLevel, sourceId, sourceType])
   useEffect(() => {
     void load()
@@ -91,6 +102,31 @@ export function ConfigPage() {
     await post('/api/config/rollback', { versionId })
     setMessage('已生成回退版本并立即生效。')
     await load()
+  }
+  if (fileData) {
+    return (
+      <div className='flex h-full min-h-0 flex-col'>
+        <PageHeader
+          title='系统配置'
+          description='当前配置保存在新数据目录的 YAML 文件中；修改文件后重新运行采集即可生效'
+        />
+        <div className='min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 pb-24 md:p-6 lg:pb-6'>
+          <div className='mx-auto max-w-4xl space-y-6'>
+            {fileData.files.map((file) => (
+              <section key={file.name} className='border-t pt-4'>
+                <h2 className='font-mono text-sm font-medium'>{file.name}</h2>
+                <pre className='mt-3 overflow-x-auto whitespace-pre-wrap rounded-sm bg-foreground/[0.025] p-4 text-xs leading-5'>
+                  {file.content}
+                </pre>
+              </section>
+            ))}
+            <p className='text-sm text-muted-foreground'>
+              密钥文件 .env 和本机信源状态不在页面展示。
+            </p>
+          </div>
+        </div>
+      </div>
+    )
   }
   return (
     <div className='flex h-full min-h-0 flex-col'>

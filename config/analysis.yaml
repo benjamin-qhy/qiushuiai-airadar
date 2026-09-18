@@ -1,0 +1,27 @@
+model:
+  provider: codex
+  name: gpt-5.3-codex
+prompts:
+  classify: 3
+  score: 3
+  translate: 3
+translation:
+  minimum_total_score: 60
+summarization:
+  long_content_min_chars: 1000
+scoring:
+  weights:
+    interest_fit: 40
+    concrete_gain: 30
+    substance: 20
+    new_information: 10
+  core_threshold: 80
+  explore_threshold: 60
+  core_min_levels:
+    interest_fit: 5
+    concrete_gain: 4
+    substance: 3
+  explore_min_levels:
+    interest_fit: 4
+    concrete_gain: 3
+    substance: 3

@@ -1,0 +1,3 @@
+junk:
+  delete_after_days: 30
+  automatic_delete: false

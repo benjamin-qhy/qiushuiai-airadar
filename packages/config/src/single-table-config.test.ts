@@ -1,0 +1,104 @@
+import path from 'node:path'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+
+import { afterEach, expect, it } from 'vitest'
+
+import {
+  analysisConfigSchema,
+  initializeSingleTableConfig,
+  loadSingleTableConfig,
+  loadSourceState,
+  runtimeConfigSchema,
+  saveSourceState,
+} from './single-table-config.js'
+
+const roots: string[] = []
+afterEach(async () => {
+  await Promise.all(
+    roots.splice(0).map((root) => rm(root, { recursive: true }))
+  )
+})
+
+it('loads all YAML configuration and preserves source order', async () => {
+  const config = await loadSingleTableConfig(
+    path.resolve(import.meta.dirname, '../../../config')
+  )
+  expect(config.sources.sources).toHaveLength(33)
+  expect(config.sources.sources[0]?.id).toBe('x_openai')
+  expect(
+    config.sources.sources
+      .filter((source) => source.enabled)
+      .map((source) => source.id)
+  ).toEqual(['x_openai', 'yt_openai', 'openai_news'])
+  expect(config.runtime.collection.list_pages).toBe(1)
+  expect(config.runtime.collection.serial_sources).toBe(true)
+  expect(config.analysis.scoring.weights).toEqual({
+    interest_fit: 40,
+    concrete_gain: 30,
+    substance: 20,
+    new_information: 10,
+  })
+})
+
+it('rejects pagination and invalid scoring weights', () => {
+  expect(
+    runtimeConfigSchema.safeParse({
+      timezone: 'Asia/Shanghai',
+      collection: {
+        schedule: '0 8 * * *',
+        per_source_limit: 20,
+        list_pages: 2,
+        max_retries: 2,
+        serial_sources: true,
+      },
+    }).success
+  ).toBe(false)
+  expect(
+    analysisConfigSchema.safeParse({
+      model: { provider: 'codex', name: 'model' },
+      prompts: { classify: 3, score: 3, translate: 3 },
+      translation: { minimum_total_score: 60 },
+      summarization: { long_content_min_chars: 1000 },
+      scoring: {
+        weights: {
+          interest_fit: 50,
+          concrete_gain: 30,
+          substance: 20,
+          new_information: 10,
+        },
+        core_threshold: 80,
+        explore_threshold: 60,
+        core_min_levels: { interest_fit: 5, concrete_gain: 4, substance: 3 },
+        explore_min_levels: { interest_fit: 4, concrete_gain: 3, substance: 3 },
+      },
+    }).success
+  ).toBe(false)
+})
+
+it('initializes editable YAML under the new data root without overwriting edits', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'airadar-config-'))
+  roots.push(root)
+  const templates = path.resolve(import.meta.dirname, '../../../config')
+  const configRoot = await initializeSingleTableConfig(templates, root)
+  expect(
+    (await loadSingleTableConfig(configRoot)).sources.sources
+  ).toHaveLength(33)
+  await writeFile(path.join(configRoot, 'profile.yaml'), 'custom: true\n')
+  await initializeSingleTableConfig(templates, root)
+  expect(await readFile(path.join(configRoot, 'profile.yaml'), 'utf8')).toBe(
+    'custom: true\n'
+  )
+  expect(await loadSourceState(configRoot)).toEqual({ sources: {} })
+  await saveSourceState(configRoot, {
+    sources: {
+      x_openai: {
+        last_seen_content_id: '123',
+        last_collected_at: '2026-09-18T00:00:00.000Z',
+      },
+    },
+  })
+  expect(
+    (await loadSourceState(configRoot)).sources.x_openai?.last_seen_content_id
+  ).toBe('123')
+})

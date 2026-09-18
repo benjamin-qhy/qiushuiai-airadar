@@ -20,6 +20,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@airadar/config": "workspace:*",
     "@airadar/pipeline": "workspace:*",
     "@airadar/runtime": "workspace:*",
     "@airadar/source-adapters": "workspace:*"

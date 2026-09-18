@@ -1,5 +1,6 @@
 import {
   contentIdentity,
+  type ContentInteraction,
   type LogEvent,
   type OriginalContent,
   type SingleTableRepository,
@@ -18,6 +19,7 @@ export interface ConfiguredSource {
   external_identity: string
   language: 'zh' | 'en'
   enabled: boolean
+  per_source_limit?: number
 }
 
 export interface DiscoveredContent {
@@ -28,6 +30,7 @@ export interface DiscoveredContent {
   body?: string
   kind: OriginalContent['kind']
   format?: OriginalContent['format']
+  interaction?: ContentInteraction
   opaque?: unknown
 }
 
@@ -93,6 +96,7 @@ export async function collectSourcesSerially(
   const results: SourceRunResult[] = []
   for (const source of options.sources) {
     if (!source.enabled) continue
+    const sourceLimit = source.per_source_limit ?? options.perSourceLimit
     const result = {
       sourceId: source.id,
       discovered: 0,
@@ -103,14 +107,14 @@ export async function collectSourcesSerially(
     results.push(result)
     let page: SinglePageDiscovery
     try {
-      page = await options.provider.discover(source, options.perSourceLimit)
+      page = await options.provider.discover(source, sourceLimit)
     } catch (error) {
       result.failed++
       options.onError?.(source, undefined, error)
       continue
     }
-    result.discovered = Math.min(page.items.length, options.perSourceLimit)
-    for (const item of page.items.slice(0, options.perSourceLimit)) {
+    result.discovered = Math.min(page.items.length, sourceLimit)
+    for (const item of page.items.slice(0, sourceLimit)) {
       let original: OriginalContent | undefined
       try {
         const resolved = await options.provider.resolve(source, item)
@@ -186,6 +190,13 @@ export async function collectSourcesSerially(
           options.onError?.(source, item, recordError)
         }
         options.onError?.(source, item, error)
+      } finally {
+        if (item.interaction)
+          options.repository.updateInteractionBySourceId(
+            source.id,
+            item.externalId,
+            item.interaction
+          )
       }
     }
     if (options.afterSource) await options.afterSource(source, result, page)

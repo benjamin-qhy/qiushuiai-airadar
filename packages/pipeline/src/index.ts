@@ -1148,6 +1148,8 @@ export async function enrichArticle(
   url: string,
   fetcher: Fetcher = globalThis.fetch
 ): Promise<{ title: string; body: string; canonicalUrl: string; images: Array<{ order: number; url: string }> }> {
+  const articleUserAgent =
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'
   const readResponse = async (response: Response): Promise<string> => {
     if (!response.body) throw new Error('Article response has no body')
     const reader = response.body.getReader()
@@ -1177,7 +1179,7 @@ export async function enrichArticle(
       const response = await fetcher(current, {
         headers: {
           accept: 'text/html,application/xhtml+xml',
-          'user-agent': 'AI-Radar/0.1 (+personal content reader)',
+          'user-agent': articleUserAgent,
         },
         redirect: 'follow',
         signal: AbortSignal.timeout(30_000),
@@ -1222,7 +1224,7 @@ export async function enrichArticle(
             headers: {
               host: current.host,
               accept: 'text/html,application/xhtml+xml',
-              'user-agent': 'AI-Radar/0.1 (+personal content reader)',
+              'user-agent': articleUserAgent,
             },
           },
           (response) => {

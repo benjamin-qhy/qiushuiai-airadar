@@ -6,7 +6,7 @@ prompts:
   score: 3
   translate: 3
 translation:
-  minimum_total_score: 60
+  minimum_total_score: 10
 summarization:
   long_content_min_chars: 1000
 scoring:

@@ -1558,6 +1558,36 @@ describe('RSS discovery and enrichment', () => {
     ).rejects.toThrow(/complete article body/i)
   })
 
+  it('fetches a browser-readable article before passing it to Readability', async () => {
+    const paragraph =
+      'A complete article paragraph with enough useful words to pass readability extraction. '.repeat(
+        5
+      )
+    const fetcher = async (_url: URL | RequestInfo, init?: RequestInit) => {
+      const headers = new Headers(init?.headers)
+      const userAgent = headers.get('user-agent') ?? ''
+      if (
+        !userAgent.includes('Mozilla/5.0') ||
+        !userAgent.includes('Chrome/')
+      ) {
+        return new Response('Forbidden', { status: 403 })
+      }
+      return new Response(
+        `<html><head><title>Readable article</title></head><body><article><p>${paragraph}</p></article></body></html>`,
+        {
+          headers: { 'content-type': 'text/html' },
+        }
+      )
+    }
+
+    await expect(
+      enrichArticle('https://example.com/story', fetcher)
+    ).resolves.toMatchObject({
+      title: 'Readable article',
+      body: expect.stringContaining('complete article paragraph'),
+    })
+  })
+
   it('keeps every inline article image in reading order', async () => {
     const paragraph = 'A complete article paragraph with enough useful words to pass readability extraction. '.repeat(5)
     const result = await enrichArticle('https://example.com/story', async () =>

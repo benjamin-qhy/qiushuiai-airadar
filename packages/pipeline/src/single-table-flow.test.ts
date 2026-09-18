@@ -135,6 +135,49 @@ describe('single-table AI flow', () => {
     expect(result.chinese_markdown_path).toBeNull()
   })
 
+  it('translates at 10 points and skips English content below 10 points', async () => {
+    const classify =
+      '---\nkeywords: ["工作流"]\nspam:\n  isJunk: false\n  reason: null\n---'
+    const scoring = (interestFit: number) => JSON.stringify({
+      valueSummary: '提供基础参考。',
+      scores: {
+        interestFit: { level: interestFit, reason: '相关' },
+        concreteGain: { level: 1, reason: '少量收获' },
+        substance: { level: 1, reason: '内容较少' },
+        newInformation: { level: 1, reason: '信息较少' },
+      },
+    })
+    const untranslated = await fixture(
+      { classify, score: scoring(1) },
+      10
+    )
+    expect(untranslated.result.total_score).toBe(0)
+    expect(untranslated.calls.map((call) => call.stage)).toEqual([
+      'classify',
+      'score',
+    ])
+
+    const translated = await fixture(
+      {
+        classify,
+        score: scoring(2),
+        translate: JSON.stringify({
+          chineseTitle: '中文标题',
+          chineseBody: '中文意译内容。',
+        }),
+      },
+      10,
+      { ...original, externalContentId: 'threshold-10' }
+    )
+    expect(translated.result.total_score).toBe(10)
+    expect(translated.result.translated_to_chinese).toBe(1)
+    expect(translated.calls.map((call) => call.stage)).toEqual([
+      'classify',
+      'score',
+      'translate',
+    ])
+  })
+
   it('keeps Chinese original and makes only classification plus scoring calls', async () => {
     const { result, calls } = await fixture(
       {

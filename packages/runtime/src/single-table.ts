@@ -42,6 +42,15 @@ export interface OriginalContent {
   discoveredAt?: string
 }
 
+export interface ContentInteraction {
+  capturedAt: string
+  views: number | null
+  likes: number | null
+  comments: number | null
+  shares: number | null
+  saves: number | null
+}
+
 export interface ContentRow {
   [key: string]: unknown
   id: string
@@ -377,6 +386,33 @@ export class SingleTableRepository {
       .get(id) as ContentRow | undefined
   }
 
+  updateInteractionBySourceId(
+    sourceAccountId: string,
+    externalContentId: string,
+    interaction: ContentInteraction
+  ): number {
+    const result = this.database
+      .prepare(
+        `UPDATE contents SET interaction_captured_at=?,
+         views=COALESCE(?, views), likes=COALESCE(?, likes),
+         comments=COALESCE(?, comments), shares=COALESCE(?, shares),
+         saves=COALESCE(?, saves), updated_at=?
+         WHERE source_account_id=? AND external_content_id=?`
+      )
+      .run(
+        interaction.capturedAt,
+        interaction.views,
+        interaction.likes,
+        interaction.comments,
+        interaction.shares,
+        interaction.saves,
+        new Date().toISOString(),
+        sourceAccountId,
+        externalContentId
+      )
+    return Number(result.changes)
+  }
+
   async readBody(id: string, language: 'zh' | 'en'): Promise<string | undefined> {
     const row = this.getById(id)
     if (!row) return undefined
@@ -386,6 +422,16 @@ export class SingleTableRepository {
     const match = /^---\n[\s\S]*?\n---\n\n/u.exec(text)
     if (!match) throw new Error(`Invalid content Markdown: ${relative}`)
     return text.slice(match[0].length).trimEnd()
+  }
+
+  async readLog(id: string): Promise<string | undefined> {
+    const row = this.getById(id)
+    if (!row) return undefined
+    const text = await readFile(
+      path.join(this.dataRoot, row.execution_log_markdown_path),
+      'utf8'
+    )
+    return String(redact(text))
   }
 
   async saveOriginal(input: OriginalContent): Promise<ContentRow> {

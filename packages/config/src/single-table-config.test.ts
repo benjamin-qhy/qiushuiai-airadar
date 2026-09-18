@@ -11,6 +11,7 @@ import {
   loadSourceState,
   runtimeConfigSchema,
   saveSourceState,
+  sourcesConfigSchema,
 } from './single-table-config.js'
 
 const roots: string[] = []
@@ -39,6 +40,7 @@ it('loads all YAML configuration and preserves source order', async () => {
     substance: 20,
     new_information: 10,
   })
+  expect(config.analysis.translation.minimum_total_score).toBe(10)
 })
 
 it('rejects pagination and invalid scoring weights', () => {
@@ -72,6 +74,26 @@ it('rejects pagination and invalid scoring weights', () => {
         core_min_levels: { interest_fit: 5, concrete_gain: 4, substance: 3 },
         explore_min_levels: { interest_fit: 4, concrete_gain: 3, substance: 3 },
       },
+    }).success
+  ).toBe(false)
+})
+
+it('accepts a source-specific collection limit and rejects invalid limits', () => {
+  const source = {
+    id: 'yt_ibm_tech',
+    platform: 'youtube',
+    account_name: 'YouTube / IBM Technology',
+    external_identity: 'https://www.youtube.com/@IBMTechnology',
+    language: 'en',
+    enabled: true,
+  }
+  expect(
+    sourcesConfigSchema.parse({ sources: [{ ...source, per_source_limit: 5 }] })
+      .sources[0]?.per_source_limit
+  ).toBe(5)
+  expect(
+    sourcesConfigSchema.safeParse({
+      sources: [{ ...source, per_source_limit: 0 }],
     }).success
   ).toBe(false)
 })

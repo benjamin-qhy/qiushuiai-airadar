@@ -23,6 +23,7 @@ interface ProviderOptions {
   twitterApiKey?: string
   youtubeApiKey?: string
   fetch?: typeof fetch
+  articleEnricher?: typeof enrichArticle
 }
 
 function auditFetch(
@@ -173,6 +174,7 @@ export function createSingleTableSourceProvider(
           title: item.content.title,
           publishedAt: item.publishedAt,
           body: item.description,
+          interaction: item.interaction,
           kind: item.content.kind,
           format: item.content.kind === 'article' ? 'plain_text' : 'plain_text',
         }
@@ -194,15 +196,32 @@ export function createSingleTableSourceProvider(
       let format: 'plain_text' | 'subtitle' = 'plain_text'
       if (item.kind === 'article') {
         if (!url) throw new Error('Article URL is missing')
+        const isXArticle =
+          source.platform === 'x' && isXArticleUrl(url) && Boolean(options.twitterApiKey)
         const article =
-          source.platform === 'x' && isXArticleUrl(url) && options.twitterApiKey
+          isXArticle && options.twitterApiKey
             ? await fetchTwitterApiIoArticle({
                 apiKey: options.twitterApiKey,
                 tweetId: item.externalId,
                 canonicalUrl: url,
                 fetch: trackedFetch,
               })
-            : await enrichArticle(url, trackedFetch)
+            : options.fetch
+              ? await (options.articleEnricher ?? enrichArticle)(
+                  url,
+                  trackedFetch
+                )
+              : await (options.articleEnricher ?? enrichArticle)(url)
+        if (!isXArticle && !options.fetch) {
+          calls.push({
+            request: { method: 'GET', url, transport: 'native-http' },
+            response: {
+              title: article.title,
+              canonicalUrl: article.canonicalUrl,
+              bodyLength: article.body.length,
+            },
+          })
+        }
         body = article.body
         title = article.title
         url = article.canonicalUrl

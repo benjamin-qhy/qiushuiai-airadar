@@ -79,6 +79,7 @@ export const sourcesConfigSchema = z.object({
       external_identity: z.string().min(1),
       language: z.enum(['zh', 'en']),
       enabled: z.boolean(),
+      per_source_limit: z.number().int().positive().optional(),
     })
   ),
 })

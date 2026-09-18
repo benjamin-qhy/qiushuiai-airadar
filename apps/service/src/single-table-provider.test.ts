@@ -1,4 +1,4 @@
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 
 import { createSingleTableSourceProvider } from './single-table-provider.js'
 
@@ -55,4 +55,80 @@ it('discovers one RSS page, fetches article body, and records both requests and 
   expect(JSON.stringify(resolved.calls?.[0]?.response)).toContain(
     'Example Article'
   )
+})
+
+it('uses the native article request path for live RSS and keeps an audit event', async () => {
+  const originalFetch = globalThis.fetch
+  const feedUrl = 'https://example.com/feed.xml'
+  const articleUrl = 'https://example.com/article'
+  globalThis.fetch = vi.fn(async () =>
+    new Response(
+      `<rss><channel><item><guid>one</guid><title>Example</title><link>${articleUrl}</link><pubDate>${new Date().toUTCString()}</pubDate></item></channel></rss>`,
+      { status: 200, headers: { 'content-type': 'application/xml' } }
+    )
+  ) as typeof fetch
+  try {
+    const articleEnricher = vi.fn(
+      async (_url: string, fetcher?: typeof fetch) => {
+        if (fetcher) throw new Error('Wrapped article request used')
+        return {
+          title: 'Example Article',
+          body: 'Complete article body. '.repeat(20),
+          canonicalUrl: articleUrl,
+          images: [],
+        }
+      }
+    )
+    const provider = createSingleTableSourceProvider({ articleEnricher })
+    const source = {
+      id: 'feed',
+      platform: 'rss',
+      account_name: 'Example',
+      external_identity: feedUrl,
+      language: 'en' as const,
+      enabled: true,
+    }
+    const page = await provider.discover(source, 1)
+    const resolved = await provider.resolve(source, page.items[0]!)
+    expect(articleEnricher).toHaveBeenCalledWith(articleUrl)
+    expect(resolved.original.body).toContain('Complete article body')
+    expect(resolved.calls?.[0]).toMatchObject({
+      request: { method: 'GET', url: articleUrl },
+      response: { title: 'Example Article' },
+    })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+it('passes X timeline interaction counts through single-table discovery', async () => {
+  const provider = createSingleTableSourceProvider({
+    twitterApiKey: 'test-only',
+    fetch: async (input) => String(input).includes('/user/info')
+      ? Response.json({ data: { id: 'author-1' } })
+      : Response.json({ data: { tweets: [{
+          id: '123456789',
+          text: 'A useful AI workflow update.',
+          createdAt: 'Fri Sep 18 01:00:00 +0000 2026',
+          viewCount: 26743,
+          likeCount: 623,
+          replyCount: 77,
+          retweetCount: 21,
+        }] } }),
+  })
+  const source = {
+    id: 'x-example',
+    platform: 'x',
+    account_name: 'X / Example',
+    external_identity: 'Example',
+    language: 'en' as const,
+    enabled: true,
+  }
+  const page = await provider.discover(source, 1)
+  expect(page.items[0]?.interaction).toMatchObject({
+    views: 26743,
+    likes: 623,
+    comments: 77,
+    shares: 21,
+  })
 })

@@ -33,6 +33,7 @@ it('runs sources and items serially with exactly one list call per source', asyn
       external_identity: 'first',
       language: 'en',
       enabled: true,
+      per_source_limit: 2,
     },
     {
       id: 'second',
@@ -69,14 +70,22 @@ it('runs sources and items serially with exactly one list call per source', asyn
     translationMinimumTotalScore: 60,
     perSourceLimit: 5,
     provider: {
-      async discover(source) {
-        events.push(`discover:${source.id}`)
+      async discover(source, limit) {
+        events.push(`discover:${source.id}:${limit}`)
         return {
           items: [
             {
               externalId: `${source.id}-1`,
               body: 'A short post.',
               kind: 'short_post',
+              interaction: {
+                capturedAt: '2026-09-18T00:00:00.000Z',
+                views: 123,
+                likes: 7,
+                comments: 2,
+                shares: 1,
+                saves: null,
+              },
             },
           ],
           request: { source: source.id },
@@ -121,13 +130,17 @@ it('runs sources and items serially with exactly one list call per source', asyn
     { sourceId: 'second', discovered: 1, completed: 1, failed: 0, skipped: 0 },
   ])
   expect(events).toEqual([
-    'discover:first',
+    'discover:first:2',
     'resolve:first',
     'model:classify',
-    'discover:second',
+    'discover:second:5',
     'resolve:second',
     'model:classify',
   ])
+  const stored = repository.search({ sourceAccountId: 'first' })[0]
+  expect(stored?.views).toBe(123)
+  expect(stored?.likes).toBe(7)
+  expect(stored?.interaction_captured_at).toBe('2026-09-18T00:00:00.000Z')
 })
 
 it('does not automatically retry a failed content row on the next collection', async () => {
@@ -185,7 +198,18 @@ it('does not automatically retry a failed content row on the next collection', a
     provider: {
       async discover() {
         return {
-          items: [{ externalId: 'failed-1', kind: 'short_post' }],
+          items: [{
+            externalId: 'failed-1',
+            kind: 'short_post',
+            interaction: {
+              capturedAt: '2026-09-18T01:00:00.000Z',
+              views: 456,
+              likes: 12,
+              comments: null,
+              shares: null,
+              saves: null,
+            },
+          }],
           request: {},
           response: {},
         }
@@ -218,4 +242,8 @@ it('does not automatically retry a failed content row on the next collection', a
     { sourceId: 'first', discovered: 1, completed: 0, failed: 0, skipped: 1 },
   ])
   expect(modelCalls).toBe(0)
+  const stored = repository.search({ sourceAccountId: 'first' })[0]
+  expect(stored?.process_status).toBe('failed')
+  expect(stored?.views).toBe(456)
+  expect(stored?.likes).toBe(12)
 })

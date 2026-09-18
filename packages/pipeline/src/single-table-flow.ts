@@ -102,7 +102,14 @@ export function createSingleTableCodexGateway(
         model: message.model,
         stopReason: message.stopReason,
         errorMessage: message.errorMessage,
-        content: message.content,
+        // Internal reasoning payloads and signatures are not user-facing
+        // response content and must never be persisted to Markdown logs.
+        content: message.content
+          .filter((block) => block.type === 'text')
+          .map((block) => ({ type: 'text', text: block.text })),
+        omittedNonTextBlocks: message.content.filter(
+          (block) => block.type !== 'text'
+        ).length,
         usage: message.usage,
       }
       if (message.stopReason === 'error') {

@@ -24,7 +24,7 @@ it('loads all YAML configuration and preserves source order', async () => {
   const config = await loadSingleTableConfig(
     path.resolve(import.meta.dirname, '../../../config')
   )
-  expect(config.sources.sources).toHaveLength(33)
+  expect(config.sources.sources).toHaveLength(34)
   expect(config.sources.sources[0]?.id).toBe('x_openai')
   expect(
     config.sources.sources
@@ -83,7 +83,7 @@ it('initializes editable YAML under the new data root without overwriting edits'
   const configRoot = await initializeSingleTableConfig(templates, root)
   expect(
     (await loadSingleTableConfig(configRoot)).sources.sources
-  ).toHaveLength(33)
+  ).toHaveLength(34)
   await writeFile(path.join(configRoot, 'profile.yaml'), 'custom: true\n')
   await initializeSingleTableConfig(templates, root)
   expect(await readFile(path.join(configRoot, 'profile.yaml'), 'utf8')).toBe(

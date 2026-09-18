@@ -84,6 +84,12 @@ sources:
     external_identity: 'bcherny'
     language: en
     enabled: false
+  - id: x_dotey
+    platform: x
+    account_name: 'X / 宝玉'
+    external_identity: 'dotey'
+    language: zh
+    enabled: false
   - id: x_catwu
     platform: x
     account_name: 'X / Cat Wu'

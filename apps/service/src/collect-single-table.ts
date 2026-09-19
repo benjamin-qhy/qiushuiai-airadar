@@ -52,6 +52,20 @@ export async function collectSingleTable(options: {
     tikHubToken,
     twitterApiKey,
     youtubeApiKey,
+    providerOrder: {
+      x: [
+        config.providers.platforms.x.preferred,
+        config.providers.platforms.x.preferred === 'twitterapi.io'
+          ? 'tikhub-x'
+          : 'twitterapi.io',
+      ],
+      youtube: [
+        config.providers.platforms.youtube.preferred,
+        config.providers.platforms.youtube.preferred === 'youtube-data-api'
+          ? 'tikhub-youtube'
+          : 'youtube-data-api',
+      ],
+    },
   })
   const repository = await SingleTableRepository.open(dataRoot)
   try {

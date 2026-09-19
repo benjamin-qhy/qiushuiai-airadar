@@ -1,4 +1,6 @@
-import { readFile, stat } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
+import path from 'node:path'
 
 export * from './single-table-config.js'
 
@@ -51,6 +53,32 @@ export function createFileSecretReader(filePath: string): SecretReader {
       return value || undefined
     },
   }
+}
+
+export async function updateFileSecret(
+  filePath: string,
+  name: string,
+  value: string | undefined
+): Promise<void> {
+  if (!secretNamePattern.test(name))
+    throw new Error(`Invalid secret name: ${name}`)
+  if (value?.includes('\n') || value?.includes('\r'))
+    throw new Error('Secret value must be one line')
+  let contents = ''
+  try {
+    contents = await readFile(filePath, 'utf8')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  const replacement = value ? `${name}=${JSON.stringify(value)}\n` : ''
+  const pattern = new RegExp(`^${name}=.*(?:\\r?\\n|$)`, 'mu')
+  const updated = pattern.test(contents)
+    ? contents.replace(pattern, replacement)
+    : `${contents}${contents && !contents.endsWith('\n') ? '\n' : ''}${replacement}`
+  await mkdir(path.dirname(filePath), { recursive: true })
+  const temporary = `${filePath}.${randomUUID()}.tmp`
+  await writeFile(temporary, updated, { flag: 'wx', mode: 0o600 })
+  await rename(temporary, filePath)
 }
 
 export function asSecretStatusReader(reader: SecretReader): SecretStatusReader {

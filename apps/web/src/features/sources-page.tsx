@@ -1,12 +1,27 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Activity, CheckCircle2, FlaskConical, Search } from 'lucide-react'
+import {
+  Activity,
+  CheckCircle2,
+  FlaskConical,
+  Pencil,
+  Plus,
+  Search,
+  Trash2,
+} from 'lucide-react'
 import { PageHeader } from '@/components/page-header'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { api, post } from '@/lib/api'
+import { api, post, put, remove } from '@/lib/api'
 import type { ProviderItem, SourceItem } from '@/types'
 
 const typeLabels: Record<string, string> = {
@@ -24,6 +39,26 @@ const healthLabels: Record<string, string> = {
   disabled: '已停用',
 }
 
+interface SourceDraft {
+  id: string
+  type: 'x' | 'youtube' | 'rss'
+  name: string
+  externalIdentity: string
+  language: 'zh' | 'en'
+  enabled: boolean
+  perSourceLimit: string
+}
+
+const emptySource: SourceDraft = {
+  id: '',
+  type: 'rss',
+  name: '',
+  externalIdentity: '',
+  language: 'zh',
+  enabled: true,
+  perSourceLimit: '',
+}
+
 export function SourcesPage() {
   const [sources, setSources] = useState<SourceItem[]>()
   const [providers, setProviders] = useState<ProviderItem[]>()
@@ -31,6 +66,12 @@ export function SourcesPage() {
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState('all')
   const [message, setMessage] = useState('')
+  const [sourceDialog, setSourceDialog] = useState(false)
+  const [editingId, setEditingId] = useState<string>()
+  const [draft, setDraft] = useState<SourceDraft>(emptySource)
+  const [providerSecrets, setProviderSecrets] = useState<
+    Record<string, string>
+  >({})
   const load = () =>
     Promise.all([
       api<{ items: SourceItem[] }>('/api/sources'),
@@ -55,6 +96,58 @@ export function SourcesPage() {
     [sources, status, query]
   )
   const source = sources?.find((item) => item.id === selected)
+  function openCreate() {
+    setEditingId(undefined)
+    setDraft(emptySource)
+    setSourceDialog(true)
+  }
+  function openEdit() {
+    if (!source) return
+    setEditingId(source.id)
+    setDraft({
+      id: source.id,
+      type: source.type as SourceDraft['type'],
+      name: source.name,
+      externalIdentity: source.externalIdentity,
+      language: source.language,
+      enabled: source.status === 'enabled',
+      perSourceLimit: source.perSourceLimit?.toString() ?? '',
+    })
+    setSourceDialog(true)
+  }
+  async function saveSource() {
+    try {
+      const body = {
+        ...draft,
+        perSourceLimit: draft.perSourceLimit
+          ? Number(draft.perSourceLimit)
+          : undefined,
+      }
+      const result = editingId
+        ? await put<{ source: SourceItem }>(
+            `/api/sources/${encodeURIComponent(editingId)}`,
+            body
+          )
+        : await post<{ source: SourceItem }>('/api/sources', body)
+      setSourceDialog(false)
+      setSelected(result.source.id)
+      setMessage(editingId ? '信源已更新。' : '信源已新增。')
+      await load()
+    } catch (error) {
+      setMessage(String(error))
+    }
+  }
+  async function deleteSource() {
+    if (!source || !window.confirm(`确定删除信源「${source.name}」？`)) return
+    try {
+      await remove(`/api/sources/${encodeURIComponent(source.id)}`)
+      setSelected(undefined)
+      setMessage('信源定义已删除，已有内容仍然保留。')
+      await load()
+    } catch (error) {
+      setMessage(String(error))
+    }
+  }
   async function changeStatus(next: SourceItem['status']) {
     if (!source) return
     await post(`/api/sources/${encodeURIComponent(source.id)}/status`, {
@@ -98,11 +191,17 @@ export function SourcesPage() {
               <div className='grid w-full min-w-0 grid-cols-[minmax(0,1fr)] overflow-hidden rounded-sm border bg-card lg:min-h-[calc(100svh-9rem)] lg:grid-cols-[380px_minmax(0,1fr)]'>
                 <section className='min-w-0 border-r'>
                   <div className='space-y-3 border-b p-4'>
-                    <div>
-                      <h2 className='font-semibold'>全部信源</h2>
-                      <p className='text-xs text-muted-foreground'>
-                        已导入 {sources?.length ?? 0} 个定义
-                      </p>
+                    <div className='flex items-start justify-between gap-3'>
+                      <div>
+                        <h2 className='font-semibold'>全部信源</h2>
+                        <p className='text-xs text-muted-foreground'>
+                          已配置 {sources?.length ?? 0} 个信源
+                        </p>
+                      </div>
+                      <Button size='sm' onClick={openCreate}>
+                        <Plus />
+                        新增
+                      </Button>
                     </div>
                     <div className='relative'>
                       <Search className='absolute left-3 top-2.5 size-4 text-muted-foreground' />
@@ -122,7 +221,6 @@ export function SourcesPage() {
                       <option value='all'>全部状态</option>
                       <option value='enabled'>已启用</option>
                       <option value='disabled'>已停用</option>
-                      <option value='archived'>已归档</option>
                     </select>
                   </div>
                   <div className='max-h-[calc(100svh-20rem)] overflow-y-auto'>
@@ -171,13 +269,24 @@ export function SourcesPage() {
                             {source.language === 'en' ? '英文' : '中文'}
                           </p>
                         </div>
-                        <div className='flex gap-2'>
+                        <div className='flex flex-wrap gap-2'>
                           <Button
                             variant='outline'
                             onClick={() => void testFetch()}
                           >
                             <FlaskConical />
                             试抓预览
+                          </Button>
+                          <Button variant='outline' onClick={openEdit}>
+                            <Pencil />
+                            编辑
+                          </Button>
+                          <Button
+                            variant='outline'
+                            onClick={() => void deleteSource()}
+                          >
+                            <Trash2 />
+                            删除
                           </Button>
                           <select
                             aria-label='修改信源状态'
@@ -191,7 +300,6 @@ export function SourcesPage() {
                           >
                             <option value='enabled'>启用</option>
                             <option value='disabled'>停用</option>
-                            <option value='archived'>归档</option>
                           </select>
                         </div>
                       </div>
@@ -322,24 +430,78 @@ export function SourcesPage() {
                             : '未配置'
                           : '无需凭据'}
                       </div>
-                      <Button
-                        variant='outline'
-                        size='sm'
-                        onClick={() =>
-                          void post<{ items?: unknown[] }>(
-                            `/api/providers/${encodeURIComponent(provider.id)}/test`,
-                            {}
-                          )
-                            .then((result) =>
-                              setMessage(
-                                `${provider.name} 远端验证成功，返回 ${result.items?.length ?? 0} 条预览`
-                              )
+                      {provider.secretName && (
+                        <Input
+                          type='password'
+                          value={providerSecrets[provider.id] ?? ''}
+                          onChange={(event) =>
+                            setProviderSecrets((current) => ({
+                              ...current,
+                              [provider.id]: event.target.value,
+                            }))
+                          }
+                          placeholder={`填写 ${provider.secretName}`}
+                          className='mb-3'
+                        />
+                      )}
+                      <div className='flex flex-wrap gap-2'>
+                        <Button
+                          size='sm'
+                          onClick={() =>
+                            void put(`/api/providers/${provider.id}`, {
+                              preferred: true,
+                              secret: providerSecrets[provider.id],
+                            })
+                              .then(async () => {
+                                setProviderSecrets((current) => ({
+                                  ...current,
+                                  [provider.id]: '',
+                                }))
+                                setMessage(`${provider.name} 配置已保存。`)
+                                await load()
+                              })
+                              .catch((error) => setMessage(String(error)))
+                          }
+                        >
+                          {provider.preferred ? '保存配置' : '设为首选并保存'}
+                        </Button>
+                        <Button
+                          variant='outline'
+                          size='sm'
+                          onClick={() =>
+                            void post<{ items?: unknown[] }>(
+                              `/api/providers/${encodeURIComponent(provider.id)}/test`,
+                              {}
                             )
-                            .catch((error) => setMessage(String(error)))
-                        }
-                      >
-                        测试连接
-                      </Button>
+                              .then((result) =>
+                                setMessage(
+                                  `${provider.name} 连接成功，返回 ${result.items?.length ?? 0} 条预览。`
+                                )
+                              )
+                              .catch((error) => setMessage(String(error)))
+                          }
+                        >
+                          测试连接
+                        </Button>
+                        {provider.secretStatus?.configured && (
+                          <Button
+                            variant='ghost'
+                            size='sm'
+                            onClick={() =>
+                              void put(`/api/providers/${provider.id}`, {
+                                clearSecret: true,
+                              })
+                                .then(async () => {
+                                  setMessage(`${provider.name} 密钥已清除。`)
+                                  await load()
+                                })
+                                .catch((error) => setMessage(String(error)))
+                            }
+                          >
+                            清除密钥
+                          </Button>
+                        )}
+                      </div>
                     </CardContent>
                   </Card>
                 ))}
@@ -349,6 +511,115 @@ export function SourcesPage() {
           </Tabs>
         </div>
       </div>
+      <Dialog open={sourceDialog} onOpenChange={setSourceDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{editingId ? '编辑信源' : '新增信源'}</DialogTitle>
+          </DialogHeader>
+          <div className='grid gap-4'>
+            <label className='text-sm'>
+              信源 ID
+              <Input
+                value={draft.id}
+                disabled={Boolean(editingId)}
+                onChange={(event) =>
+                  setDraft({ ...draft, id: event.target.value })
+                }
+                placeholder='例如 rss_example'
+              />
+            </label>
+            <label className='text-sm'>
+              平台
+              <select
+                value={draft.type}
+                onChange={(event) =>
+                  setDraft({
+                    ...draft,
+                    type: event.target.value as SourceDraft['type'],
+                  })
+                }
+                className='mt-1 h-9 w-full rounded-md border px-3'
+              >
+                <option value='x'>X</option>
+                <option value='youtube'>YouTube</option>
+                <option value='rss'>RSS</option>
+              </select>
+            </label>
+            <label className='text-sm'>
+              显示名称
+              <Input
+                value={draft.name}
+                onChange={(event) =>
+                  setDraft({ ...draft, name: event.target.value })
+                }
+                placeholder='例如 OpenAI News'
+              />
+            </label>
+            <label className='text-sm'>
+              账号或订阅地址
+              <Input
+                value={draft.externalIdentity}
+                onChange={(event) =>
+                  setDraft({ ...draft, externalIdentity: event.target.value })
+                }
+                placeholder={
+                  draft.type === 'rss'
+                    ? 'https://example.com/feed.xml'
+                    : '账号名或频道地址'
+                }
+              />
+            </label>
+            <div className='grid grid-cols-2 gap-3'>
+              <label className='text-sm'>
+                内容语言
+                <select
+                  value={draft.language}
+                  onChange={(event) =>
+                    setDraft({
+                      ...draft,
+                      language: event.target.value as 'zh' | 'en',
+                    })
+                  }
+                  className='mt-1 h-9 w-full rounded-md border px-3'
+                >
+                  <option value='zh'>中文</option>
+                  <option value='en'>英文</option>
+                </select>
+              </label>
+              <label className='text-sm'>
+                单次条数（可选）
+                <Input
+                  type='number'
+                  min='1'
+                  value={draft.perSourceLimit}
+                  onChange={(event) =>
+                    setDraft({
+                      ...draft,
+                      perSourceLimit: event.target.value,
+                    })
+                  }
+                />
+              </label>
+            </div>
+            <label className='flex items-center gap-2 text-sm'>
+              <input
+                type='checkbox'
+                checked={draft.enabled}
+                onChange={(event) =>
+                  setDraft({ ...draft, enabled: event.target.checked })
+                }
+              />
+              保存后立即启用
+            </label>
+          </div>
+          <DialogFooter>
+            <Button variant='outline' onClick={() => setSourceDialog(false)}>
+              取消
+            </Button>
+            <Button onClick={() => void saveSource()}>保存</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

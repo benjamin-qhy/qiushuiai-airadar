@@ -10,6 +10,7 @@ import {
   loadSingleTableConfig,
   loadSourceState,
   runtimeConfigSchema,
+  saveEditableConfigFile,
   saveSourceState,
   sourcesConfigSchema,
 } from './single-table-config.js'
@@ -19,6 +20,33 @@ afterEach(async () => {
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true }))
   )
+})
+
+it('validates editable YAML before replacing the saved file', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'qiushuiai-airadar-edit-'))
+  roots.push(root)
+  const configRoot = await initializeSingleTableConfig(
+    path.resolve(import.meta.dirname, '../../../config'),
+    root
+  )
+  const file = path.join(configRoot, 'runtime.yaml')
+  const before = await readFile(file, 'utf8')
+  await expect(
+    saveEditableConfigFile(configRoot, 'runtime.yaml', 'timezone: invalid\n')
+  ).rejects.toThrow()
+  expect(await readFile(file, 'utf8')).toBe(before)
+  await saveEditableConfigFile(
+    configRoot,
+    'runtime.yaml',
+    before.replace('per_source_limit: 20', 'per_source_limit: 7')
+  )
+  expect(
+    (await loadSingleTableConfig(configRoot)).runtime.collection
+      .per_source_limit
+  ).toBe(7)
+  expect(
+    (await loadSingleTableConfig(configRoot)).providers.platforms.x.preferred
+  ).toBe('twitterapi.io')
 })
 
 it('loads all YAML configuration and preserves source order', async () => {

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
@@ -169,12 +169,17 @@ it('serves and updates content from the single table, with field-only keyword se
     const providers = (await fetch(`${base}/api/providers`).then((response) =>
       response.json()
     )) as {
-      items: Array<{ id: string; secretStatus: { configured: boolean } }>
+      items: Array<{
+        id: string
+        health: { state: string }
+        secretStatus?: { configured: boolean }
+      }>
     }
-    expect(
-      providers.items.find((provider) => provider.id === 'native-rss')
-        ?.secretStatus.configured
-    ).toBe(true)
+    const nativeRss = providers.items.find(
+      (provider) => provider.id === 'native-rss'
+    )
+    expect(nativeRss).toMatchObject({ health: { state: 'healthy' } })
+    expect(nativeRss).not.toHaveProperty('secretStatus')
     const toggled = await fetch(`${base}/api/sources/x_openai/status`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -264,5 +269,120 @@ it('only reruns a failed row after an explicit manual retry request', async () =
   } finally {
     await service?.stop()
     await rm(root, { recursive: true })
+  }
+})
+
+it('manages sources, provider credentials, connection tests, and validated YAML', async () => {
+  const root = await mkdtemp(
+    path.join(tmpdir(), 'qiushuiai-airadar-management-')
+  )
+  let service: ReturnType<typeof createSingleTableServiceApp> | undefined
+  try {
+    const configRoot = await initializeSingleTableConfig(
+      path.resolve(import.meta.dirname, '../../../config'),
+      root
+    )
+    service = createSingleTableServiceApp({
+      dataRoot: root,
+      configRoot,
+      providerFetch: async () =>
+        new Response(
+          '<rss><channel><title>Feed</title><item><guid>one</guid><title>Item one</title><link>https://example.com/one</link></item></channel></rss>',
+          { headers: { 'content-type': 'application/xml' } }
+        ),
+    })
+    const address = await service.start({ host: '127.0.0.1', port: 0 })
+    const base = `http://${address.host}:${address.port}`
+    const mutate = (pathname: string, method: string, body: unknown) =>
+      fetch(`${base}${pathname}`, {
+        method,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+
+    const created = await mutate('/api/sources', 'POST', {
+      id: 'rss_management_test',
+      type: 'rss',
+      name: '管理测试',
+      externalIdentity: 'https://example.com/feed.xml',
+      language: 'zh',
+      enabled: true,
+      perSourceLimit: 3,
+    })
+    expect(created.status).toBe(201)
+    const updated = await mutate('/api/sources/rss_management_test', 'PUT', {
+      type: 'rss',
+      name: '管理测试已修改',
+      externalIdentity: 'https://example.com/updated.xml',
+      language: 'zh',
+      enabled: false,
+    })
+    expect(updated.status).toBe(200)
+    expect(
+      (
+        (await fetch(`${base}/api/sources`).then((response) =>
+          response.json()
+        )) as { items: Array<{ id: string; name: string; status: string }> }
+      ).items.find((source) => source.id === 'rss_management_test')
+    ).toMatchObject({ name: '管理测试已修改', status: 'disabled' })
+
+    const providerTest = await mutate(
+      '/api/providers/native-rss/test',
+      'POST',
+      {}
+    )
+    expect(providerTest.status).toBe(200)
+    expect(await providerTest.json()).toMatchObject({
+      status: 'succeeded',
+      providerId: 'native-rss',
+    })
+    const providerSave = await mutate('/api/providers/tikhub-x', 'PUT', {
+      preferred: true,
+      secret: 'test-provider-secret',
+    })
+    expect(providerSave.status).toBe(200)
+    const providers = await fetch(`${base}/api/providers`).then((response) =>
+      response.text()
+    )
+    expect(providers).not.toContain('test-provider-secret')
+    expect(JSON.parse(providers)).toMatchObject({
+      items: expect.arrayContaining([
+        expect.objectContaining({
+          id: 'tikhub-x',
+          preferred: true,
+          secretStatus: { configured: true },
+        }),
+      ]),
+    })
+    if (process.platform !== 'win32')
+      expect((await stat(path.join(root, '.env'))).mode & 0o077).toBe(0)
+
+    const runtimeFile = path.join(configRoot, 'runtime.yaml')
+    const runtimeBefore = await readFile(runtimeFile, 'utf8')
+    const invalid = await mutate('/api/config/files/runtime.yaml', 'PUT', {
+      content: 'timezone: invalid\n',
+    })
+    expect(invalid.status).toBe(400)
+    expect(await readFile(runtimeFile, 'utf8')).toBe(runtimeBefore)
+    const valid = await mutate('/api/config/files/runtime.yaml', 'PUT', {
+      content: runtimeBefore.replace(
+        'per_source_limit: 20',
+        'per_source_limit: 9'
+      ),
+    })
+    expect(valid.status).toBe(200)
+
+    const deleted = await mutate(
+      '/api/sources/rss_management_test',
+      'DELETE',
+      {}
+    )
+    expect(deleted.status).toBe(200)
+    expect(
+      await readFile(path.join(configRoot, 'sources.yaml'), 'utf8')
+    ).not.toContain('rss_management_test')
+  } finally {
+    await service?.stop()
+    await rm(root, { recursive: true, force: true })
   }
 })

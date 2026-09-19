@@ -1,0 +1,7 @@
+platforms:
+  x:
+    preferred: twitterapi.io
+  youtube:
+    preferred: youtube-data-api
+  rss:
+    preferred: native-rss

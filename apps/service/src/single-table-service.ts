@@ -5,9 +5,15 @@ import path from 'node:path'
 
 import {
   createFileSecretReader,
+  editableConfigFileNames,
   loadSingleTableConfig,
   loadSourceState,
+  saveEditableConfigFile,
+  saveProvidersConfig,
+  saveSourcesConfig,
   saveSourceState,
+  sourcesConfigSchema,
+  updateFileSecret,
   type SingleTableConfig,
 } from '@qiushuiai-airadar/config'
 import {
@@ -28,6 +34,86 @@ const scoreNames = {
   substance: 'substance',
   new_information: 'newInformation',
 } as const
+
+const providerDefinitions = [
+  {
+    id: 'twitterapi.io',
+    name: 'TwitterAPI.io',
+    sourceType: 'x',
+    secretName: 'TWITTERAPI_IO_KEY',
+  },
+  {
+    id: 'tikhub-x',
+    name: 'TikHub X',
+    sourceType: 'x',
+    secretName: 'TIKHUB_API_KEY',
+  },
+  {
+    id: 'youtube-data-api',
+    name: 'YouTube Data API',
+    sourceType: 'youtube',
+    secretName: 'YOUTUBE_API_KEY',
+  },
+  {
+    id: 'tikhub-youtube',
+    name: 'TikHub YouTube',
+    sourceType: 'youtube',
+    secretName: 'TIKHUB_API_KEY',
+  },
+  {
+    id: 'native-rss',
+    name: '原生 RSS',
+    sourceType: 'rss',
+  },
+] as const
+
+function sourceItem(
+  source: SingleTableConfig['sources']['sources'][number],
+  enabled: boolean
+) {
+  return {
+    id: source.id,
+    name: source.account_name,
+    type: source.platform,
+    language: source.language,
+    externalIdentity: source.external_identity,
+    perSourceLimit: source.per_source_limit,
+    status: enabled ? ('enabled' as const) : ('disabled' as const),
+    health: enabled ? ('healthy' as const) : ('disabled' as const),
+    effectiveParameters: { ids: [], values: {} },
+  }
+}
+
+function sourceFromBody(body: Record<string, unknown>) {
+  const candidate = {
+    id: body.id,
+    platform: body.type,
+    account_name: body.name,
+    external_identity: body.externalIdentity,
+    language: body.language,
+    enabled: body.enabled !== false,
+    ...(body.perSourceLimit === undefined || body.perSourceLimit === null
+      ? {}
+      : { per_source_limit: body.perSourceLimit }),
+  }
+  return sourcesConfigSchema.parse({ sources: [candidate] }).sources[0]!
+}
+
+function providerOrder(
+  config: SingleTableConfig,
+  platform: 'x' | 'youtube'
+): string[] {
+  const preferred = config.providers.platforms[platform].preferred
+  const fallback =
+    platform === 'x'
+      ? preferred === 'twitterapi.io'
+        ? 'tikhub-x'
+        : 'twitterapi.io'
+      : preferred === 'youtube-data-api'
+        ? 'tikhub-youtube'
+        : 'youtube-data-api'
+  return [preferred, fallback]
+}
 
 function arrayValue(value: unknown): unknown[] {
   try {
@@ -227,6 +313,7 @@ export function createSingleTableServiceApp(options: {
   promptsRoot?: string
   webRoot?: string
   gateway?: SingleTableModelGateway
+  providerFetch?: typeof fetch
 }) {
   let repository: SingleTableRepository | undefined
   let server: Server | undefined
@@ -302,75 +389,45 @@ export function createSingleTableServiceApp(options: {
             const config = await loadSingleTableConfig(options.configRoot)
             const state = await loadSourceState(options.configRoot)
             return send(response, 200, {
-              items: config.sources.sources.map((source) => ({
-                id: source.id,
-                name: source.account_name,
-                type: source.platform,
-                language: source.language,
-                externalIdentity: source.external_identity,
-                status:
-                  (state.sources[source.id]?.enabled_override ?? source.enabled)
-                    ? 'enabled'
-                    : 'disabled',
-                health: source.enabled ? 'healthy' : 'disabled',
-                effectiveParameters: { ids: [], values: {} },
-              })),
+              items: config.sources.sources.map((source) =>
+                sourceItem(
+                  source,
+                  state.sources[source.id]?.enabled_override ?? source.enabled
+                )
+              ),
             })
           }
           if (method === 'GET' && url.pathname === '/api/providers') {
+            const config = await loadSingleTableConfig(options.configRoot)
             const reader = createFileSecretReader(
               options.secretFile ?? path.join(options.dataRoot, '.env')
             )
-            const definitions = [
-              {
-                id: 'twitterapi.io',
-                name: 'TwitterAPI.io',
-                sourceType: 'x',
-                secret: 'TWITTERAPI_IO_KEY',
-              },
-              {
-                id: 'tikhub-x',
-                name: 'TikHub X',
-                sourceType: 'x',
-                secret: 'TIKHUB_API_KEY',
-              },
-              {
-                id: 'youtube-data-api',
-                name: 'YouTube Data API',
-                sourceType: 'youtube',
-                secret: 'YOUTUBE_API_KEY',
-              },
-              {
-                id: 'tikhub-youtube',
-                name: 'TikHub YouTube',
-                sourceType: 'youtube',
-                secret: 'TIKHUB_API_KEY',
-              },
-              {
-                id: 'native-rss',
-                name: '原生 RSS',
-                sourceType: 'rss',
-                secret: undefined,
-              },
-            ]
             const items = await Promise.all(
-              definitions.map(async (provider, index) => {
-                let configured = !provider.secret
-                if (provider.secret) {
+              providerDefinitions.map(async (provider) => {
+                let configured = !('secretName' in provider)
+                if ('secretName' in provider) {
                   try {
-                    configured = Boolean(await reader.get(provider.secret))
+                    configured = Boolean(await reader.get(provider.secretName))
                   } catch (error) {
                     if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
                       throw error
                   }
                 }
+                const preferred =
+                  config.providers.platforms[
+                    provider.sourceType as 'x' | 'youtube' | 'rss'
+                  ].preferred === provider.id
                 return {
                   id: provider.id,
                   name: provider.name,
                   sourceType: provider.sourceType,
-                  priority: index + 1,
+                  priority: preferred ? 1 : 2,
+                  preferred,
+                  secretName:
+                    'secretName' in provider ? provider.secretName : undefined,
                   health: { state: configured ? 'healthy' : 'unconfigured' },
-                  secretStatus: { configured },
+                  secretStatus:
+                    'secretName' in provider ? { configured } : undefined,
                 }
               })
             )
@@ -383,13 +440,7 @@ export function createSingleTableServiceApp(options: {
             })
           if (method === 'GET' && url.pathname === '/api/config') {
             const files = await Promise.all(
-              [
-                'sources.yaml',
-                'runtime.yaml',
-                'analysis.yaml',
-                'profile.yaml',
-                'retention.yaml',
-              ].map(async (name) => ({
+              editableConfigFileNames.map(async (name) => ({
                 name,
                 content: await readFile(
                   path.join(options.configRoot, name),
@@ -399,7 +450,7 @@ export function createSingleTableServiceApp(options: {
             )
             return send(response, 200, { mode: 'file', files })
           }
-          if (method === 'POST') {
+          if (['POST', 'PUT', 'DELETE'].includes(method)) {
             const origin = request.headers.origin
             if (
               origin &&
@@ -410,6 +461,186 @@ export function createSingleTableServiceApp(options: {
               !request.headers['content-type']?.startsWith('application/json')
             )
               return send(response, 415, { error: 'json_required' })
+            if (method === 'POST' && url.pathname === '/api/sources') {
+              const body = await bodyOf(request)
+              const source = sourceFromBody(body)
+              const config = await loadSingleTableConfig(options.configRoot)
+              if (
+                config.sources.sources.some(
+                  (candidate) => candidate.id === source.id
+                )
+              )
+                return send(response, 409, {
+                  error: 'source_id_exists',
+                  message: '信源 ID 已存在。',
+                })
+              await saveSourcesConfig(options.configRoot, [
+                ...config.sources.sources,
+                source,
+              ])
+              return send(response, 201, {
+                source: sourceItem(source, source.enabled),
+              })
+            }
+            const sourceCrud = /^\/api\/sources\/([^/]+)$/u.exec(url.pathname)
+            if (sourceCrud && (method === 'PUT' || method === 'DELETE')) {
+              const id = decodeURIComponent(sourceCrud[1]!)
+              const config = await loadSingleTableConfig(options.configRoot)
+              const index = config.sources.sources.findIndex(
+                (candidate) => candidate.id === id
+              )
+              if (index < 0)
+                return send(response, 404, { error: 'source_not_found' })
+              const state = await loadSourceState(options.configRoot)
+              if (method === 'DELETE') {
+                await bodyOf(request)
+                await saveSourcesConfig(
+                  options.configRoot,
+                  config.sources.sources.filter(
+                    (candidate) => candidate.id !== id
+                  )
+                )
+                delete state.sources[id]
+                await saveSourceState(options.configRoot, state)
+                return send(response, 200, { deleted: id })
+              }
+              const source = sourceFromBody({
+                ...(await bodyOf(request)),
+                id,
+              })
+              const next = [...config.sources.sources]
+              next[index] = source
+              await saveSourcesConfig(options.configRoot, next)
+              delete state.sources[id]
+              await saveSourceState(options.configRoot, state)
+              return send(response, 200, {
+                source: sourceItem(source, source.enabled),
+              })
+            }
+            const providerMutation = /^\/api\/providers\/([^/]+)$/u.exec(
+              url.pathname
+            )
+            if (providerMutation && method === 'PUT') {
+              const id = decodeURIComponent(providerMutation[1]!)
+              const definition = providerDefinitions.find(
+                (provider) => provider.id === id
+              )
+              if (!definition)
+                return send(response, 404, { error: 'provider_not_found' })
+              const body = await bodyOf(request)
+              const config = await loadSingleTableConfig(options.configRoot)
+              if (body.preferred === true) {
+                if (
+                  definition.sourceType === 'x' &&
+                  (id === 'twitterapi.io' || id === 'tikhub-x')
+                )
+                  config.providers.platforms.x.preferred = id
+                if (
+                  definition.sourceType === 'youtube' &&
+                  (id === 'youtube-data-api' || id === 'tikhub-youtube')
+                )
+                  config.providers.platforms.youtube.preferred = id
+                if (definition.sourceType === 'rss' && id === 'native-rss')
+                  config.providers.platforms.rss.preferred = id
+                await saveProvidersConfig(options.configRoot, config.providers)
+              }
+              if ('secretName' in definition) {
+                if (typeof body.secret === 'string' && body.secret.trim())
+                  await updateFileSecret(
+                    options.secretFile ?? path.join(options.dataRoot, '.env'),
+                    definition.secretName,
+                    body.secret.trim()
+                  )
+                if (body.clearSecret === true)
+                  await updateFileSecret(
+                    options.secretFile ?? path.join(options.dataRoot, '.env'),
+                    definition.secretName,
+                    undefined
+                  )
+              }
+              return send(response, 200, { saved: id })
+            }
+            const providerTest = /^\/api\/providers\/([^/]+)\/test$/u.exec(
+              url.pathname
+            )
+            if (providerTest && method === 'POST') {
+              await bodyOf(request)
+              const id = decodeURIComponent(providerTest[1]!)
+              const definition = providerDefinitions.find(
+                (provider) => provider.id === id
+              )
+              if (!definition)
+                return send(response, 404, { error: 'provider_not_found' })
+              const config = await loadSingleTableConfig(options.configRoot)
+              const source = config.sources.sources.find(
+                (candidate) => candidate.platform === definition.sourceType
+              )
+              if (!source)
+                return send(response, 409, {
+                  error: 'provider_has_no_source',
+                  message: '请先为这个平台添加一个信源。',
+                })
+              const reader = createFileSecretReader(
+                options.secretFile ?? path.join(options.dataRoot, '.env')
+              )
+              const credential = async (name: string) =>
+                reader.get(name).catch((error: unknown) => {
+                  if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+                    return undefined
+                  throw error
+                })
+              try {
+                const provider = createSingleTableSourceProvider({
+                  tikHubToken: await credential('TIKHUB_API_KEY'),
+                  twitterApiKey: await credential('TWITTERAPI_IO_KEY'),
+                  youtubeApiKey: await credential('YOUTUBE_API_KEY'),
+                  fetch: options.providerFetch,
+                  providerOrder:
+                    definition.sourceType === 'x' ||
+                    definition.sourceType === 'youtube'
+                      ? { [definition.sourceType]: [id] }
+                      : undefined,
+                })
+                const page = await provider.discover(source, 3)
+                return send(response, 200, {
+                  status: 'succeeded',
+                  providerId: page.providerId,
+                  items: page.items.map((item) => ({
+                    title: item.title,
+                    url: item.url,
+                  })),
+                })
+              } catch (error) {
+                return send(response, 502, {
+                  status: 'failed',
+                  message:
+                    error instanceof Error ? error.message : '远端连接失败。',
+                })
+              }
+            }
+            const configMutation = /^\/api\/config\/files\/([^/]+)$/u.exec(
+              url.pathname
+            )
+            if (configMutation && method === 'PUT') {
+              const name = decodeURIComponent(configMutation[1]!)
+              if (
+                !editableConfigFileNames.includes(
+                  name as (typeof editableConfigFileNames)[number]
+                )
+              )
+                return send(response, 404, { error: 'config_not_found' })
+              const body = await bodyOf(request)
+              if (typeof body.content !== 'string')
+                return send(response, 400, {
+                  error: 'config_content_required',
+                })
+              await saveEditableConfigFile(
+                options.configRoot,
+                name as (typeof editableConfigFileNames)[number],
+                body.content
+              )
+              return send(response, 200, { saved: name })
+            }
             const sourceMatch = /^\/api\/sources\/([^/]+)\/status$/u.exec(
               url.pathname
             )
@@ -471,6 +702,16 @@ export function createSingleTableServiceApp(options: {
                 tikHubToken: await credential('TIKHUB_API_KEY'),
                 twitterApiKey: await credential('TWITTERAPI_IO_KEY'),
                 youtubeApiKey: await credential('YOUTUBE_API_KEY'),
+                fetch: options.providerFetch,
+                providerOrder:
+                  source.platform === 'x' || source.platform === 'youtube'
+                    ? {
+                        [source.platform]: providerOrder(
+                          config,
+                          source.platform
+                        ),
+                      }
+                    : undefined,
               })
               try {
                 const page = await provider.discover(source, 3)
@@ -572,6 +813,16 @@ export function createSingleTableServiceApp(options: {
                   tikHubToken: await credential('TIKHUB_API_KEY'),
                   twitterApiKey: await credential('TWITTERAPI_IO_KEY'),
                   youtubeApiKey: await credential('YOUTUBE_API_KEY'),
+                  fetch: options.providerFetch,
+                  providerOrder:
+                    source.platform === 'x' || source.platform === 'youtube'
+                      ? {
+                          [source.platform]: providerOrder(
+                            config,
+                            source.platform
+                          ),
+                        }
+                      : undefined,
                 })
                 const originalBody = await activeRepository.readBody(
                   id,
@@ -775,9 +1026,13 @@ export function createSingleTableServiceApp(options: {
             }
           }
           return send(response, 404, { error: 'not_found' })
-        })().catch(() => {
+        })().catch((error: unknown) => {
           if (!response.headersSent)
-            send(response, 400, { error: 'request_failed' })
+            send(response, 400, {
+              error: 'request_failed',
+              message:
+                error instanceof Error ? error.message : '请求处理失败。',
+            })
           else response.end()
         })
       })

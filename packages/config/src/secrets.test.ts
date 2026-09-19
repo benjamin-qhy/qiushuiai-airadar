@@ -1,8 +1,12 @@
-import { chmod, mkdtemp, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { asSecretStatusReader, createFileSecretReader } from './index.js'
+import {
+  asSecretStatusReader,
+  createFileSecretReader,
+  updateFileSecret,
+} from './index.js'
 
 describe('local secret boundary', () => {
   it('keeps raw values behind the backend reader and exposes only masked status', async () => {
@@ -47,4 +51,20 @@ describe('local secret boundary', () => {
       )
     }
   )
+
+  it('updates one credential without exposing or replacing the others', async () => {
+    const directory = await mkdtemp(
+      join(tmpdir(), 'qiushuiai-airadar-secrets-')
+    )
+    const file = join(directory, '.env')
+    await writeFile(file, '# local\nFIRST=keep\nTOKEN=old\n', { mode: 0o600 })
+    await updateFileSecret(file, 'TOKEN', 'new value')
+    expect(await createFileSecretReader(file).get('FIRST')).toBe('keep')
+    expect(await createFileSecretReader(file).get('TOKEN')).toBe('new value')
+    expect(await readFile(file, 'utf8')).toContain('# local')
+    if (process.platform !== 'win32')
+      expect((await stat(file)).mode & 0o077).toBe(0)
+    await updateFileSecret(file, 'TOKEN', undefined)
+    expect(await createFileSecretReader(file).get('TOKEN')).toBeUndefined()
+  })
 })

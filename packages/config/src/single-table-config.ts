@@ -73,8 +73,8 @@ export const runtimeConfigSchema = z.object({
 export const sourcesConfigSchema = z.object({
   sources: z.array(
     z.object({
-      id: z.string().min(1),
-      platform: z.string().min(1),
+      id: z.string().regex(/^[a-z0-9][a-z0-9_-]*$/u),
+      platform: z.enum(['x', 'youtube', 'rss']),
       account_name: z.string().min(1),
       external_identity: z.string().min(1),
       language: z.enum(['zh', 'en']),
@@ -91,6 +91,36 @@ export const retentionConfigSchema = z.object({
   }),
 })
 
+export const providersConfigSchema = z.object({
+  platforms: z.object({
+    x: z.object({ preferred: z.enum(['twitterapi.io', 'tikhub-x']) }),
+    youtube: z.object({
+      preferred: z.enum(['youtube-data-api', 'tikhub-youtube']),
+    }),
+    rss: z.object({ preferred: z.literal('native-rss') }),
+  }),
+})
+
+export const editableConfigFileNames = [
+  'sources.yaml',
+  'providers.yaml',
+  'runtime.yaml',
+  'analysis.yaml',
+  'profile.yaml',
+  'retention.yaml',
+] as const
+
+export type EditableConfigFileName = (typeof editableConfigFileNames)[number]
+
+const editableSchemas = {
+  'sources.yaml': sourcesConfigSchema,
+  'providers.yaml': providersConfigSchema,
+  'runtime.yaml': runtimeConfigSchema,
+  'analysis.yaml': analysisConfigSchema,
+  'profile.yaml': profileConfigSchema,
+  'retention.yaml': retentionConfigSchema,
+} as const
+
 async function parseFile<T extends z.ZodType>(
   file: string,
   schema: T
@@ -99,17 +129,19 @@ async function parseFile<T extends z.ZodType>(
 }
 
 export async function loadSingleTableConfig(configRoot: string) {
-  const [analysis, profile, runtime, sources, retention] = await Promise.all([
-    parseFile(path.join(configRoot, 'analysis.yaml'), analysisConfigSchema),
-    parseFile(path.join(configRoot, 'profile.yaml'), profileConfigSchema),
-    parseFile(path.join(configRoot, 'runtime.yaml'), runtimeConfigSchema),
-    parseFile(path.join(configRoot, 'sources.yaml'), sourcesConfigSchema),
-    parseFile(path.join(configRoot, 'retention.yaml'), retentionConfigSchema),
-  ])
+  const [analysis, profile, runtime, sources, retention, providers] =
+    await Promise.all([
+      parseFile(path.join(configRoot, 'analysis.yaml'), analysisConfigSchema),
+      parseFile(path.join(configRoot, 'profile.yaml'), profileConfigSchema),
+      parseFile(path.join(configRoot, 'runtime.yaml'), runtimeConfigSchema),
+      parseFile(path.join(configRoot, 'sources.yaml'), sourcesConfigSchema),
+      parseFile(path.join(configRoot, 'retention.yaml'), retentionConfigSchema),
+      parseFile(path.join(configRoot, 'providers.yaml'), providersConfigSchema),
+    ])
   const ids = sources.sources.map((source) => source.id)
   if (new Set(ids).size !== ids.length)
     throw new Error('Duplicate source ID in sources.yaml')
-  return { analysis, profile, runtime, sources, retention }
+  return { analysis, profile, runtime, sources, retention, providers }
 }
 
 export type SingleTableConfig = Awaited<
@@ -122,13 +154,7 @@ export async function initializeSingleTableConfig(
 ): Promise<string> {
   const configRoot = path.join(dataRoot, 'config')
   await mkdir(configRoot, { recursive: true })
-  for (const name of [
-    'sources.yaml',
-    'runtime.yaml',
-    'analysis.yaml',
-    'profile.yaml',
-    'retention.yaml',
-  ]) {
+  for (const name of editableConfigFileNames) {
     try {
       await copyFile(
         path.join(templateRoot, name),
@@ -140,6 +166,62 @@ export async function initializeSingleTableConfig(
     }
   }
   return configRoot
+}
+
+export function validateEditableConfigFile(
+  name: EditableConfigFileName,
+  content: string
+): unknown {
+  const value = editableSchemas[name].parse(parseYaml(content))
+  if (name === 'sources.yaml') {
+    const ids = (value as z.output<typeof sourcesConfigSchema>).sources.map(
+      (source) => source.id
+    )
+    if (new Set(ids).size !== ids.length)
+      throw new Error('Duplicate source ID in sources.yaml')
+  }
+  return value
+}
+
+export async function saveEditableConfigFile(
+  configRoot: string,
+  name: EditableConfigFileName,
+  content: string
+): Promise<void> {
+  validateEditableConfigFile(name, content)
+  const target = path.join(configRoot, name)
+  const temporary = `${target}.${randomUUID()}.tmp`
+  await writeFile(
+    temporary,
+    content.endsWith('\n') ? content : `${content}\n`,
+    {
+      flag: 'wx',
+      mode: 0o600,
+    }
+  )
+  await rename(temporary, target)
+}
+
+export async function saveSourcesConfig(
+  configRoot: string,
+  sources: z.output<typeof sourcesConfigSchema>['sources']
+): Promise<void> {
+  await saveEditableConfigFile(
+    configRoot,
+    'sources.yaml',
+    stringifyYaml({ sources })
+  )
+}
+
+export async function saveProvidersConfig(
+  configRoot: string,
+  providers: z.output<typeof providersConfigSchema>
+): Promise<void> {
+  await saveEditableConfigFile(
+    configRoot,
+    'providers.yaml',
+    stringifyYaml(providers)
+  )
 }
 
 export interface SourceState {

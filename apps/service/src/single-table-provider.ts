@@ -24,6 +24,7 @@ interface ProviderOptions {
   youtubeApiKey?: string
   fetch?: typeof fetch
   articleEnricher?: typeof enrichArticle
+  providerOrder?: Partial<Record<'x' | 'youtube', string[]>>
 }
 
 function auditFetch(
@@ -114,24 +115,39 @@ export function createSingleTableSourceProvider(
       }
       let adapter: SourceAdapter
       if (source.platform === 'x') {
-        if (options.twitterApiKey)
+        const order = options.providerOrder?.x ?? ['twitterapi.io', 'tikhub-x']
+        const selected = order.find(
+          (id) =>
+            (id === 'twitterapi.io' && options.twitterApiKey) ||
+            (id === 'tikhub-x' && options.tikHubToken)
+        )
+        if (selected === 'twitterapi.io' && options.twitterApiKey)
           adapter = createTwitterApiIoProvider({
             apiKey: options.twitterApiKey,
             fetch: trackedFetch,
           })
-        else if (options.tikHubToken)
+        else if (selected === 'tikhub-x' && options.tikHubToken)
           adapter = createTikHubXProvider({
             token: options.tikHubToken,
             fetch: trackedFetch,
           })
         else throw new Error('X provider credential is not configured')
       } else if (source.platform === 'youtube') {
-        if (options.youtubeApiKey)
+        const order = options.providerOrder?.youtube ?? [
+          'youtube-data-api',
+          'tikhub-youtube',
+        ]
+        const selected = order.find(
+          (id) =>
+            (id === 'youtube-data-api' && options.youtubeApiKey) ||
+            (id === 'tikhub-youtube' && options.tikHubToken)
+        )
+        if (selected === 'youtube-data-api' && options.youtubeApiKey)
           adapter = createYouTubeDataApiProvider({
             apiKey: options.youtubeApiKey,
             fetch: trackedFetch,
           })
-        else if (options.tikHubToken) {
+        else if (selected === 'tikhub-youtube' && options.tikHubToken) {
           const channelUrl = new URL(source.external_identity)
           const response = await trackedFetch(channelUrl, {
             signal: AbortSignal.timeout(10_000),

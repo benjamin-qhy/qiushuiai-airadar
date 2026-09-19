@@ -14,7 +14,7 @@ import {
 } from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
-import { api, post } from '@/lib/api'
+import { api, post, put } from '@/lib/api'
 import type { SourceItem } from '@/types'
 
 interface ConfigData {
@@ -36,6 +36,7 @@ interface FileConfigData {
 export function ConfigPage() {
   const [data, setData] = useState<ConfigData>()
   const [fileData, setFileData] = useState<FileConfigData>()
+  const [fileDrafts, setFileDrafts] = useState<Record<string, string>>({})
   const [draft, setDraft] = useState('')
   const [preview, setPreview] = useState<{
     before: unknown
@@ -63,6 +64,11 @@ export function ConfigPage() {
       (value) => {
         if ('files' in value) {
           setFileData(value)
+          setFileDrafts(
+            Object.fromEntries(
+              value.files.map((file) => [file.name, file.content])
+            )
+          )
           return
         }
         setData(value)
@@ -114,14 +120,46 @@ export function ConfigPage() {
           <div className='mx-auto max-w-4xl space-y-6'>
             {fileData.files.map((file) => (
               <section key={file.name} className='border-t pt-4'>
-                <h2 className='font-mono text-sm font-medium'>{file.name}</h2>
-                <pre className='mt-3 overflow-x-auto whitespace-pre-wrap rounded-sm bg-foreground/[0.025] p-4 text-xs leading-5'>
-                  {file.content}
-                </pre>
+                <div className='flex items-center justify-between gap-3'>
+                  <h2 className='font-mono text-sm font-medium'>{file.name}</h2>
+                  <Button
+                    size='sm'
+                    onClick={() =>
+                      void put<{ saved: string }>(
+                        `/api/config/files/${encodeURIComponent(file.name)}`,
+                        { content: fileDrafts[file.name] ?? '' }
+                      )
+                        .then(async () => {
+                          setMessage(`${file.name} 已校验、保存并立即生效。`)
+                          await load()
+                        })
+                        .catch((error) => setMessage(String(error)))
+                    }
+                  >
+                    <Save />
+                    校验并保存
+                  </Button>
+                </div>
+                <Textarea
+                  aria-label={`编辑 ${file.name}`}
+                  value={fileDrafts[file.name] ?? ''}
+                  onChange={(event) =>
+                    setFileDrafts((current) => ({
+                      ...current,
+                      [file.name]: event.target.value,
+                    }))
+                  }
+                  className='mt-3 min-h-72 font-mono text-xs leading-5'
+                />
               </section>
             ))}
+            {message && (
+              <p className='border-l-2 border-foreground/30 bg-foreground/[0.025] p-3 text-sm'>
+                {message}
+              </p>
+            )}
             <p className='text-sm text-muted-foreground'>
-              密钥文件 .env 和本机信源状态不在页面展示。
+              保存前会检查 YAML 格式和字段规则；密钥请在“平台与供应商”中配置。
             </p>
           </div>
         </div>

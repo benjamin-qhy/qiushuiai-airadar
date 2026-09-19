@@ -87,6 +87,7 @@ export interface SourceItem {
   type: string
   language: 'en' | 'zh'
   externalIdentity: string
+  perSourceLimit?: number
   status: 'enabled' | 'disabled' | 'archived'
   health: 'healthy' | 'warning' | 'unavailable' | 'disabled'
   tags?: string[]
@@ -105,6 +106,8 @@ export interface ProviderItem {
   name: string
   sourceType: string
   priority: number
+  preferred: boolean
+  secretName?: string
   health: { state: string; reason?: string }
   secretStatus?: { configured: boolean; maskedValue?: string }
 }

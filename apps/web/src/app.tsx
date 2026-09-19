@@ -17,6 +17,10 @@ export function App() {
         <ContentWorkspace scope='daily' />
       ) : page === 'all' ? (
         <ContentWorkspace scope='all' />
+      ) : page === 'exceptions' ? (
+        <ContentWorkspace scope='exceptions' />
+      ) : page === 'favorites' ? (
+        <ContentWorkspace scope='favorites' />
       ) : page === 'junk' ? (
         <ContentWorkspace scope='junk' />
       ) : page === 'sources' ? (

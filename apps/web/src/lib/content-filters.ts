@@ -22,7 +22,16 @@ export interface ContentFilters {
   sort?: string
 }
 
-export type ContentScope = 'daily' | 'all' | 'junk'
+export type ContentScope = 'daily' | 'all' | 'exceptions' | 'favorites' | 'junk'
+
+export function isExceptionalContent(item: FeedItem): boolean {
+  return (
+    !item.junk.isJunk &&
+    (item.processStatus !== 'completed' ||
+      item.totalScore === null ||
+      (item.originalLanguage === 'en' && !item.translatedToChinese))
+  )
+}
 
 export function filterContentScope(
   items: FeedItem[],
@@ -30,7 +39,11 @@ export function filterContentScope(
 ): FeedItem[] {
   return items.filter((item) => {
     if (scope === 'junk') return item.junk.isJunk
+    if (scope === 'favorites')
+      return item.utilizationActions.includes('favorite')
+    if (scope === 'exceptions') return isExceptionalContent(item)
     if (item.junk.isJunk) return false
+    if (isExceptionalContent(item)) return false
     if (scope === 'all') return true
     return (
       item.processStatus === 'completed' &&

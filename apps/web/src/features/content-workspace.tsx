@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent,
+} from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
@@ -9,6 +16,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Columns3,
+  Copy,
   Eye,
   ExternalLink,
   FileText,
@@ -32,7 +40,6 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ButtonGroup } from '@/components/ui/button-group'
 import { Calendar } from '@/components/ui/calendar'
-import { Checkbox } from '@/components/ui/checkbox'
 import {
   Dialog,
   DialogContent,
@@ -85,12 +92,54 @@ import {
 } from '@/lib/content-filters'
 import type { FeedItem, UtilizationAction } from '@/types'
 
-function languageLabel(item: FeedItem): string {
-  if (item.originalLanguage === 'zh') return '原文中文'
-  if (item.originalLanguage === 'en') {
-    return item.translatedToChinese ? '原文英文 · 已意译' : '原文英文 · 未意译'
+async function copyText(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text)
+      return
+    } catch {
+      // Continue with the browser fallback when clipboard permission is denied.
+    }
   }
-  return '原文语言待识别'
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  document.body.append(textarea)
+  textarea.select()
+  document.execCommand('copy')
+  textarea.remove()
+}
+
+function CopyButton({
+  text,
+  label,
+  className = '',
+}: {
+  text: string
+  label: string
+  className?: string
+}) {
+  const [copied, setCopied] = useState(false)
+  async function copy(event: MouseEvent<HTMLButtonElement>) {
+    event.stopPropagation()
+    await copyText(text)
+    setCopied(true)
+    window.setTimeout(() => setCopied(false), 1500)
+  }
+  return (
+    <Button
+      type='button'
+      variant='ghost'
+      size='icon'
+      className={`size-8 ${className}`}
+      aria-label={copied ? '已复制' : label}
+      title={copied ? '已复制' : label}
+      onClick={(event) => void copy(event)}
+    >
+      {copied ? <Check /> : <Copy />}
+    </Button>
+  )
 }
 
 function listTitle(item: FeedItem): string {
@@ -226,8 +275,12 @@ const scoreLabels: Record<string, string> = {
   newInformation: '新信息',
 }
 
-function scoreLabel(value: number | null): string {
-  return value === null ? '未评分' : `${value} 分`
+function scoreLabel(item: FeedItem): string {
+  if (item.totalScore !== null) return `${item.totalScore} 分`
+  if (item.junk.isJunk) return '不参与评分'
+  if (item.processStatus !== 'completed')
+    return statusLabels[item.processStatus]
+  return '评分缺失'
 }
 
 interface ContentLogEntry {
@@ -246,7 +299,13 @@ interface ContentLogEntry {
   response?: string
 }
 
-function LogEntry({ contentId, entry }: { contentId: string; entry: ContentLogEntry }) {
+function LogEntry({
+  contentId,
+  entry,
+}: {
+  contentId: string
+  entry: ContentLogEntry
+}) {
   const [detail, setDetail] = useState<ContentLogEntry>()
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -265,15 +324,21 @@ function LogEntry({ contentId, entry }: { contentId: string; entry: ContentLogEn
     }
   }
   return (
-    <details className='border-t py-3' onToggle={(event) => {
-      if (event.currentTarget.open) void loadDetail()
-    }}>
+    <details
+      className='border-t py-3'
+      onToggle={(event) => {
+        if (event.currentTarget.open) void loadDetail()
+      }}
+    >
       <summary className='cursor-pointer text-sm'>
         <span className='font-medium'>{entry.action}</span>
         <span className='ml-2 text-muted-foreground'>
-          {entry.status === 'succeeded' ? '成功' : '失败'} · {new Date(entry.timestamp).toLocaleString('zh-CN')}
+          {entry.status === 'succeeded' ? '成功' : '失败'} ·{' '}
+          {new Date(entry.timestamp).toLocaleString('zh-CN')}
         </span>
-        {entry.error && <span className='mt-1 block text-destructive'>{entry.error}</span>}
+        {entry.error && (
+          <span className='mt-1 block text-destructive'>{entry.error}</span>
+        )}
       </summary>
       <dl className='mt-3 grid gap-2 text-xs sm:grid-cols-2'>
         <div>阶段：{entry.stage ?? '—'}</div>
@@ -283,17 +348,27 @@ function LogEntry({ contentId, entry }: { contentId: string; entry: ContentLogEn
         {entry.processor && <div>处理器：{entry.processor}</div>}
         {entry.prompt && <div>提示词：{entry.prompt}</div>}
       </dl>
-      {loading && <p className='mt-3 text-xs text-muted-foreground'>正在读取请求与响应…</p>}
-      {error && <p className='mt-3 text-xs text-destructive'>读取失败：{error}</p>}
+      {loading && (
+        <p className='mt-3 text-xs text-muted-foreground'>
+          正在读取请求与响应…
+        </p>
+      )}
+      {error && (
+        <p className='mt-3 text-xs text-destructive'>读取失败：{error}</p>
+      )}
       {detail && (
         <div className='mt-3 space-y-2'>
           <details>
             <summary className='cursor-pointer text-xs'>request</summary>
-            <pre className='mt-2 max-h-80 overflow-auto rounded-sm bg-foreground/[0.025] p-3 text-xs whitespace-pre-wrap break-all'>{detail.request ?? '无'}</pre>
+            <pre className='mt-2 max-h-80 overflow-auto rounded-sm bg-foreground/[0.025] p-3 text-xs whitespace-pre-wrap break-all'>
+              {detail.request ?? '无'}
+            </pre>
           </details>
           <details>
             <summary className='cursor-pointer text-xs'>response</summary>
-            <pre className='mt-2 max-h-80 overflow-auto rounded-sm bg-foreground/[0.025] p-3 text-xs whitespace-pre-wrap break-all'>{detail.response ?? '无'}</pre>
+            <pre className='mt-2 max-h-80 overflow-auto rounded-sm bg-foreground/[0.025] p-3 text-xs whitespace-pre-wrap break-all'>
+              {detail.response ?? '无'}
+            </pre>
           </details>
         </div>
       )}
@@ -308,17 +383,30 @@ function LogPanel({ contentId }: { contentId: string }) {
     let active = true
     void api<{ items: ContentLogEntry[] }>(
       `/api/contents/${encodeURIComponent(contentId)}/logs`
-    ).then((result) => {
-      if (active) setEntries(result.items)
-    }).catch((reason) => {
-      if (active) setError(String(reason))
-    })
-    return () => { active = false }
+    )
+      .then((result) => {
+        if (active) setEntries(result.items)
+      })
+      .catch((reason) => {
+        if (active) setError(String(reason))
+      })
+    return () => {
+      active = false
+    }
   }, [contentId])
-  if (error) return <p className='text-sm text-destructive'>日志读取失败：{error}</p>
-  if (!entries) return <p className='text-sm text-muted-foreground'>正在读取日志…</p>
-  if (!entries.length) return <p className='text-sm text-muted-foreground'>暂无执行日志</p>
-  return <div>{entries.map((entry) => <LogEntry key={entry.index} contentId={contentId} entry={entry} />)}</div>
+  if (error)
+    return <p className='text-sm text-destructive'>日志读取失败：{error}</p>
+  if (!entries)
+    return <p className='text-sm text-muted-foreground'>正在读取日志…</p>
+  if (!entries.length)
+    return <p className='text-sm text-muted-foreground'>暂无执行日志</p>
+  return (
+    <div>
+      {entries.map((entry) => (
+        <LogEntry key={entry.index} contentId={contentId} entry={entry} />
+      ))}
+    </div>
+  )
 }
 
 function useMobile() {
@@ -392,17 +480,13 @@ function formatLocalDate(value: Date): string {
 export function ContentCard({
   item,
   selected,
-  checked,
   onOpen,
-  onCheck,
   onFavorite,
   compact = false,
 }: {
   item: FeedItem
   selected?: boolean
-  checked?: boolean
   onOpen?: () => void
-  onCheck?: (value: boolean) => void
   onFavorite?: () => void
   compact?: boolean
 }) {
@@ -414,7 +498,7 @@ export function ContentCard({
       <HoverCardTrigger asChild>
         <article
           tabIndex={0}
-          className={`group flex max-h-[360px] min-w-0 cursor-pointer flex-col overflow-hidden rounded-sm border bg-card p-3 outline-none transition-colors hover:bg-foreground/[0.025] focus-visible:ring-2 focus-visible:ring-ring ${compact ? 'min-h-28' : ''} ${selected ? 'bg-foreground/[0.045]' : ''}`}
+          className={`group relative flex min-w-0 cursor-pointer flex-col overflow-hidden rounded-sm border bg-card p-3 outline-none transition-colors hover:bg-foreground/[0.025] focus-visible:ring-2 focus-visible:ring-ring ${compact ? 'min-h-28' : ''} ${selected ? 'bg-foreground/[0.045]' : ''}`}
           onClick={onOpen}
           onKeyDown={(event) => {
             if (
@@ -427,16 +511,13 @@ export function ContentCard({
             }
           }}
         >
+          <CopyButton
+            text={cardContent(item)}
+            label='复制内容'
+            className='absolute right-2 top-2 z-10 bg-background/90 opacity-100 shadow-none transition-opacity md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100'
+          />
           <div className='mb-2 flex min-w-0 shrink-0 items-start gap-2'>
-            {onCheck && !compact && (
-              <Checkbox
-                aria-label={`选择 ${item.title}`}
-                checked={checked}
-                onCheckedChange={(value) => onCheck(value === true)}
-                onClick={(event) => event.stopPropagation()}
-              />
-            )}
-            <div className='min-w-0 flex-1'>
+            <div className='min-w-0 flex-1 pr-8'>
               <div className='flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground'>
                 {cover ? (
                   <img
@@ -454,7 +535,7 @@ export function ContentCard({
                 </span>
                 <span aria-hidden='true'>·</span>
                 <span className='shrink-0 font-semibold text-foreground'>
-                  {scoreLabel(item.totalScore)}
+                  {scoreLabel(item)}
                 </span>
                 {!item.read && (
                   <span
@@ -470,11 +551,12 @@ export function ContentCard({
               {listTitle(item)}
             </h2>
           )}
-          <span className='mb-1 shrink-0 text-[11px] text-muted-foreground'>
-            {languageLabel(item)}
-            {duration ? ` · ${duration}` : ''}
-          </span>
-          <div className='min-h-0 flex-1 overflow-auto overscroll-contain text-xs leading-5 text-foreground/85'>
+          {duration && (
+            <span className='mb-1 shrink-0 text-[11px] text-muted-foreground'>
+              {duration}
+            </span>
+          )}
+          <div className='max-h-48 overflow-hidden text-xs leading-5 text-foreground/85'>
             <CardBody item={item} />
           </div>
           <div className='mt-auto shrink-0 pt-2'>
@@ -655,9 +737,8 @@ export function Detail({
     item.junk.isJunk ||
     item.originalStatus === 'deleted' ||
     item.originalStatus === 'private'
-  const chineseBody = item.originalLanguage === 'zh'
-    ? item.body
-    : item.chineseTranslation
+  const chineseBody =
+    item.originalLanguage === 'zh' ? item.body : item.chineseTranslation
   const englishBody =
     item.originalLanguage === 'en' && item.hasEnglishBody !== false
       ? item.body
@@ -676,15 +757,22 @@ export function Detail({
       aria-label='内容详情侧栏'
       className='h-full min-h-0 bg-background'
     >
-      <Tabs key={item.id} defaultValue='summary' className='h-full min-h-0 gap-0'>
+      <Tabs
+        key={item.id}
+        defaultValue='summary'
+        className='h-full min-h-0 gap-0'
+      >
         <SidebarHeader className='gap-0 border-b p-0'>
           <div className='flex h-12 min-w-0 items-center gap-1 px-2'>
             <div className='flex shrink-0 items-center gap-1.5 pl-1'>
-              <Badge>{scoreLabel(item.totalScore)}</Badge>
+              <Badge>{scoreLabel(item)}</Badge>
               {item.kind && (
                 <Badge variant='secondary'>{kindLabels[item.kind]}</Badge>
               )}
-              <span className='max-w-32 truncate text-xs text-muted-foreground' title={item.source?.name ?? '未知信源'}>
+              <span
+                className='max-w-32 truncate text-xs text-muted-foreground'
+                title={item.source?.name ?? '未知信源'}
+              >
                 {item.source?.name ?? '未知信源'}
               </span>
             </div>
@@ -839,10 +927,26 @@ export function Detail({
             >
               {!hasInteractionMetrics && <span>暂无互动数据</span>}
               <Metric label='浏览' value={item.interaction?.views} icon={Eye} />
-              <Metric label='点赞' value={item.interaction?.likes} icon={Heart} />
-              <Metric label='评论' value={item.interaction?.comments} icon={MessageCircle} />
-              <Metric label='分享' value={item.interaction?.shares} icon={Share2} />
-              <Metric label='收藏' value={item.interaction?.saves} icon={Bookmark} />
+              <Metric
+                label='点赞'
+                value={item.interaction?.likes}
+                icon={Heart}
+              />
+              <Metric
+                label='评论'
+                value={item.interaction?.comments}
+                icon={MessageCircle}
+              />
+              <Metric
+                label='分享'
+                value={item.interaction?.shares}
+                icon={Share2}
+              />
+              <Metric
+                label='收藏'
+                value={item.interaction?.saves}
+                icon={Bookmark}
+              />
               <span className='whitespace-nowrap'>
                 {item.publishedAt
                   ? new Date(item.publishedAt).toLocaleString('zh-CN')
@@ -865,7 +969,14 @@ export function Detail({
         </SidebarHeader>
         <SidebarContent className='px-5 py-5 md:px-6'>
           <div className='mx-auto max-w-3xl'>
-            <TabsContent value='chinese' className='m-0 space-y-5'>
+            <TabsContent value='chinese' className='relative m-0 space-y-5'>
+              {chineseBody && (
+                <CopyButton
+                  text={chineseBody}
+                  label='复制中文内容'
+                  className='absolute right-0 top-0 z-10 bg-background/90'
+                />
+              )}
               {item.images && item.images.length > 0 && (
                 <div className='grid gap-2 sm:grid-cols-2'>
                   {item.images.map((image, imageIndex) => (
@@ -898,7 +1009,9 @@ export function Detail({
               )}
               {chineseBody ? (
                 <div className='space-y-3 whitespace-pre-wrap break-words leading-8 [&_a]:underline [&_h1]:font-semibold [&_h2]:font-semibold [&_h3]:font-semibold [&_li]:ml-5 [&_ol]:list-decimal [&_ul]:list-disc'>
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{chineseBody}</ReactMarkdown>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {chineseBody}
+                  </ReactMarkdown>
                 </div>
               ) : (
                 <p className='text-sm text-muted-foreground'>
@@ -974,81 +1087,291 @@ export function Detail({
               )}
             </TabsContent>
             {englishBody && (
-              <TabsContent value='english' className='m-0'>
+              <TabsContent value='english' className='relative m-0'>
+                <CopyButton
+                  text={englishBody}
+                  label='复制英文内容'
+                  className='absolute right-0 top-0 z-10 bg-background/90'
+                />
                 <div className='whitespace-pre-wrap break-words leading-8 [&_a]:underline [&_h1]:font-semibold [&_h2]:font-semibold [&_h3]:font-semibold [&_li]:ml-5 [&_ol]:list-decimal [&_ul]:list-disc'>
                   {item.originalFormat === 'markdown_article' ? (
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{englishBody}</ReactMarkdown>
-                  ) : englishBody}
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {englishBody}
+                    </ReactMarkdown>
+                  ) : (
+                    englishBody
+                  )}
                 </div>
               </TabsContent>
             )}
-            <TabsContent value='summary' className='m-0 space-y-6'>
+            <TabsContent value='summary' className='relative m-0 space-y-6'>
+              {item.summary && (
+                <CopyButton
+                  text={item.summary}
+                  label='复制 AI 总结'
+                  className='absolute right-0 top-0 z-10 bg-background/90'
+                />
+              )}
               <section>
                 <h3 className='mb-2 text-sm font-semibold'>看完能获得什么</h3>
-                <p className='leading-7'>{item.valueSummary || '暂无价值分析'}</p>
+                <p className='leading-7'>
+                  {item.valueSummary || '暂无价值分析'}
+                </p>
+              </section>
+              <section aria-label='文章标签'>
+                <h3 className='mb-2 text-sm font-semibold'>文章标签</h3>
+                <div className='flex flex-wrap gap-1.5'>
+                  {item.topics.length ? (
+                    item.topics.map((topic) => (
+                      <Badge
+                        key={topic}
+                        variant='outline'
+                        className='font-normal'
+                      >
+                        {topic}
+                      </Badge>
+                    ))
+                  ) : (
+                    <span className='text-sm text-muted-foreground'>
+                      暂无标签
+                    </span>
+                  )}
+                </div>
               </section>
               <section>
                 <h3 className='mb-2 text-sm font-semibold'>
-                  {item.kind === 'short_post' ? '帖子内容（未额外总结）' : 'AI 总结'}
+                  {item.kind === 'short_post'
+                    ? '帖子内容（未额外总结）'
+                    : 'AI 总结'}
                 </h3>
                 {item.summary ? (
                   <div className='space-y-3 break-words leading-7 [&_a]:underline [&_h1]:font-semibold [&_h2]:font-semibold [&_h3]:font-semibold [&_li]:ml-5 [&_ol]:list-decimal [&_ul]:list-disc'>
                     {item.kind === 'short_post' ? (
                       <p className='whitespace-pre-wrap'>{item.summary}</p>
                     ) : (
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.summary}</ReactMarkdown>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {item.summary}
+                      </ReactMarkdown>
                     )}
                   </div>
-                ) : <p className='text-sm text-muted-foreground'>暂无 AI 总结</p>}
+                ) : (
+                  <p className='text-sm text-muted-foreground'>暂无 AI 总结</p>
+                )}
               </section>
               <section>
                 <h3 className='mb-2 text-sm font-semibold'>评分</h3>
-                <p className='mb-3 text-lg font-semibold'>{scoreLabel(item.totalScore)}</p>
-              <div className='grid gap-3 sm:grid-cols-2'>
-                {Object.entries(item.scores).map(([key, value]) => (
-                  <div key={key} className='border-l px-3 py-2'>
-                    <div className='text-xs text-muted-foreground'>
-                      {scoreLabels[key] ?? key}
+                <p className='mb-3 text-lg font-semibold'>{scoreLabel(item)}</p>
+                <div className='grid gap-3 sm:grid-cols-2'>
+                  {Object.entries(item.scores).map(([key, value]) => (
+                    <div key={key} className='border-l px-3 py-2'>
+                      <div className='text-xs text-muted-foreground'>
+                        {scoreLabels[key] ?? key}
+                      </div>
+                      <div className='mt-1 font-semibold'>
+                        {scoreParts(value).level}
+                      </div>
+                      {scoreParts(value).reason && (
+                        <p className='mt-1 text-xs leading-5 text-muted-foreground'>
+                          {scoreParts(value).reason}
+                        </p>
+                      )}
                     </div>
-                    <div className='mt-1 font-semibold'>
-                      {scoreParts(value).level}
-                    </div>
-                    {scoreParts(value).reason && (
-                      <p className='mt-1 text-xs leading-5 text-muted-foreground'>
-                        {scoreParts(value).reason}
-                      </p>
-                    )}
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
               </section>
             </TabsContent>
             <TabsContent value='properties' className='m-0'>
               <dl className='grid gap-x-6 gap-y-4 text-sm sm:grid-cols-2 [&_dt]:text-muted-foreground [&_dd]:mt-1 [&_dd]:break-words'>
-                <div><dt>来源平台与账号</dt><dd>{sourceTypeLabels[item.source?.type ?? ''] ?? item.source?.type ?? '未知'} · {item.source?.name ?? '未知信源'}</dd></div>
-                <div><dt>来源账号 ID</dt><dd className='font-mono text-xs'>{item.source?.id ?? '—'}</dd></div>
-                <div><dt>内容 ID</dt><dd className='font-mono text-xs'>{item.id}</dd></div>
-                {item.externalContentId && <div><dt>平台内容 ID</dt><dd className='font-mono text-xs'>{item.externalContentId}</dd></div>}
-                <div><dt>原文链接</dt><dd>{item.url ? <a href={item.url} target='_blank' rel='noreferrer' className='underline underline-offset-2'>打开原文</a> : '无'}</dd></div>
-                <div><dt>内容类型与格式</dt><dd>{item.kind ? kindLabels[item.kind] : '未知'} · {formatLabels[item.originalFormat ?? ''] ?? '未知'}</dd></div>
-                <div><dt>原文语言</dt><dd>{item.originalLanguage === 'zh' ? '中文' : item.originalLanguage === 'en' ? '英文' : '待识别'}</dd></div>
-                {(item.originalStatus === 'deleted' || item.originalStatus === 'private' || item.originalStatus === 'unavailable') && <div><dt>原文状态</dt><dd>{item.originalStatus === 'deleted' ? '已删除' : item.originalStatus === 'private' ? '不公开' : '无法访问'}</dd></div>}
-                <div><dt>中文意译</dt><dd>{item.originalLanguage === 'en' ? (item.translatedToChinese ? '已生成' : '未生成') : '不适用'}</dd></div>
-                <div><dt>关键词</dt><dd>{item.keywordsText || '无'}</dd></div>
-                <div><dt>推荐状态</dt><dd>{item.recommendation === 'core' ? '核心' : item.recommendation === 'explore' ? '探索' : '不推荐'}</dd></div>
-                <div><dt>垃圾判断</dt><dd>{item.junk.isJunk ? `是${item.junk.note ? ` · ${item.junk.note}` : item.junk.reason ? ` · ${item.junk.reason}` : ''}` : '否'}</dd></div>
-                <div><dt>处理状态</dt><dd>{statusLabels[item.processStatus]} · {stageLabels[item.processStage ?? ''] ?? '未知阶段'}</dd></div>
-                <div><dt>重试次数</dt><dd>{item.retryCount ?? 0}</dd></div>
-                <div><dt>发布时间</dt><dd>{item.publishedAt ? new Date(item.publishedAt).toLocaleString('zh-CN') : '未知'}</dd></div>
-                <div><dt>发现时间</dt><dd>{item.discoveredAt ? new Date(item.discoveredAt).toLocaleString('zh-CN') : '未知'}</dd></div>
-                <div><dt>首次入库</dt><dd>{item.firstInflowAt ? new Date(item.firstInflowAt).toLocaleString('zh-CN') : '未知'}</dd></div>
-                <div><dt>最近处理</dt><dd>{item.lastProcessedAt ? new Date(item.lastProcessedAt).toLocaleString('zh-CN') : '未知'}</dd></div>
-                <div><dt>阅读状态</dt><dd>{item.read ? '已读' : '未读'}</dd></div>
-                <div><dt>分析模型</dt><dd>{item.analysis ? `${item.analysis.provider} / ${item.analysis.model}` : '尚未分析'}</dd></div>
-                {item.analysis && <div><dt>评分规则</dt><dd>{item.analysis.ruleVersion}</dd></div>}
-                {item.video?.durationSeconds && <div><dt>视频时长</dt><dd>{formatDuration(item.video.durationSeconds)}</dd></div>}
-                {item.interaction?.capturedAt && <div><dt>互动数据采集时间</dt><dd>{new Date(item.interaction.capturedAt).toLocaleString('zh-CN')}</dd></div>}
-                {item.lastError && <div className='sm:col-span-2'><dt>最近错误</dt><dd className='text-destructive'>{item.lastError}</dd></div>}
+                <div>
+                  <dt>来源平台与账号</dt>
+                  <dd>
+                    {sourceTypeLabels[item.source?.type ?? ''] ??
+                      item.source?.type ??
+                      '未知'}{' '}
+                    · {item.source?.name ?? '未知信源'}
+                  </dd>
+                </div>
+                <div>
+                  <dt>来源账号 ID</dt>
+                  <dd className='font-mono text-xs'>
+                    {item.source?.id ?? '—'}
+                  </dd>
+                </div>
+                <div>
+                  <dt>内容 ID</dt>
+                  <dd className='font-mono text-xs'>{item.id}</dd>
+                </div>
+                {item.externalContentId && (
+                  <div>
+                    <dt>平台内容 ID</dt>
+                    <dd className='font-mono text-xs'>
+                      {item.externalContentId}
+                    </dd>
+                  </div>
+                )}
+                <div>
+                  <dt>原文链接</dt>
+                  <dd>
+                    {item.url ? (
+                      <a
+                        href={item.url}
+                        target='_blank'
+                        rel='noreferrer'
+                        className='underline underline-offset-2'
+                      >
+                        打开原文
+                      </a>
+                    ) : (
+                      '无'
+                    )}
+                  </dd>
+                </div>
+                <div>
+                  <dt>内容类型与格式</dt>
+                  <dd>
+                    {item.kind ? kindLabels[item.kind] : '未知'} ·{' '}
+                    {formatLabels[item.originalFormat ?? ''] ?? '未知'}
+                  </dd>
+                </div>
+                <div>
+                  <dt>原文语言</dt>
+                  <dd>
+                    {item.originalLanguage === 'zh'
+                      ? '中文'
+                      : item.originalLanguage === 'en'
+                        ? '英文'
+                        : '待识别'}
+                  </dd>
+                </div>
+                {(item.originalStatus === 'deleted' ||
+                  item.originalStatus === 'private' ||
+                  item.originalStatus === 'unavailable') && (
+                  <div>
+                    <dt>原文状态</dt>
+                    <dd>
+                      {item.originalStatus === 'deleted'
+                        ? '已删除'
+                        : item.originalStatus === 'private'
+                          ? '不公开'
+                          : '无法访问'}
+                    </dd>
+                  </div>
+                )}
+                <div>
+                  <dt>中文意译</dt>
+                  <dd>
+                    {item.originalLanguage === 'en'
+                      ? item.translatedToChinese
+                        ? '已生成'
+                        : '未生成'
+                      : '不适用'}
+                  </dd>
+                </div>
+                <div>
+                  <dt>关键词</dt>
+                  <dd>{item.keywordsText || '无'}</dd>
+                </div>
+                <div>
+                  <dt>推荐状态</dt>
+                  <dd>
+                    {item.recommendation === 'core'
+                      ? '核心'
+                      : item.recommendation === 'explore'
+                        ? '探索'
+                        : '不推荐'}
+                  </dd>
+                </div>
+                <div>
+                  <dt>垃圾判断</dt>
+                  <dd>
+                    {item.junk.isJunk
+                      ? `是${item.junk.note ? ` · ${item.junk.note}` : item.junk.reason ? ` · ${item.junk.reason}` : ''}`
+                      : '否'}
+                  </dd>
+                </div>
+                <div>
+                  <dt>处理状态</dt>
+                  <dd>
+                    {statusLabels[item.processStatus]} ·{' '}
+                    {stageLabels[item.processStage ?? ''] ?? '未知阶段'}
+                  </dd>
+                </div>
+                <div>
+                  <dt>重试次数</dt>
+                  <dd>{item.retryCount ?? 0}</dd>
+                </div>
+                <div>
+                  <dt>发布时间</dt>
+                  <dd>
+                    {item.publishedAt
+                      ? new Date(item.publishedAt).toLocaleString('zh-CN')
+                      : '未知'}
+                  </dd>
+                </div>
+                <div>
+                  <dt>发现时间</dt>
+                  <dd>
+                    {item.discoveredAt
+                      ? new Date(item.discoveredAt).toLocaleString('zh-CN')
+                      : '未知'}
+                  </dd>
+                </div>
+                <div>
+                  <dt>首次入库</dt>
+                  <dd>
+                    {item.firstInflowAt
+                      ? new Date(item.firstInflowAt).toLocaleString('zh-CN')
+                      : '未知'}
+                  </dd>
+                </div>
+                <div>
+                  <dt>最近处理</dt>
+                  <dd>
+                    {item.lastProcessedAt
+                      ? new Date(item.lastProcessedAt).toLocaleString('zh-CN')
+                      : '未知'}
+                  </dd>
+                </div>
+                <div>
+                  <dt>阅读状态</dt>
+                  <dd>{item.read ? '已读' : '未读'}</dd>
+                </div>
+                <div>
+                  <dt>分析模型</dt>
+                  <dd>
+                    {item.analysis
+                      ? `${item.analysis.provider} / ${item.analysis.model}`
+                      : '尚未分析'}
+                  </dd>
+                </div>
+                {item.analysis && (
+                  <div>
+                    <dt>评分规则</dt>
+                    <dd>{item.analysis.ruleVersion}</dd>
+                  </div>
+                )}
+                {item.video?.durationSeconds && (
+                  <div>
+                    <dt>视频时长</dt>
+                    <dd>{formatDuration(item.video.durationSeconds)}</dd>
+                  </div>
+                )}
+                {item.interaction?.capturedAt && (
+                  <div>
+                    <dt>互动数据采集时间</dt>
+                    <dd>
+                      {new Date(item.interaction.capturedAt).toLocaleString(
+                        'zh-CN'
+                      )}
+                    </dd>
+                  </div>
+                )}
+                {item.lastError && (
+                  <div className='sm:col-span-2'>
+                    <dt>最近错误</dt>
+                    <dd className='text-destructive'>{item.lastError}</dd>
+                  </div>
+                )}
               </dl>
             </TabsContent>
             <TabsContent value='logs' className='m-0'>
@@ -1101,7 +1424,15 @@ export function ContentWorkspace({ scope }: { scope: ContentScope }) {
   const storageKey = `airadar:${scope}:filters`
   const viewStorageKey = 'airadar:content:view'
   const title =
-    scope === 'daily' ? '每日精选' : scope === 'junk' ? '垃圾内容' : '全部内容'
+    scope === 'daily'
+      ? '每日精选'
+      : scope === 'exceptions'
+        ? '异常数据'
+        : scope === 'favorites'
+          ? '我的收藏'
+          : scope === 'junk'
+            ? '垃圾内容'
+            : '全部内容'
   const initial = () => {
     try {
       return typeof localStorage === 'undefined'
@@ -1116,7 +1447,6 @@ export function ContentWorkspace({ scope }: { scope: ContentScope }) {
   const [items, setItems] = useState<FeedItem[]>()
   const [error, setError] = useState('')
   const [selected, setSelected] = useState<string>()
-  const [checked, setChecked] = useState<string[]>([])
   const [viewMode, setViewMode] = useState<ContentViewMode>(() => {
     if (typeof localStorage === 'undefined') return 'masonry'
     return localStorage.getItem(`${viewStorageKey}:mode`) === 'table'
@@ -1171,7 +1501,10 @@ export function ContentWorkspace({ scope }: { scope: ContentScope }) {
           ? `/api/contents?keyword=${encodeURIComponent(filters.query.trim())}`
           : '/api/contents'
       )
-        .then((data) => setItems(data.items))
+        .then((data) => {
+          setItems(data.items)
+          setError('')
+        })
         .catch((reason) => setError(String(reason))),
     [filters.query]
   )
@@ -1235,11 +1568,6 @@ export function ContentWorkspace({ scope }: { scope: ContentScope }) {
     })
     changed({ ...item, utilizationActions: actions })
   }
-  async function batch(operation: string) {
-    await post('/api/contents/batch', { ids: checked, operation })
-    setChecked([])
-    await load()
-  }
   const setFilter = (key: keyof ContentFilters, value: string) =>
     setFilters((current) => ({ ...current, [key]: value }))
   const setDatePreset = (preset: string, days?: number) => {
@@ -1301,20 +1629,9 @@ export function ContentWorkspace({ scope }: { scope: ContentScope }) {
       key={item.id}
       item={item}
       selected={selected === item.id}
-      checked={scope === 'junk' && checked.includes(item.id)}
       compact={Boolean(selectedItem)}
       onOpen={() => open(item)}
       onFavorite={() => void toggleFavorite(item)}
-      onCheck={
-        scope === 'junk'
-          ? (value) =>
-              setChecked((current) =>
-                value
-                  ? [...current, item.id]
-                  : current.filter((id) => id !== item.id)
-              )
-          : undefined
-      }
     />
   )
   const cardWidthOptions: Array<{
@@ -1353,7 +1670,6 @@ export function ContentWorkspace({ scope }: { scope: ContentScope }) {
       <Table>
         <TableHeader>
           <TableRow>
-            {scope === 'junk' && <TableHead className='w-10' />}
             <TableHead>内容</TableHead>
             <TableHead>平台</TableHead>
             <TableHead>类型</TableHead>
@@ -1378,22 +1694,6 @@ export function ContentWorkspace({ scope }: { scope: ContentScope }) {
                 }
               }}
             >
-              {scope === 'junk' && (
-                <TableCell>
-                  <Checkbox
-                    aria-label={`选择 ${item.title}`}
-                    checked={checked.includes(item.id)}
-                    onCheckedChange={(value) =>
-                      setChecked((current) =>
-                        value === true
-                          ? [...current, item.id]
-                          : current.filter((id) => id !== item.id)
-                      )
-                    }
-                    onClick={(event) => event.stopPropagation()}
-                  />
-                </TableCell>
-              )}
               <TableCell className='max-w-80 whitespace-normal'>
                 <div className='line-clamp-1 font-medium'>
                   {listTitle(item)}
@@ -1401,7 +1701,7 @@ export function ContentWorkspace({ scope }: { scope: ContentScope }) {
                 <div className='line-clamp-1 text-xs text-muted-foreground'>
                   {item.junk.isJunk && item.junk.note
                     ? `垃圾原因：${item.junk.note}`
-                    : `${languageLabel(item)} · ${item.chineseTranslation || item.summary || '暂无摘要'}`}
+                    : item.chineseTranslation || item.summary || '暂无摘要'}
                 </div>
               </TableCell>
               <TableCell>
@@ -1413,7 +1713,7 @@ export function ContentWorkspace({ scope }: { scope: ContentScope }) {
                 {item.kind ? kindLabels[item.kind] : '未知'}
               </TableCell>
               <TableCell className='text-right font-medium'>
-                {item.totalScore ?? '未评分'}
+                {scoreLabel(item)}
               </TableCell>
               <TableCell>
                 <Badge
@@ -1760,32 +2060,6 @@ export function ContentWorkspace({ scope }: { scope: ContentScope }) {
         </ButtonGroup>
       </PageHeader>
 
-      {scope === 'junk' && checked.length > 0 && (
-        <div className='flex flex-wrap items-center gap-2 border-t bg-code-surface px-4 py-2 text-code-foreground'>
-          <span className='mr-auto text-sm'>已选 {checked.length} 条</span>
-          <Button
-            size='sm'
-            variant='secondary'
-            onClick={() => void batch('mark-read')}
-          >
-            标为已读
-          </Button>
-          <Button
-            size='sm'
-            variant='secondary'
-            onClick={() => void batch('mark-unread')}
-          >
-            标为未读
-          </Button>
-          <Button
-            size='sm'
-            variant='secondary'
-            onClick={() => void batch('retry')}
-          >
-            安全重试
-          </Button>
-        </div>
-      )}
       <div
         ref={scrollRef}
         data-slot='content-list-scroll'

@@ -1,12 +1,14 @@
 import type { ReactNode } from 'react'
 import {
   BookOpen,
+  Bookmark,
   Database,
   ListFilter,
   Radar,
   Settings2,
   Sparkles,
   Trash2,
+  TriangleAlert,
 } from 'lucide-react'
 import {
   Sidebar,
@@ -34,6 +36,8 @@ const navigationGroups: Array<{
     items: [
       { id: 'daily', label: '每日精选', icon: Sparkles },
       { id: 'all', label: '全部内容', icon: ListFilter },
+      { id: 'exceptions', label: '异常数据', icon: TriangleAlert },
+      { id: 'favorites', label: '我的收藏', icon: Bookmark },
       { id: 'junk', label: '垃圾内容', icon: Trash2 },
     ],
   },
@@ -111,7 +115,7 @@ export function AppShell({
         <main className='min-h-0 min-w-0 flex-1 overflow-hidden'>
           {children}
         </main>
-        <nav className='fixed inset-x-0 bottom-0 z-40 grid w-screen max-w-full grid-cols-6 border-t bg-background/95 px-1 py-1 backdrop-blur lg:hidden'>
+        <nav className='fixed inset-x-0 bottom-0 z-40 grid w-screen max-w-full grid-cols-8 border-t bg-background/95 px-1 py-1 backdrop-blur lg:hidden'>
           {navigation.map(({ id, label, icon: Icon }) => (
             <button
               key={id}

@@ -24,11 +24,13 @@ const item: FeedItem = {
 }
 
 describe('complete web shell', () => {
-  it('shows all five primary pages without demo content', () => {
+  it('shows all primary pages without demo content', () => {
     const html = renderToStaticMarkup(<App />)
     expect(html).toContain('AI Radar')
     expect(html).toContain('每日精选')
     expect(html).toContain('全部内容')
+    expect(html).toContain('异常数据')
+    expect(html).toContain('我的收藏')
     expect(html).toContain('垃圾内容')
     expect(html).toContain('信源管理')
     expect(html).toContain('运行状态')
@@ -55,6 +57,7 @@ describe('complete web shell', () => {
       <ContentCard
         item={{
           ...item,
+          totalScore: null,
           junk: {
             isJunk: true,
             source: 'rule',
@@ -65,9 +68,25 @@ describe('complete web shell', () => {
       />
     )
     expect(html).toContain('垃圾内容 · 活动页：活动报名与介绍，不是文章正文')
+    expect(html).toContain('不参与评分')
   })
 
-  it('shows the Chinese paraphrase and translation status for English X posts', () => {
+  it('explains missing scores using the processing state', () => {
+    for (const [status, label] of [
+      ['failed', '失败'],
+      ['waiting-manual-transcription', '待人工转写'],
+    ] as const) {
+      const html = renderToStaticMarkup(
+        <ContentCard
+          item={{ ...item, totalScore: null, processStatus: status }}
+        />
+      )
+      expect(html).toContain(label)
+      expect(html).not.toContain('未评分')
+    }
+  })
+
+  it('shows the Chinese paraphrase without translation status for English X posts', () => {
     const html = renderToStaticMarkup(
       <ContentCard
         item={{
@@ -86,7 +105,7 @@ describe('complete web shell', () => {
     )
     expect(html).toContain('我们今天推出了一项新功能。')
     expect(html).not.toContain('<h2')
-    expect(html).toContain('原文英文 · 已意译')
+    expect(html).not.toContain('原文英文 · 已意译')
     expect(html).not.toContain('We shipped a new feature</h2>')
   })
 
@@ -109,7 +128,8 @@ describe('complete web shell', () => {
     expect(html).not.toContain('<h2')
     expect(html).not.toContain('核心</span>')
     expect(html).not.toContain('>AI</span>')
-    expect(html).toContain('max-h-[360px]')
+    expect(html).not.toContain('max-h-[360px]')
+    expect(html).not.toContain('overflow-auto')
   })
 
   it('shows the AI summary instead of the source transcript for videos', () => {
@@ -128,6 +148,7 @@ describe('complete web shell', () => {
     expect(html).toContain('视频标题')
     expect(html).toContain('给非技术读者看的中文总结')
     expect(html).not.toContain('很长的原始英文字幕')
+    expect(html).toContain('aria-label="复制内容"')
   })
 
   it('puts source in the first row and interaction counts before the date', () => {
@@ -159,17 +180,30 @@ describe('complete web shell', () => {
     expect(html).toContain('视频')
     expect(html).toContain('IBM')
     expect(html).not.toContain('原文英文 · 未意译')
-    expect(html.indexOf('80 分')).toBeLessThan(html.indexOf('aria-label="收藏"'))
+    expect(html.indexOf('80 分')).toBeLessThan(
+      html.indexOf('aria-label="收藏"')
+    )
     expect(html.indexOf('IBM')).toBeLessThan(html.indexOf('真实图文</h2>'))
-    const metadata = html.match(/<div aria-label="互动与发布时间"[^>]*>(.*?)<\/div>/u)?.[1]
+    const metadata = html.match(
+      /<div aria-label="互动与发布时间"[^>]*>(.*?)<\/div>/u
+    )?.[1]
     expect(metadata).toBeDefined()
     expect(metadata).toContain('120')
     expect(metadata).toContain('2026/9/18')
-    expect(metadata!.indexOf('120')).toBeLessThan(metadata!.indexOf('2026/9/18'))
+    expect(metadata!.indexOf('120')).toBeLessThan(
+      metadata!.indexOf('2026/9/18')
+    )
     expect(html.indexOf('120')).toBeGreaterThan(html.indexOf('真实图文</h2>'))
     for (const tab of ['AI 总结', '中文', '英文', '属性', '日志']) {
       expect(html).toContain(tab)
     }
+    expect(html).toContain('aria-label="复制 AI 总结"')
+    expect(html.indexOf('看完能获得什么</h3>')).toBeLessThan(
+      html.indexOf('文章标签</h3>')
+    )
+    expect(html.indexOf('文章标签</h3>')).toBeLessThan(
+      html.indexOf('AI 总结</h3>')
+    )
     for (const action of ['做卡片', '做视频', '写文章', '建项目']) {
       expect(html).not.toContain(action)
     }
@@ -195,7 +229,9 @@ describe('complete web shell', () => {
     expect(html).toContain('AI 总结')
     expect(html).toContain('中文')
     expect(html).not.toContain('>英文</button>')
-    expect(html).toContain('暂无互动数据</span><span class="whitespace-nowrap">发布时间未知')
+    expect(html).toContain(
+      '暂无互动数据</span><span class="whitespace-nowrap">发布时间未知'
+    )
   })
 
   it('supports combined process, read and junk filters', () => {
@@ -256,10 +292,11 @@ describe('complete web shell', () => {
     ).toHaveLength(1)
   })
 
-  it('keeps daily, all and junk content scopes separate', () => {
+  it('separates incomplete, unscored and untranslated English content from completed content', () => {
     const junk = {
       ...item,
       id: 'x:junk',
+      totalScore: null,
       junk: { isJunk: true, source: 'manual' as const },
     }
     const ordinary = {
@@ -271,11 +308,60 @@ describe('complete web shell', () => {
       ...item,
       id: 'x:failed',
       processStatus: 'failed' as const,
+      totalScore: null,
     }
-    const items = [item, junk, ordinary, failed]
+    const processing = {
+      ...item,
+      id: 'x:processing',
+      processStatus: 'processing' as const,
+    }
+    const unscored = { ...item, id: 'x:unscored', totalScore: null }
+    const untranslatedEnglish = {
+      ...item,
+      id: 'x:untranslated-en',
+      originalLanguage: 'en' as const,
+      translatedToChinese: false,
+    }
+    const untranslatedChinese = {
+      ...item,
+      id: 'x:untranslated-zh',
+      originalLanguage: 'zh' as const,
+      translatedToChinese: false,
+    }
+    const items = [
+      item,
+      junk,
+      ordinary,
+      failed,
+      processing,
+      unscored,
+      untranslatedEnglish,
+      untranslatedChinese,
+    ]
 
-    expect(filterContentScope(items, 'daily')).toEqual([item])
-    expect(filterContentScope(items, 'all')).toEqual([item, ordinary, failed])
+    expect(filterContentScope(items, 'daily')).toEqual([
+      item,
+      untranslatedChinese,
+    ])
+    expect(filterContentScope(items, 'all')).toEqual([
+      item,
+      ordinary,
+      untranslatedChinese,
+    ])
+    expect(filterContentScope(items, 'exceptions')).toEqual([
+      failed,
+      processing,
+      unscored,
+      untranslatedEnglish,
+    ])
     expect(filterContentScope(items, 'junk')).toEqual([junk])
+    const favorite = {
+      ...failed,
+      id: 'x:favorite',
+      utilizationActions: ['favorite' as const],
+    }
+    expect(filterContentScope([...items, favorite], 'favorites')).toEqual([
+      favorite,
+    ])
   })
 })

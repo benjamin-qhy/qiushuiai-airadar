@@ -24,6 +24,8 @@ interface UpgradeOptions {
   stdout: { write(chunk: string): void }
   home?: string
   npmExecutable?: string
+  healthFetcher?: typeof fetch
+  healthDelay?: (milliseconds: number) => Promise<void>
 }
 
 function versionNumbers(value: string): [number, number, number] {
@@ -57,6 +59,27 @@ async function exists(target: string): Promise<boolean> {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
     throw error
   }
+}
+
+export async function waitForServiceHealth(
+  fetcher: typeof fetch,
+  delay: (milliseconds: number) => Promise<void> = (milliseconds) =>
+    new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  attempts = 20
+): Promise<void> {
+  let lastError: unknown
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await fetcher('http://127.0.0.1:43120/health')
+      const health = (await response.json()) as { status?: string }
+      if (response.ok && health.status === 'ready') return
+      lastError = new Error(`Health check returned HTTP ${response.status}`)
+    } catch (error) {
+      lastError = error
+    }
+    if (attempt < attempts) await delay(500)
+  }
+  throw new Error('Updated service did not become ready', { cause: lastError })
 }
 
 export async function upgradeFromGitHub(options: UpgradeOptions): Promise<{
@@ -157,6 +180,10 @@ export async function upgradeFromGitHub(options: UpgradeOptions): Promise<{
       throw new Error(
         `Installed version check failed: expected ${releaseVersion}, received ${stdout.trim()}`
       )
+    await waitForServiceHealth(
+      options.healthFetcher ?? fetch,
+      options.healthDelay
+    )
     options.stdout.write(
       `Updated ${options.currentVersion} -> ${releaseVersion}\n`
     )

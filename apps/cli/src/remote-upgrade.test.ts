@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { compareVersions, upgradeFromGitHub } from './remote-upgrade.js'
+import {
+  compareVersions,
+  upgradeFromGitHub,
+  waitForServiceHealth,
+} from './remote-upgrade.js'
 
 describe('remote release versions', () => {
   it('compares stable semantic versions', () => {
@@ -42,5 +46,18 @@ describe('remote release versions', () => {
     )
     expect(result.changed).toBe(false)
     expect(stopped).toBe(false)
+  })
+
+  it('waits until the upgraded service health endpoint is ready', async () => {
+    let attempts = 0
+    await waitForServiceHealth(
+      (async () => {
+        attempts += 1
+        if (attempts < 3) throw new Error('service is starting')
+        return Response.json({ status: 'ready' })
+      }) as typeof fetch,
+      async () => undefined
+    )
+    expect(attempts).toBe(3)
   })
 })

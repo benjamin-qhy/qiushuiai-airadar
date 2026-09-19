@@ -63,7 +63,6 @@ export const runtimeConfigSchema = z.object({
   timezone: z.literal('Asia/Shanghai'),
   collection: z.object({
     schedule: z.string().min(1),
-    per_source_limit: z.number().int().positive(),
     list_pages: z.literal(1),
     max_retries: z.number().int().min(0).max(10),
     serial_sources: z.literal(true),
@@ -79,7 +78,6 @@ export const sourcesConfigSchema = z.object({
       external_identity: z.string().min(1),
       language: z.enum(['zh', 'en']),
       enabled: z.boolean(),
-      per_source_limit: z.number().int().positive().optional(),
     })
   ),
 })
@@ -174,6 +172,15 @@ export async function initializeSingleTableConfig(
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
     }
   }
+  for (const name of ['runtime.yaml', 'sources.yaml'] as const) {
+    const target = path.join(configRoot, name)
+    const content = await readFile(target, 'utf8')
+    const migrated = content.replace(
+      /^[\t ]+per_source_limit:[^\r\n]*(?:\r?\n|$)/gmu,
+      ''
+    )
+    if (migrated !== content) await saveConfigFile(configRoot, name, migrated)
+  }
   return configRoot
 }
 
@@ -230,11 +237,7 @@ export async function saveSourcesConfig(
   configRoot: string,
   sources: z.output<typeof sourcesConfigSchema>['sources']
 ): Promise<void> {
-  await saveConfigFile(
-    configRoot,
-    'sources.yaml',
-    stringifyYaml({ sources })
-  )
+  await saveConfigFile(configRoot, 'sources.yaml', stringifyYaml({ sources }))
 }
 
 export async function saveProvidersConfig(

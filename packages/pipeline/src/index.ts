@@ -1041,7 +1041,7 @@ export class RssAdapter {
   async discover(input: {
     feedUrl: string
     cursor?: string
-    limit: number
+    limit?: number
     now?: Date
     initialLookbackDays?: number
     incremental?: boolean
@@ -1049,9 +1049,8 @@ export class RssAdapter {
     isHistoricalRetry?: (externalId: string) => boolean
   }): Promise<RssDiscoveryBatch> {
     if (
-      !Number.isInteger(input.limit) ||
-      input.limit < 1 ||
-      input.limit > 100
+      input.limit !== undefined &&
+      (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 100)
     ) {
       throw new Error('RSS discovery limit must be between 1 and 100')
     }
@@ -1131,10 +1130,20 @@ export class RssAdapter {
         leftTime - rightTime || left.externalId.localeCompare(right.externalId)
       )
     })
-    const effectiveLimit = incremental ? input.limit : Math.min(input.limit, 20)
-    const items = incremental
-      ? orderedItems.slice(0, effectiveLimit)
-      : orderedItems.slice(-effectiveLimit).reverse()
+    const effectiveLimit =
+      input.limit === undefined
+        ? undefined
+        : incremental
+          ? input.limit
+          : Math.min(input.limit, 20)
+    const items =
+      effectiveLimit === undefined
+        ? incremental
+          ? orderedItems
+          : orderedItems.toReversed()
+        : incremental
+          ? orderedItems.slice(0, effectiveLimit)
+          : orderedItems.slice(-effectiveLimit).reverse()
     return {
       items,
       nextCursor:

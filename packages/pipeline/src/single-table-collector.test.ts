@@ -61,7 +61,6 @@ it('classifies an X plugin directory as rule junk without fetching an article or
     } satisfies ScoringRules,
     longContentMinChars: 1000,
     translationMinimumTotalScore: 60,
-    perSourceLimit: 5,
     provider: {
       async discover() {
         return {
@@ -128,7 +127,6 @@ it('runs sources and items serially with exactly one list call per source', asyn
       external_identity: 'first',
       language: 'en',
       enabled: true,
-      per_source_limit: 2,
     },
     {
       id: 'second',
@@ -163,7 +161,6 @@ it('runs sources and items serially with exactly one list call per source', asyn
     scoring: rules,
     longContentMinChars: 1000,
     translationMinimumTotalScore: 60,
-    perSourceLimit: 5,
     provider: {
       async discover(source, limit) {
         events.push(`discover:${source.id}:${limit}`)
@@ -225,10 +222,10 @@ it('runs sources and items serially with exactly one list call per source', asyn
     { sourceId: 'second', discovered: 1, completed: 1, failed: 0, skipped: 0 },
   ])
   expect(events).toEqual([
-    'discover:first:2',
+    'discover:first:undefined',
     'resolve:first',
     'model:classify',
-    'discover:second:5',
+    'discover:second:undefined',
     'resolve:second',
     'model:classify',
   ])
@@ -291,7 +288,6 @@ it('does not automatically retry a failed content row on the next collection', a
     },
     longContentMinChars: 1000,
     translationMinimumTotalScore: 60,
-    perSourceLimit: 5,
     provider: {
       async discover() {
         return {

@@ -46,7 +46,6 @@ interface SourceDraft {
   externalIdentity: string
   language: 'zh' | 'en'
   enabled: boolean
-  perSourceLimit: string
 }
 
 const emptySource: SourceDraft = {
@@ -56,7 +55,6 @@ const emptySource: SourceDraft = {
   externalIdentity: '',
   language: 'zh',
   enabled: true,
-  perSourceLimit: '',
 }
 
 export function SourcesPage() {
@@ -111,18 +109,12 @@ export function SourcesPage() {
       externalIdentity: source.externalIdentity,
       language: source.language,
       enabled: source.status === 'enabled',
-      perSourceLimit: source.perSourceLimit?.toString() ?? '',
     })
     setSourceDialog(true)
   }
   async function saveSource() {
     try {
-      const body = {
-        ...draft,
-        perSourceLimit: draft.perSourceLimit
-          ? Number(draft.perSourceLimit)
-          : undefined,
-      }
+      const body = draft
       const result = editingId
         ? await put<{ source: SourceItem }>(
             `/api/sources/${encodeURIComponent(editingId)}`,
@@ -569,7 +561,7 @@ export function SourcesPage() {
                 }
               />
             </label>
-            <div className='grid grid-cols-2 gap-3'>
+            <div>
               <label className='text-sm'>
                 内容语言
                 <select
@@ -585,20 +577,6 @@ export function SourcesPage() {
                   <option value='zh'>中文</option>
                   <option value='en'>英文</option>
                 </select>
-              </label>
-              <label className='text-sm'>
-                单次条数（可选）
-                <Input
-                  type='number'
-                  min='1'
-                  value={draft.perSourceLimit}
-                  onChange={(event) =>
-                    setDraft({
-                      ...draft,
-                      perSourceLimit: event.target.value,
-                    })
-                  }
-                />
               </label>
             </div>
             <label className='flex items-center gap-2 text-sm'>

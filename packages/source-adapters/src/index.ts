@@ -34,7 +34,11 @@ export function classifyNonArticlePage(value: string): string | undefined {
 export interface DiscoveryRequest {
   source: Source
   cursor?: string
-  limit: number
+  limit?: number
+}
+
+function limitItems<T>(items: T[], limit?: number): T[] {
+  return limit === undefined ? items : items.slice(0, limit)
 }
 
 export interface DiscoveredItem {
@@ -1047,10 +1051,10 @@ export function createTwitterApiIoProvider(options: {
       )
       const data = record(payload.data)
       const capturedAt = new Date().toISOString()
-      const items = mapXTweets(
-        array(data.tweets ?? payload.tweets),
-        capturedAt
-      ).slice(0, request.limit)
+      const items = limitItems(
+        mapXTweets(array(data.tweets ?? payload.tweets), capturedAt),
+        request.limit
+      )
       return {
         items,
         nextCursor: updateProviderCursor(
@@ -1319,7 +1323,12 @@ export function createYouTubeDataApiProvider(options: {
       const videosUrl = new URL('videos', baseUrl)
       videosUrl.search = new URLSearchParams({
         part: 'snippet,contentDetails,statistics,liveStreamingDetails',
-        id: page.ids.slice(0, Math.min(50, request.limit)).join(','),
+        id: page.ids
+          .slice(
+            0,
+            request.limit === undefined ? 50 : Math.min(50, request.limit)
+          )
+          .join(','),
         key: options.apiKey,
       }).toString()
       const videos = await fetchJson(
@@ -1333,16 +1342,18 @@ export function createYouTubeDataApiProvider(options: {
       )
       const capturedAt = new Date().toISOString()
       const pageIds = new Set(page.ids)
-      const items = array(videos.items)
-        .filter((video) => {
-          const value = record(video)
-          const id =
-            text(value.id) ?? text(value.video_id) ?? text(value.videoId)
-          return Boolean(id && pageIds.has(id))
-        })
-        .map((video) => mapYouTubeVideo(video, capturedAt))
-        .filter((item): item is DiscoveredItem => Boolean(item))
-        .slice(0, request.limit)
+      const items = limitItems(
+        array(videos.items)
+          .filter((video) => {
+            const value = record(video)
+            const id =
+              text(value.id) ?? text(value.video_id) ?? text(value.videoId)
+            return Boolean(id && pageIds.has(id))
+          })
+          .map((video) => mapYouTubeVideo(video, capturedAt))
+          .filter((item): item is DiscoveredItem => Boolean(item)),
+        request.limit
+      )
       return {
         items,
         nextCursor: updateProviderCursor(
@@ -1386,10 +1397,13 @@ export function createTikHubXProvider(options: {
       const candidates = array(
         data.timeline ?? data.tweets ?? data.items ?? data
       )
-      const items = mapXTweets(
-        candidates.map((tweet) => record(record(tweet).tweet ?? tweet)),
-        capturedAt
-      ).slice(0, request.limit)
+      const items = limitItems(
+        mapXTweets(
+          candidates.map((tweet) => record(record(tweet).tweet ?? tweet)),
+          capturedAt
+        ),
+        request.limit
+      )
       if (!items.length && candidates.length)
         throw new ProviderDiscoveryError(
           'invalid-response',
@@ -1434,10 +1448,12 @@ export function createTikHubYouTubeProvider(options: {
       assertTikHubSuccess(payload)
       const data = record(payload.data)
       const capturedAt = new Date().toISOString()
-      const items = array(data.videos)
-        .map((video) => mapYouTubeVideo(video, capturedAt))
-        .filter((item): item is DiscoveredItem => Boolean(item))
-        .slice(0, request.limit)
+      const items = limitItems(
+        array(data.videos)
+          .map((video) => mapYouTubeVideo(video, capturedAt))
+          .filter((item): item is DiscoveredItem => Boolean(item)),
+        request.limit
+      )
       return {
         items,
         nextCursor: updateProviderCursor(

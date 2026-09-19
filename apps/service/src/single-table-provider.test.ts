@@ -61,11 +61,12 @@ it('uses the native article request path for live RSS and keeps an audit event',
   const originalFetch = globalThis.fetch
   const feedUrl = 'https://example.com/feed.xml'
   const articleUrl = 'https://example.com/article'
-  globalThis.fetch = vi.fn(async () =>
-    new Response(
-      `<rss><channel><item><guid>one</guid><title>Example</title><link>${articleUrl}</link><pubDate>${new Date().toUTCString()}</pubDate></item></channel></rss>`,
-      { status: 200, headers: { 'content-type': 'application/xml' } }
-    )
+  globalThis.fetch = vi.fn(
+    async () =>
+      new Response(
+        `<rss><channel><item><guid>one</guid><title>Example</title><link>${articleUrl}</link><pubDate>${new Date().toUTCString()}</pubDate></item></channel></rss>`,
+        { status: 200, headers: { 'content-type': 'application/xml' } }
+      )
   ) as typeof fetch
   try {
     const articleEnricher = vi.fn(
@@ -104,17 +105,24 @@ it('uses the native article request path for live RSS and keeps an audit event',
 it('passes X timeline interaction counts through single-table discovery', async () => {
   const provider = createSingleTableSourceProvider({
     twitterApiKey: 'test-only',
-    fetch: async (input) => String(input).includes('/user/info')
-      ? Response.json({ data: { id: 'author-1' } })
-      : Response.json({ data: { tweets: [{
-          id: '123456789',
-          text: 'A useful AI workflow update.',
-          createdAt: 'Fri Sep 18 01:00:00 +0000 2026',
-          viewCount: 26743,
-          likeCount: 623,
-          replyCount: 77,
-          retweetCount: 21,
-        }] } }),
+    fetch: async (input) =>
+      String(input).includes('/user/info')
+        ? Response.json({ data: { id: 'author-1' } })
+        : Response.json({
+            data: {
+              tweets: [
+                {
+                  id: '123456789',
+                  text: 'A useful AI workflow update.',
+                  createdAt: 'Fri Sep 18 01:00:00 +0000 2026',
+                  viewCount: 26743,
+                  likeCount: 623,
+                  replyCount: 77,
+                  retweetCount: 21,
+                },
+              ],
+            },
+          }),
   })
   const source = {
     id: 'x-example',
@@ -131,4 +139,28 @@ it('passes X timeline interaction counts through single-table discovery', async 
     comments: 77,
     shares: 21,
   })
+})
+
+it('keeps the provider default page size when collection does not set a limit', async () => {
+  const tweets = Array.from({ length: 25 }, (_, index) => ({
+    id: String(123456789 + index),
+    text: `Post ${index + 1}`,
+    createdAt: 'Fri Sep 18 01:00:00 +0000 2026',
+  }))
+  const provider = createSingleTableSourceProvider({
+    twitterApiKey: 'test-only',
+    fetch: async (input) =>
+      String(input).includes('/user/info')
+        ? Response.json({ data: { id: 'author-1' } })
+        : Response.json({ data: { tweets } }),
+  })
+  const page = await provider.discover({
+    id: 'x-example',
+    platform: 'x',
+    account_name: 'X / Example',
+    external_identity: 'Example',
+    language: 'en',
+    enabled: true,
+  })
+  expect(page.items).toHaveLength(25)
 })

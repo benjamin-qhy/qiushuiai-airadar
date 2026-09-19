@@ -12,6 +12,10 @@ import {
   type VideoTranscriber,
 } from './index.js'
 
+function limitItems<T>(items: T[], limit?: number): T[] {
+  return limit === undefined ? items : items.slice(0, limit)
+}
+
 function douyinId(value: string): string | undefined {
   return value.match(/\/video\/(\d+)/u)?.[1]
 }
@@ -142,16 +146,16 @@ export function createGetBijiDouyinProvider(options: {
       const capturedAt = new Date().toISOString()
       const contents = Array.isArray(data.contents) ? data.contents : []
       const alreadySeen = new Set(position.seenIds)
-      const selected = contents
-        .slice(position.offset)
-        .filter((value) => {
+      const selected = limitItems(
+        contents.slice(position.offset).filter((value) => {
           const post = record(value)
           const id = text(post.post_url)
             ? douyinId(text(post.post_url) as string)
             : undefined
           return id && !alreadySeen.has(id)
-        })
-        .slice(0, request.limit)
+        }),
+        request.limit
+      )
       const items = selected.flatMap((value): DiscoveredItem[] => {
         const post = record(value)
         const canonicalUrl = text(post.post_url)

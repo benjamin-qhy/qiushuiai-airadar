@@ -308,7 +308,6 @@ it('manages sources, provider credentials, connection tests, and validated YAML'
       externalIdentity: 'https://example.com/feed.xml',
       language: 'zh',
       enabled: true,
-      perSourceLimit: 3,
     })
     expect(created.status).toBe(201)
     const updated = await mutate('/api/sources/rss_management_test', 'PUT', {
@@ -366,16 +365,16 @@ it('manages sources, provider credentials, connection tests, and validated YAML'
     expect(invalid.status).toBe(400)
     expect(await readFile(runtimeFile, 'utf8')).toBe(runtimeBefore)
     const valid = await mutate('/api/config/files/runtime.yaml', 'PUT', {
-      content: runtimeBefore.replace(
-        'per_source_limit: 20',
-        'per_source_limit: 9'
-      ),
+      content: runtimeBefore.replace('max_retries: 2', 'max_retries: 3'),
     })
     expect(valid.status).toBe(200)
     expect(
       (
         await mutate('/api/config/files/sources.yaml', 'PUT', {
-          content: await readFile(path.join(configRoot, 'sources.yaml'), 'utf8'),
+          content: await readFile(
+            path.join(configRoot, 'sources.yaml'),
+            'utf8'
+          ),
         })
       ).status
     ).toBe(404)

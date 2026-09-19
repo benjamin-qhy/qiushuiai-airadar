@@ -91,7 +91,6 @@ export async function collectSingleTable(options: {
       longContentMinChars: config.analysis.summarization.long_content_min_chars,
       translationMinimumTotalScore:
         config.analysis.translation.minimum_total_score,
-      perSourceLimit: config.runtime.collection.per_source_limit,
       onError(source, item) {
         process.stderr.write(
           `Source ${source.id}, item ${item?.externalId ?? 'list'} failed; see content log if created.\n`

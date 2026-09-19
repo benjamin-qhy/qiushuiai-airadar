@@ -77,7 +77,6 @@ function sourceItem(
     type: source.platform,
     language: source.language,
     externalIdentity: source.external_identity,
-    perSourceLimit: source.per_source_limit,
     status: enabled ? ('enabled' as const) : ('disabled' as const),
     health: enabled ? ('healthy' as const) : ('disabled' as const),
     effectiveParameters: { ids: [], values: {} },
@@ -92,9 +91,6 @@ function sourceFromBody(body: Record<string, unknown>) {
     external_identity: body.externalIdentity,
     language: body.language,
     enabled: body.enabled !== false,
-    ...(body.perSourceLimit === undefined || body.perSourceLimit === null
-      ? {}
-      : { per_source_limit: body.perSourceLimit }),
   }
   return sourcesConfigSchema.parse({ sources: [candidate] }).sources[0]!
 }
@@ -850,11 +846,7 @@ export function createSingleTableServiceApp(options: {
                     publishedAt: row.published_at as string | undefined,
                   }
                 } else {
-                  const page = await provider.discover(
-                    source,
-                    source.per_source_limit ??
-                      config.runtime.collection.per_source_limit
-                  )
+                  const page = await provider.discover(source)
                   const item = page.items.find(
                     (candidate) =>
                       candidate.externalId === row.external_content_id ||

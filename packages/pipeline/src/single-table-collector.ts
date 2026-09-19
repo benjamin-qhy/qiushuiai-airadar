@@ -20,7 +20,6 @@ export interface ConfiguredSource {
   external_identity: string
   language: 'zh' | 'en'
   enabled: boolean
-  per_source_limit?: number
 }
 
 export interface DiscoveredContent {
@@ -51,7 +50,7 @@ export interface SingleTableSourceProvider {
   // One call per source. There is deliberately no cursor or next-page API.
   discover(
     source: ConfiguredSource,
-    limit: number
+    limit?: number
   ): Promise<SinglePageDiscovery>
   resolve(
     source: ConfiguredSource,
@@ -70,7 +69,6 @@ export interface CollectSourcesOptions {
   scoring: ScoringRules
   longContentMinChars: number
   translationMinimumTotalScore: number
-  perSourceLimit: number
   onError?: (
     source: ConfiguredSource,
     item: DiscoveredContent | undefined,
@@ -97,7 +95,6 @@ export async function collectSourcesSerially(
   const results: SourceRunResult[] = []
   for (const source of options.sources) {
     if (!source.enabled) continue
-    const sourceLimit = source.per_source_limit ?? options.perSourceLimit
     const result = {
       sourceId: source.id,
       discovered: 0,
@@ -108,14 +105,14 @@ export async function collectSourcesSerially(
     results.push(result)
     let page: SinglePageDiscovery
     try {
-      page = await options.provider.discover(source, sourceLimit)
+      page = await options.provider.discover(source)
     } catch (error) {
       result.failed++
       options.onError?.(source, undefined, error)
       continue
     }
-    result.discovered = Math.min(page.items.length, sourceLimit)
-    for (const item of page.items.slice(0, sourceLimit)) {
+    result.discovered = page.items.length
+    for (const item of page.items) {
       let original: OriginalContent | undefined
       try {
         const nonArticleReason =

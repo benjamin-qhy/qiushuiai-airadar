@@ -39,11 +39,7 @@ try {
     const existingCount = rows.filter(
       (row) => row.source_account_id === source.id
     ).length
-    const limit = Math.max(
-      existingCount,
-      source.per_source_limit ?? config.runtime.collection.per_source_limit,
-      source.platform === 'x' ? 100 : 0
-    )
+    const limit = Math.max(existingCount, source.platform === 'x' ? 100 : 0)
     try {
       const page = await provider.discover(source, limit)
       let updated = 0

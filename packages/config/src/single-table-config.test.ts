@@ -38,12 +38,11 @@ it('validates editable YAML before replacing the saved file', async () => {
   await saveEditableConfigFile(
     configRoot,
     'runtime.yaml',
-    before.replace('per_source_limit: 20', 'per_source_limit: 7')
+    before.replace('max_retries: 2', 'max_retries: 3')
   )
   expect(
-    (await loadSingleTableConfig(configRoot)).runtime.collection
-      .per_source_limit
-  ).toBe(7)
+    (await loadSingleTableConfig(configRoot)).runtime.collection.max_retries
+  ).toBe(3)
   expect(
     (await loadSingleTableConfig(configRoot)).providers.platforms.x.preferred
   ).toBe('twitterapi.io')
@@ -77,7 +76,6 @@ it('rejects pagination and invalid scoring weights', () => {
       timezone: 'Asia/Shanghai',
       collection: {
         schedule: '0 8 * * *',
-        per_source_limit: 20,
         list_pages: 2,
         max_retries: 2,
         serial_sources: true,
@@ -106,7 +104,7 @@ it('rejects pagination and invalid scoring weights', () => {
   ).toBe(false)
 })
 
-it('accepts a source-specific collection limit and rejects invalid limits', () => {
+it('drops legacy collection limits instead of sending them to providers', () => {
   const source = {
     id: 'yt_ibm_tech',
     platform: 'youtube',
@@ -117,13 +115,20 @@ it('accepts a source-specific collection limit and rejects invalid limits', () =
   }
   expect(
     sourcesConfigSchema.parse({ sources: [{ ...source, per_source_limit: 5 }] })
-      .sources[0]?.per_source_limit
-  ).toBe(5)
+      .sources[0]
+  ).not.toHaveProperty('per_source_limit')
   expect(
-    sourcesConfigSchema.safeParse({
-      sources: [{ ...source, per_source_limit: 0 }],
-    }).success
-  ).toBe(false)
+    runtimeConfigSchema.parse({
+      timezone: 'Asia/Shanghai',
+      collection: {
+        schedule: '0 8 * * *',
+        per_source_limit: 20,
+        list_pages: 1,
+        max_retries: 2,
+        serial_sources: true,
+      },
+    }).collection
+  ).not.toHaveProperty('per_source_limit')
 })
 
 it('initializes editable YAML under the new data root without overwriting edits', async () => {
@@ -151,4 +156,30 @@ it('initializes editable YAML under the new data root without overwriting edits'
   expect(
     (await loadSourceState(configRoot)).sources.x_openai?.last_seen_content_id
   ).toBe('123')
+})
+
+it('removes legacy collection limits from an existing installation', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'qiushuiai-airadar-migrate-'))
+  roots.push(root)
+  const templates = path.resolve(import.meta.dirname, '../../../config')
+  const configRoot = await initializeSingleTableConfig(templates, root)
+  const runtimeFile = path.join(configRoot, 'runtime.yaml')
+  const sourcesFile = path.join(configRoot, 'sources.yaml')
+  await writeFile(
+    runtimeFile,
+    (await readFile(runtimeFile, 'utf8')).replace(
+      "  schedule: '0 8 * * *'\n",
+      "  schedule: '0 8 * * *'\n  per_source_limit: 20\n"
+    )
+  )
+  await writeFile(
+    sourcesFile,
+    (await readFile(sourcesFile, 'utf8')).replace(
+      '    enabled: true\n',
+      '    enabled: true\n    per_source_limit: 5\n'
+    )
+  )
+  await initializeSingleTableConfig(templates, root)
+  expect(await readFile(runtimeFile, 'utf8')).not.toContain('per_source_limit')
+  expect(await readFile(sourcesFile, 'utf8')).not.toContain('per_source_limit')
 })

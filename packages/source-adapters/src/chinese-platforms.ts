@@ -17,6 +17,10 @@ import {
   type SourceAdapter,
 } from './index.js'
 
+function limitItems<T>(items: T[], limit?: number): T[] {
+  return limit === undefined ? items : items.slice(0, limit)
+}
+
 function epochIso(value: unknown): string | undefined {
   const parsed = numberOrNull(value)
   if (parsed === null) return undefined
@@ -137,13 +141,15 @@ export function createTikHubDouyinProvider(options: {
         '/api/v1/douyin/app/v3/fetch_user_post_videos',
         common.baseUrl
       )
-      url.search = new URLSearchParams({
+      const search = new URLSearchParams({
         sec_user_id: request.source.externalIdentity,
         max_cursor: providerCursor(request.cursor, 'tikhub-douyin') ?? '0',
-        count: String(Math.min(20, request.limit)),
         sort_type: '0',
         channel: 'normal',
-      }).toString()
+      })
+      if (request.limit !== undefined)
+        search.set('count', String(Math.min(20, request.limit)))
+      url.search = search.toString()
       const payload = await fetchJson(
         common.fetcher,
         url,
@@ -160,8 +166,7 @@ export function createTikHubDouyinProvider(options: {
         )
       }
       const capturedAt = new Date().toISOString()
-      const items = values
-        .slice(0, request.limit)
+      const items = limitItems(values, request.limit)
         .map((value): DiscoveredItem | undefined => {
           const item = record(value)
           const id = text(item.aweme_id)
@@ -275,13 +280,13 @@ export function createTikHubWechatChannelsProvider(options: {
       }
       const capturedAt = new Date().toISOString()
       const alreadySeen = new Set(page.seenIds)
-      const selected = values
-        .slice(page.offset)
-        .filter((value) => {
+      const selected = limitItems(
+        values.slice(page.offset).filter((value) => {
           const id = text(record(value).id)
           return id && !alreadySeen.has(id)
-        })
-        .slice(0, request.limit)
+        }),
+        request.limit
+      )
       const items = selected
         .map((value): DiscoveredItem | undefined => {
           const item = record(value)
@@ -467,14 +472,14 @@ export function createTikHubXiaohongshuProvider(options: {
         )
       }
       const alreadySeen = new Set(page.seenIds)
-      const selected = values
-        .slice(page.offset)
-        .filter((value) => {
+      const selected = limitItems(
+        values.slice(page.offset).filter((value) => {
           const note = record(value)
           const id = text(note.id) ?? text(note.note_id)
           return id && !alreadySeen.has(id)
-        })
-        .slice(0, request.limit)
+        }),
+        request.limit
+      )
       const capturedAt = new Date().toISOString()
       const items = selected
         .map((value): DiscoveredItem | undefined => {

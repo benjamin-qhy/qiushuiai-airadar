@@ -87,7 +87,6 @@ export interface SourceItem {
   type: string
   language: 'en' | 'zh'
   externalIdentity: string
-  perSourceLimit?: number
   status: 'enabled' | 'disabled' | 'archived'
   health: 'healthy' | 'warning' | 'unavailable' | 'disabled'
   tags?: string[]

@@ -165,6 +165,7 @@ it('serves and updates content from the single table, with field-only keyword se
     }
     expect(config.mode).toBe('file')
     expect(config.files.map((file) => file.name)).toContain('analysis.yaml')
+    expect(config.files.map((file) => file.name)).not.toContain('sources.yaml')
     expect(JSON.stringify(config)).not.toContain('TIKHUB_API_KEY')
     const providers = (await fetch(`${base}/api/providers`).then((response) =>
       response.json()
@@ -371,6 +372,13 @@ it('manages sources, provider credentials, connection tests, and validated YAML'
       ),
     })
     expect(valid.status).toBe(200)
+    expect(
+      (
+        await mutate('/api/config/files/sources.yaml', 'PUT', {
+          content: await readFile(path.join(configRoot, 'sources.yaml'), 'utf8'),
+        })
+      ).status
+    ).toBe(404)
 
     const deleted = await mutate(
       '/api/sources/rss_management_test',

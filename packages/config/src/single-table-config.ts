@@ -101,7 +101,7 @@ export const providersConfigSchema = z.object({
   }),
 })
 
-export const editableConfigFileNames = [
+export const singleTableConfigFileNames = [
   'sources.yaml',
   'providers.yaml',
   'runtime.yaml',
@@ -110,9 +110,18 @@ export const editableConfigFileNames = [
   'retention.yaml',
 ] as const
 
+export const editableConfigFileNames = [
+  'providers.yaml',
+  'runtime.yaml',
+  'analysis.yaml',
+  'profile.yaml',
+  'retention.yaml',
+] as const
+
+type SingleTableConfigFileName = (typeof singleTableConfigFileNames)[number]
 export type EditableConfigFileName = (typeof editableConfigFileNames)[number]
 
-const editableSchemas = {
+const configSchemas = {
   'sources.yaml': sourcesConfigSchema,
   'providers.yaml': providersConfigSchema,
   'runtime.yaml': runtimeConfigSchema,
@@ -154,7 +163,7 @@ export async function initializeSingleTableConfig(
 ): Promise<string> {
   const configRoot = path.join(dataRoot, 'config')
   await mkdir(configRoot, { recursive: true })
-  for (const name of editableConfigFileNames) {
+  for (const name of singleTableConfigFileNames) {
     try {
       await copyFile(
         path.join(templateRoot, name),
@@ -168,11 +177,11 @@ export async function initializeSingleTableConfig(
   return configRoot
 }
 
-export function validateEditableConfigFile(
-  name: EditableConfigFileName,
+function validateConfigFile(
+  name: SingleTableConfigFileName,
   content: string
 ): unknown {
-  const value = editableSchemas[name].parse(parseYaml(content))
+  const value = configSchemas[name].parse(parseYaml(content))
   if (name === 'sources.yaml') {
     const ids = (value as z.output<typeof sourcesConfigSchema>).sources.map(
       (source) => source.id
@@ -183,12 +192,19 @@ export function validateEditableConfigFile(
   return value
 }
 
-export async function saveEditableConfigFile(
-  configRoot: string,
+export function validateEditableConfigFile(
   name: EditableConfigFileName,
   content: string
+): unknown {
+  return validateConfigFile(name, content)
+}
+
+async function saveConfigFile(
+  configRoot: string,
+  name: SingleTableConfigFileName,
+  content: string
 ): Promise<void> {
-  validateEditableConfigFile(name, content)
+  validateConfigFile(name, content)
   const target = path.join(configRoot, name)
   const temporary = `${target}.${randomUUID()}.tmp`
   await writeFile(
@@ -202,11 +218,19 @@ export async function saveEditableConfigFile(
   await rename(temporary, target)
 }
 
+export async function saveEditableConfigFile(
+  configRoot: string,
+  name: EditableConfigFileName,
+  content: string
+): Promise<void> {
+  await saveConfigFile(configRoot, name, content)
+}
+
 export async function saveSourcesConfig(
   configRoot: string,
   sources: z.output<typeof sourcesConfigSchema>['sources']
 ): Promise<void> {
-  await saveEditableConfigFile(
+  await saveConfigFile(
     configRoot,
     'sources.yaml',
     stringifyYaml({ sources })

@@ -20,6 +20,96 @@ afterEach(async () => {
   )
 })
 
+it('classifies an X plugin directory as rule junk without fetching an article or invoking the model', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'airadar-directory-'))
+  roots.push(root)
+  const repository = await SingleTableRepository.open(root)
+  repositories.push(repository)
+  const url = 'https://chatgpt.com/plugins?category=small-business'
+  const source: ConfiguredSource = {
+    id: 'x_openai',
+    platform: 'x',
+    account_name: 'X / OpenAI',
+    external_identity: 'OpenAI',
+    language: 'en',
+    enabled: true,
+  }
+  const input = {
+    sources: [source],
+    repository,
+    promptsRoot: path.resolve(
+      import.meta.dirname,
+      '../../../docs/prompts/single-table-content'
+    ),
+    profile: { interests: [], goals: [], exclusions: [] },
+    scoring: {
+      weights: {
+        interest_fit: 40,
+        concrete_gain: 30,
+        substance: 20,
+        new_information: 10,
+      },
+      coreThreshold: 80,
+      exploreThreshold: 60,
+      coreMinLevels: { interest_fit: 5, concrete_gain: 4, substance: 3 },
+      exploreMinLevels: { interest_fit: 4, concrete_gain: 3, substance: 3 },
+    } satisfies ScoringRules,
+    longContentMinChars: 1000,
+    translationMinimumTotalScore: 60,
+    perSourceLimit: 5,
+    provider: {
+      async discover() {
+        return {
+          items: [
+            {
+              externalId: '2097523484629090408',
+              url,
+              title: 'Plugin directory',
+              kind: 'article' as const,
+            },
+          ],
+          request: {},
+          response: {},
+        }
+      },
+      async resolve(): Promise<never> {
+        throw new Error('must not fetch directory')
+      },
+    },
+    gateway: {
+      async complete(): Promise<never> {
+        throw new Error('must not analyze directory')
+      },
+    },
+  }
+  expect(await collectSourcesSerially(input)).toEqual([
+    {
+      sourceId: 'x_openai',
+      discovered: 1,
+      completed: 0,
+      failed: 0,
+      skipped: 1,
+    },
+  ])
+  const row = repository.search({ sourceAccountId: 'x_openai' })[0]!
+  expect(row).toMatchObject({
+    is_junk: 1,
+    junk_source: 'rule',
+    junk_reason: '目录页：插件列表，不是单篇文章',
+    process_status: 'failed',
+  })
+  expect(await collectSourcesSerially(input)).toEqual([
+    {
+      sourceId: 'x_openai',
+      discovered: 1,
+      completed: 0,
+      failed: 0,
+      skipped: 1,
+    },
+  ])
+  expect(repository.search({ sourceAccountId: 'x_openai' })).toHaveLength(1)
+})
+
 it('runs sources and items serially with exactly one list call per source', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'airadar-serial-'))
   roots.push(root)
@@ -198,18 +288,20 @@ it('does not automatically retry a failed content row on the next collection', a
     provider: {
       async discover() {
         return {
-          items: [{
-            externalId: 'failed-1',
-            kind: 'short_post',
-            interaction: {
-              capturedAt: '2026-09-18T01:00:00.000Z',
-              views: 456,
-              likes: 12,
-              comments: null,
-              shares: null,
-              saves: null,
+          items: [
+            {
+              externalId: 'failed-1',
+              kind: 'short_post',
+              interaction: {
+                capturedAt: '2026-09-18T01:00:00.000Z',
+                views: 456,
+                likes: 12,
+                comments: null,
+                shares: null,
+                saves: null,
+              },
             },
-          }],
+          ],
           request: {},
           response: {},
         }

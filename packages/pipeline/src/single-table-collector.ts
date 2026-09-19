@@ -11,6 +11,7 @@ import {
   processSingleTableContent,
   type SingleTableModelGateway,
 } from './single-table-flow.js'
+import { classifyNonArticlePage } from '@airadar/source-adapters'
 
 export interface ConfiguredSource {
   id: string
@@ -117,6 +118,44 @@ export async function collectSourcesSerially(
     for (const item of page.items.slice(0, sourceLimit)) {
       let original: OriginalContent | undefined
       try {
+        const nonArticleReason =
+          source.platform === 'x' && item.kind === 'article' && item.url
+            ? classifyNonArticlePage(item.url)
+            : undefined
+        if (nonArticleReason) {
+          const unavailable = {
+            platform: source.platform,
+            sourceType: source.platform,
+            sourceAccountId: source.id,
+            sourceAccountName: source.account_name
+              .replace(/^(?:X|YouTube)\s*\/\s*/iu, '')
+              .trim(),
+            externalContentId: item.externalId,
+            canonicalUrl: item.url,
+            title: item.title ?? item.externalId,
+            originalTitle: item.title,
+            kind: item.kind,
+            format: item.format ?? 'plain_text',
+            language: source.language,
+            publishedAt: item.publishedAt,
+          }
+          const existing = options.repository.get(
+            contentIdentity({ ...unavailable, body: '' }).key
+          )
+          if (existing) {
+            await options.repository.setRuleJunk(existing.id, nonArticleReason)
+          } else {
+            const excluded = await options.repository.recordUnavailable(
+              unavailable,
+              nonArticleReason,
+              false,
+              { request: page.request, response: page.response }
+            )
+            await options.repository.setRuleJunk(excluded.id, nonArticleReason)
+          }
+          result.skipped++
+          continue
+        }
         const resolved = await options.provider.resolve(source, item)
         original = resolved.original
         if (!resolved.original.body.trim())

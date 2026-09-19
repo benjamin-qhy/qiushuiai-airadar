@@ -11,6 +11,7 @@ import {
   type SingleTableConfig,
 } from '@airadar/config'
 import { SingleTableRepository, type ContentRow } from '@airadar/runtime'
+import { classifyNonArticlePage } from '@airadar/source-adapters'
 import {
   createSingleTableCodexGateway,
   processSingleTableContent,
@@ -59,22 +60,27 @@ function logEntries(markdown: string): LogEntry[] {
     const field = (name: string) =>
       new RegExp(`^- ${name}：\x60([^\x60]*)\x60`, 'mu').exec(section)?.[1]
     const payload = (name: string) =>
-      new RegExp(`^### ${name}\\n\\n\\x60{3}json\\n([\\s\\S]*?)\\n\\x60{3}`, 'mu').exec(section)?.[1]
-    return [{
-      index,
-      timestamp: parts[1]!,
-      action: parts[2]!,
-      status: parts[3]!,
-      stage: field('阶段'),
-      trigger: field('触发方式'),
-      duration: field('耗时'),
-      retryCount: field('重试次数'),
-      processor: field('处理器'),
-      prompt: field('提示词'),
-      error: field('错误摘要'),
-      request: payload('request'),
-      response: payload('response'),
-    }]
+      new RegExp(
+        `^### ${name}\\n\\n\\x60{3}json\\n([\\s\\S]*?)\\n\\x60{3}`,
+        'mu'
+      ).exec(section)?.[1]
+    return [
+      {
+        index,
+        timestamp: parts[1]!,
+        action: parts[2]!,
+        status: parts[3]!,
+        stage: field('阶段'),
+        trigger: field('触发方式'),
+        duration: field('耗时'),
+        retryCount: field('重试次数'),
+        processor: field('处理器'),
+        prompt: field('提示词'),
+        error: field('错误摘要'),
+        request: payload('request'),
+        response: payload('response'),
+      },
+    ]
   })
 }
 
@@ -237,7 +243,9 @@ export function createSingleTableServiceApp(options: {
               service: 'airadar-single-table',
               status: 'ready',
             })
-          const logMatch = /^\/api\/contents\/([^/]+)\/logs$/u.exec(url.pathname)
+          const logMatch = /^\/api\/contents\/([^/]+)\/logs$/u.exec(
+            url.pathname
+          )
           if (method === 'GET' && logMatch) {
             const id = decodeURIComponent(logMatch[1]!)
             const markdown = await activeRepository.readLog(id)
@@ -247,12 +255,18 @@ export function createSingleTableServiceApp(options: {
             const entryIndex = url.searchParams.get('entry')
             if (entryIndex !== null) {
               const index = Number(entryIndex)
-              if (!Number.isInteger(index) || index < 0 || index >= entries.length)
+              if (
+                !Number.isInteger(index) ||
+                index < 0 ||
+                index >= entries.length
+              )
                 return send(response, 404, { error: 'not_found' })
               return send(response, 200, { item: entries[index] })
             }
             return send(response, 200, {
-              items: entries.map(({ request, response, ...entry }) => entry).reverse(),
+              items: entries
+                .map(({ request, response, ...entry }) => entry)
+                .reverse(),
             })
           }
           if (
@@ -519,6 +533,25 @@ export function createSingleTableServiceApp(options: {
                 )
                 if (!source)
                   return send(response, 409, { error: 'source_not_configured' })
+                const nonArticleReason =
+                  row.source_platform === 'x' &&
+                  row.content_kind === 'article' &&
+                  row.canonical_url
+                    ? classifyNonArticlePage(String(row.canonical_url))
+                    : undefined
+                if (nonArticleReason) {
+                  const excluded = await activeRepository.setRuleJunk(
+                    id,
+                    nonArticleReason
+                  )
+                  return send(response, 200, {
+                    item: await feedItem(
+                      activeRepository,
+                      excluded,
+                      config.sources.sources
+                    ),
+                  })
+                }
                 const reader = createFileSecretReader(
                   options.secretFile ?? path.join(options.dataRoot, '.env')
                 )

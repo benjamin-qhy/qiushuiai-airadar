@@ -9,6 +9,58 @@ import { SingleTableRepository } from '@airadar/runtime'
 
 import { createSingleTableServiceApp } from './single-table-service.js'
 
+it('reclassifies a previously failed X plugin directory on retry without fetching it', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'airadar-directory-retry-'))
+  let service: ReturnType<typeof createSingleTableServiceApp> | undefined
+  try {
+    const configRoot = await initializeSingleTableConfig(
+      path.resolve(import.meta.dirname, '../../../config'),
+      root
+    )
+    const repository = await SingleTableRepository.open(root)
+    const row = await repository.recordUnavailable(
+      {
+        platform: 'x',
+        sourceType: 'x',
+        sourceAccountId: 'x_openai',
+        sourceAccountName: 'OpenAI',
+        externalContentId: '2097523484629090408',
+        canonicalUrl: 'https://chatgpt.com/plugins?category=small-business',
+        title: 'Plugins for small businesses',
+        originalTitle: 'Plugins for small businesses',
+        kind: 'article',
+        format: 'plain_text',
+        language: 'en',
+      },
+      'Could not extract a complete article body'
+    )
+    repository.close()
+    service = createSingleTableServiceApp({ dataRoot: root, configRoot })
+    const address = await service.start({ host: '127.0.0.1', port: 0 })
+    const response = await fetch(
+      `http://${address.host}:${address.port}/api/contents/${row.id}/retry`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      }
+    )
+    expect(response.status).toBe(200)
+    expect((await response.json()) as unknown).toMatchObject({
+      item: {
+        junk: {
+          isJunk: true,
+          source: 'rule',
+          reason: '目录页：插件列表，不是单篇文章',
+        },
+      },
+    })
+  } finally {
+    await service?.stop()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 it('serves and updates content from the single table, with field-only keyword search', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'airadar-single-api-'))
   let service: ReturnType<typeof createSingleTableServiceApp> | undefined
@@ -73,8 +125,12 @@ it('serves and updates content from the single table, with field-only keyword se
     expect(logDetail.item.request).toContain('[REDACTED]')
     expect(logDetail.item.request).not.toContain('private-secret')
     expect(logDetail.item.response).toContain('智能体')
-    expect((await fetch(`${base}/api/contents/${row.id}/logs?entry=-1`)).status).toBe(404)
-    expect((await fetch(`${base}/api/contents/not-found/logs`)).status).toBe(404)
+    expect(
+      (await fetch(`${base}/api/contents/${row.id}/logs?entry=-1`)).status
+    ).toBe(404)
+    expect((await fetch(`${base}/api/contents/not-found/logs`)).status).toBe(
+      404
+    )
     const absent = (await fetch(`${base}/api/contents?keyword=不存在`).then(
       (response) => response.json()
     )) as { items: unknown[] }

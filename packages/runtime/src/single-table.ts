@@ -413,10 +413,14 @@ export class SingleTableRepository {
     return Number(result.changes)
   }
 
-  async readBody(id: string, language: 'zh' | 'en'): Promise<string | undefined> {
+  async readBody(
+    id: string,
+    language: 'zh' | 'en'
+  ): Promise<string | undefined> {
     const row = this.getById(id)
     if (!row) return undefined
-    const relative = language === 'zh' ? row.chinese_markdown_path : row.english_markdown_path
+    const relative =
+      language === 'zh' ? row.chinese_markdown_path : row.english_markdown_path
     if (!relative) return undefined
     const text = await readFile(path.join(this.dataRoot, relative), 'utf8')
     const match = /^---\n[\s\S]*?\n---\n\n/u.exec(text)
@@ -980,6 +984,31 @@ export class SingleTableRepository {
     return this.getById(id)!
   }
 
+  async setRuleJunk(id: string, reason: string): Promise<ContentRow> {
+    const row = this.getById(id)
+    if (!row) throw new Error('Content not found')
+    if (row.junk_source === 'manual') return row
+    if (row.is_junk && row.junk_source === 'rule' && row.junk_reason === reason)
+      return row
+    const now = new Date().toISOString()
+    this.database
+      .prepare(
+        `UPDATE contents SET is_junk=1, junk_source='rule', junk_reason=?,
+       junk_updated_at=?, recommendation='none', total_score=NULL,
+       updated_at=? WHERE id=?`
+      )
+      .run(reason, now, now, id)
+    await this.refreshFrontmatter(id)
+    await this.appendLog(id, {
+      action: 'rule-junk',
+      stage: 'failed',
+      status: 'succeeded',
+      request: { reason },
+      response: { updated: true },
+    })
+    return this.getById(id)!
+  }
+
   setRead(id: string, read: boolean): void {
     const result = this.database
       .prepare('UPDATE contents SET read=?, updated_at=? WHERE id=?')
@@ -1094,15 +1123,32 @@ export class SingleTableRepository {
       updatedAt: string
     }>
   } {
-    const counts = this.database.prepare(`SELECT COUNT(*) AS total,
+    const counts = this.database
+      .prepare(
+        `SELECT COUNT(*) AS total,
       SUM(CASE WHEN process_status='failed' THEN 1 ELSE 0 END) AS failed,
       SUM(CASE WHEN process_status='waiting-manual-transcription' THEN 1 ELSE 0 END) AS waiting
-      FROM contents`).get() as { total: number; failed: number | null; waiting: number | null }
-    const recent = this.database.prepare(`SELECT id, source_account_id AS sourceId,
+      FROM contents`
+      )
+      .get() as { total: number; failed: number | null; waiting: number | null }
+    const recent = this.database
+      .prepare(
+        `SELECT id, source_account_id AS sourceId,
       process_status AS status, processing_stage AS stage, updated_at AS updatedAt
-      FROM contents ORDER BY updated_at DESC LIMIT 30`).all() as Array<{
-      id: string; sourceId: string; status: string; stage: string; updatedAt: string
+      FROM contents ORDER BY updated_at DESC LIMIT 30`
+      )
+      .all() as Array<{
+      id: string
+      sourceId: string
+      status: string
+      stage: string
+      updatedAt: string
     }>
-    return { total: counts.total, failed: counts.failed ?? 0, waiting: counts.waiting ?? 0, recent }
+    return {
+      total: counts.total,
+      failed: counts.failed ?? 0,
+      waiting: counts.waiting ?? 0,
+      recent,
+    }
   }
 }

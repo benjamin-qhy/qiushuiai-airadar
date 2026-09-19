@@ -1,4 +1,8 @@
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+const packageVersion = JSON.parse(
+  readFileSync(new URL('../package.json', import.meta.url), 'utf8')
+).version as string
 import { runCli } from './index.js'
 import {
   createLaunchdDefinition,
@@ -19,14 +23,51 @@ function outputBuffer() {
 }
 
 describe('airadar CLI', () => {
+  it('rejects invalid ports and non-loopback installation hosts', async () => {
+    for (const args of [
+      ['service', 'run', '--port', '123junk'],
+      ['service', 'run', '--port'],
+      ['service', 'install', '--host', '0.0.0.0'],
+    ]) {
+      await expect(runCli(args, { stdout: outputBuffer() })).rejects.toThrow(
+        'valid --host and --port'
+      )
+    }
+  })
+
   it('reports the source shell status', async () => {
     const stdout = outputBuffer()
     expect(await runCli(['status'], { stdout })).toBe(0)
     expect(JSON.parse(stdout.value())).toEqual({
       name: 'airadar',
       status: 'ready',
-      version: '0.1.0',
+      version: packageVersion,
     })
+  })
+
+  it('routes remote upgrades and preserves the force option', async () => {
+    const stdout = outputBuffer()
+    let forced = false
+    expect(
+      await runCli(['upgrade', '--force'], {
+        stdout,
+        serviceManager: {
+          async execute() {
+            return {}
+          },
+        },
+        async upgradeRunner(options) {
+          forced = options.force === true
+          return {
+            previousVersion: packageVersion,
+            version: packageVersion,
+            changed: false,
+          }
+        },
+      })
+    ).toBe(0)
+    expect(forced).toBe(true)
+    expect(stdout.value()).toContain('"changed":false')
   })
 
   it('prints only the safe secret status interface', async () => {
@@ -50,14 +91,17 @@ describe('airadar CLI', () => {
     })
   })
 
-  it('starts the formal service with its task worker enabled', async () => {
+  it('starts the single-table service with bundled configuration and prompts', async () => {
     const stdout = outputBuffer()
-    let executeTasks = false
+    let singleTable = false
     expect(
       await runCli(['service', '--port', '0'], {
         stdout,
+        async prepareConfig(root) {
+          return `${root}/config`
+        },
         serviceFactory(options) {
-          executeTasks = options?.executeTasks === true
+          singleTable = Boolean(options?.configRoot && options?.promptsRoot)
           return {
             async start({ host, port }) {
               return { host, port }
@@ -67,14 +111,14 @@ describe('airadar CLI', () => {
         },
       })
     ).toBe(0)
-    expect(executeTasks).toBe(true)
+    expect(singleTable).toBe(true)
   })
 
   it('routes managed service commands without starting the foreground server', async () => {
     const stdout = outputBuffer()
     const calls: string[] = []
     expect(
-      await runCli(['service', 'install', '--host', '0.0.0.0'], {
+      await runCli(['service', 'install', '--host', '127.0.0.1'], {
         stdout,
         serviceManager: {
           async execute(command, options) {
@@ -84,7 +128,7 @@ describe('airadar CLI', () => {
         },
       })
     ).toBe(0)
-    expect(calls).toEqual(['install:0.0.0.0:43110'])
+    expect(calls).toEqual(['install:127.0.0.1:43120'])
     expect(JSON.parse(stdout.value())).toEqual({
       service: 'airadar',
       status: 'installed',
@@ -93,12 +137,15 @@ describe('airadar CLI', () => {
 
   it('keeps service run as the foreground entry used by service wrappers', async () => {
     const stdout = outputBuffer()
-    let executeTasks = false
+    let singleTable = false
     expect(
       await runCli(['service', 'run', '--port', '0'], {
         stdout,
+        async prepareConfig(root) {
+          return `${root}/config`
+        },
         serviceFactory(options) {
-          executeTasks = options?.executeTasks === true
+          singleTable = Boolean(options?.configRoot && options?.promptsRoot)
           return {
             async start({ host, port }) {
               return { host, port }
@@ -108,7 +155,7 @@ describe('airadar CLI', () => {
         },
       })
     ).toBe(0)
-    expect(executeTasks).toBe(true)
+    expect(singleTable).toBe(true)
   })
 })
 
@@ -117,9 +164,9 @@ describe('service definitions', () => {
     const definition = createLaunchdDefinition({
       nodePath: '/opt/node/bin/node',
       cliPath: '/opt/airadar/cli.js',
-      dataRoot: '/Users/test/.airadar/data',
-      logRoot: '/Users/test/.airadar/logs',
-      host: '0.0.0.0',
+      dataRoot: '/Users/test/.qiushuiai-airadar/data',
+      logRoot: '/Users/test/.qiushuiai-airadar/logs',
+      host: '127.0.0.1',
       port: 43110,
       runtimeEnvironment: {
         CODEX_AUTH_PATH: '/Users/test/.codex/auth.json',
@@ -131,16 +178,16 @@ describe('service definitions', () => {
     expect(definition).toContain('AIRADAR_DATA_ROOT')
     expect(definition).toContain('CODEX_AUTH_PATH')
     expect(definition).toContain('/Users/test/.codex/auth.json')
-    expect(definition).toContain('0.0.0.0')
+    expect(definition).toContain('127.0.0.1')
   })
 
   it('creates a WinSW definition with restart, explicit paths, and no secret values', () => {
     const definition = createWindowsServiceDefinition({
       nodePath: 'C:\\Program Files\\nodejs\\node.exe',
       cliPath: 'C:\\airadar\\cli.js',
-      dataRoot: 'C:\\Users\\test\\.airadar\\data',
-      logRoot: 'C:\\Users\\test\\.airadar\\logs',
-      host: '0.0.0.0',
+      dataRoot: 'C:\\Users\\test\\.qiushuiai-airadar\\data',
+      logRoot: 'C:\\Users\\test\\.qiushuiai-airadar\\logs',
+      host: '127.0.0.1',
       port: 43110,
       runtimeEnvironment: {
         CODEX_AUTH_PATH: 'C:\\Users\\test\\.codex\\auth.json',

@@ -1,7 +1,7 @@
 {
   "name": "@airadar/cli",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.3.0",
   "type": "module",
   "bin": {
     "airadar": "./dist/cli.js"
@@ -16,10 +16,12 @@
   },
   "files": [
     "dist",
-    "web"
+    "web",
+    "config",
+    "prompts"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && esbuild src/cli.ts --bundle --platform=node --format=esm --target=node24 --external:@earendil-works/pi-ai --external:@earendil-works/pi-ai/* --outfile=dist/cli.js && node ../../scripts/copy-web-assets.mjs",
+    "build": "tsc -p tsconfig.json && node ../../scripts/build-cli.mjs && node ../../scripts/copy-web-assets.mjs",
     "dev": "tsx src/cli.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
@@ -30,5 +32,8 @@
   },
   "dependencies": {
     "@earendil-works/pi-ai": "0.85.1"
+  },
+  "engines": {
+    "node": ">=24.21.0 <25"
   }
 }

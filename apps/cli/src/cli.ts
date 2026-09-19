@@ -1,12 +1,13 @@
 #!/usr/bin/env node
-import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { asSecretStatusReader, createFileSecretReader } from '@airadar/config'
-import { createServiceApp, type ServiceApp } from '@airadar/service'
+import { createSingleTableServiceApp, type ServiceApp } from '@airadar/service'
 import { runCli } from './index.js'
+import { installedDataRoot } from './paths.js'
 
 const secretFile =
-  process.env.AIRADAR_SECRET_FILE ?? join(homedir(), '.airadar', 'secrets.env')
+  process.env.AIRADAR_SECRET_FILE ??
+  join(process.env.AIRADAR_DATA_ROOT ?? installedDataRoot(), '.env')
 const secretReader = createFileSecretReader(secretFile)
 let activeService: ServiceApp | undefined
 
@@ -34,7 +35,7 @@ try {
     stderr: process.stderr,
     secretStatusReader: asSecretStatusReader(secretReader),
     serviceFactory(options) {
-      activeService = createServiceApp(options)
+      activeService = createSingleTableServiceApp(options)
       return activeService
     },
   })

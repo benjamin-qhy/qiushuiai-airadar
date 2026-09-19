@@ -1,3 +1,5 @@
+export { collectSingleTable } from './collect-single-table.js'
+export { createSingleTableServiceApp } from './single-table-service.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import {
@@ -1637,7 +1639,7 @@ export function createServiceApp(
   const dataRoot =
     options.dataRoot ??
     process.env.AIRADAR_DATA_ROOT ??
-    path.join(homedir(), '.airadar', 'data')
+    path.join(homedir(), '.qiushuiai-airadar', 'data')
   const scheduleTasks = () => {
     if (!options.executeTasks || !repository) return
     const activeRepository = repository

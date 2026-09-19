@@ -222,6 +222,7 @@ export function createSingleTableServiceApp(options: {
   configRoot: string
   secretFile?: string
   promptsRoot?: string
+  webRoot?: string
   gateway?: SingleTableModelGateway
 }) {
   let repository: SingleTableRepository | undefined
@@ -726,6 +727,47 @@ export function createSingleTableServiceApp(options: {
                   config.sources.sources
                 ),
               })
+            }
+          }
+          if (
+            options.webRoot &&
+            (method === 'GET' || method === 'HEAD') &&
+            !url.pathname.startsWith('/api/')
+          ) {
+            const root = path.resolve(options.webRoot)
+            const requested = path.resolve(
+              root,
+              `.${decodeURIComponent(url.pathname)}`
+            )
+            if (
+              !requested.startsWith(`${root}${path.sep}`) &&
+              requested !== root
+            )
+              return send(response, 403, { error: 'forbidden' })
+            const extension = path.extname(requested)
+            const file = extension ? requested : path.join(root, 'index.html')
+            try {
+              const body = await readFile(file)
+              const types: Record<string, string> = {
+                '.html': 'text/html; charset=utf-8',
+                '.js': 'text/javascript',
+                '.css': 'text/css',
+                '.svg': 'image/svg+xml',
+                '.png': 'image/png',
+                '.ico': 'image/x-icon',
+                '.woff2': 'font/woff2',
+              }
+              response.writeHead(200, {
+                'content-type':
+                  types[path.extname(file)] ?? 'application/octet-stream',
+                'x-content-type-options': 'nosniff',
+                'cache-control': 'no-cache',
+              })
+              response.end(method === 'HEAD' ? undefined : body)
+              return
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
+                throw error
             }
           }
           return send(response, 404, { error: 'not_found' })

@@ -29,3 +29,7 @@ secrets.env
 *.njsproj
 *.sln
 *.sw?
+
+apps/cli/config
+apps/cli/prompts
+release/

@@ -1,6 +1,7 @@
+import assert from 'node:assert/strict'
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import {
-  access,
+  cp,
   mkdir,
   mkdtemp,
   readFile,
@@ -10,118 +11,169 @@ import {
 } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
+import { SingleTableRepository } from '../packages/runtime/src/index.js'
 
 const execute = promisify(execFile)
 const packageManagerCli = process.env.npm_execpath
-if (!packageManagerCli) throw new Error('pnpm executable path is unavailable')
-
-const previousReleaseCommit = 'ae6d470c04f1b8e509ed40bfe155d6718c4414a9'
+if (!packageManagerCli) throw new Error('Run through pnpm smoke:deployed')
 const tempRoot = join(process.cwd(), '.tmp')
 await mkdir(tempRoot, { recursive: true })
-const target = await mkdtemp(join(tempRoot, 'airadar-cli-package-'))
-const packRoot = join(target, 'pack')
+const target = await mkdtemp(join(tempRoot, 'airadar-install-upgrade-'))
 const installRoot = join(target, 'install')
-const dataRoot = join(target, 'preserved-data')
-const previousSource = join(target, 'previous-release')
-await mkdir(packRoot, { recursive: true })
-await mkdir(previousSource, { recursive: true })
+const dataRoot = join(target, 'data')
+const staging = join(target, 'candidate')
+const packRoot = join(target, 'pack')
+const children = new Set<ChildProcess>()
 
-async function installPackage(tarball: string): Promise<void> {
-  const args = ['install', '--prefix', installRoot, '--ignore-scripts', tarball]
+async function install(tarball: string) {
+  const args = [
+    'install',
+    '--prefix',
+    installRoot,
+    '--ignore-scripts',
+    '--no-audit',
+    '--no-fund',
+    tarball,
+  ]
   if (process.platform === 'win32') {
-    const npmCli = join(
-      dirname(process.execPath),
-      'node_modules',
-      'npm',
-      'bin',
-      'npm-cli.js'
-    )
-    await execute(process.execPath, [npmCli, ...args])
-    return
-  }
-  await execute('npm', args)
+    await execute(process.execPath, [
+      join(dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js'),
+      ...args,
+    ])
+  } else await execute('npm', args, { timeout: 120_000 })
 }
-
-async function startService(
-  cliPath: string,
-  command: string[]
-): Promise<{ child: ChildProcess; host: string; port: number }> {
-  const child = spawn(process.execPath, [cliPath, ...command, '--port', '0'], {
-    env: { ...process.env, AIRADAR_DATA_ROOT: dataRoot },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  })
-  const address = await new Promise<{ host: string; port: number }>(
-    (resolve, reject) => {
-      let output = ''
-      const timer = setTimeout(
-        () => reject(new Error('Installed service did not become ready')),
-        20_000
-      )
-      child.once('error', reject)
-      child.stderr?.on('data', (chunk) => {
-        output += String(chunk)
-      })
-      child.stdout?.on('data', (chunk) => {
-        output += String(chunk)
-        const line = output.split('\n').find((candidate) => candidate.trim())
-        if (!line) return
-        try {
-          const parsed = JSON.parse(line) as { host?: string; port?: number }
-          if (parsed.host && typeof parsed.port === 'number') {
-            clearTimeout(timer)
-            resolve({ host: parsed.host, port: parsed.port })
-          }
-        } catch {
-          // Wait for a complete JSON line.
-        }
-      })
+const cli = join(installRoot, 'node_modules/@airadar/cli/dist/cli.js')
+async function start() {
+  const child = spawn(
+    process.execPath,
+    [cli, 'service', 'run', '--port', '0'],
+    {
+      cwd: target,
+      env: {
+        ...process.env,
+        AIRADAR_DATA_ROOT: dataRoot,
+        AIRADAR_SECRET_FILE: join(dataRoot, '.env'),
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
     }
   )
-  return { child, ...address }
-}
-
-async function stopService(child: ChildProcess): Promise<void> {
-  child.kill('SIGTERM')
-  await new Promise<void>((resolve) => child.once('exit', () => resolve()))
-}
-
-try {
-  const archive = join(target, 'previous-release.tar')
-  await execute('git', [
-    'archive',
-    '--format=tar',
-    `--output=${archive}`,
-    previousReleaseCommit,
-  ])
-  await execute('tar', ['-xf', archive, '-C', previousSource])
-  await execute(
-    process.execPath,
-    [packageManagerCli, 'install', '--offline', '--frozen-lockfile'],
-    { cwd: previousSource }
-  )
-  await execute(process.execPath, [packageManagerCli, 'build'], {
-    cwd: previousSource,
-  })
-  const previousCli = join(previousSource, 'apps', 'cli', 'dist', 'cli.js')
-  const previous = await startService(previousCli, [
-    'service',
-    '--host',
-    '127.0.0.1',
-  ])
-  try {
-    const health = await fetch(
-      `http://${previous.host}:${previous.port}/health`
+  children.add(child)
+  const origin = await new Promise<string>((resolve, reject) => {
+    let stdout = ''
+    let stderr = ''
+    const timer = setTimeout(
+      () => reject(new Error(`Readiness timeout: ${stderr}`)),
+      20_000
     )
-    if (!health.ok) throw new Error('Previous release service was not healthy')
-  } finally {
-    await stopService(previous.child)
+    child.once('error', (error) => {
+      clearTimeout(timer)
+      reject(error)
+    })
+    child.once('exit', (code) => {
+      clearTimeout(timer)
+      reject(new Error(`Service exited ${code}: ${stderr}`))
+    })
+    child.stderr?.on('data', (chunk) => {
+      stderr += String(chunk)
+    })
+    child.stdout?.on('data', (chunk) => {
+      stdout += String(chunk)
+      for (const line of stdout.split('\n').filter(Boolean)) {
+        try {
+          const value = JSON.parse(line) as { host: string; port: number }
+          if (value.port) {
+            clearTimeout(timer)
+            resolve(`http://${value.host}:${value.port}`)
+          }
+        } catch {
+          /* Wait for a complete line. */
+        }
+      }
+    })
+  })
+  return { child, origin }
+}
+async function stop(child: ChildProcess) {
+  if (child.exitCode === null && child.signalCode === null) {
+    const ended = new Promise<void>((resolve) =>
+      child.once('exit', () => resolve())
+    )
+    child.kill('SIGTERM')
+    const timer = setTimeout(() => child.kill('SIGKILL'), 10_000)
+    await ended
+    clearTimeout(timer)
   }
-  const priorSources = await readdir(join(dataRoot, 'sources'))
-  if (priorSources.length < 36) {
-    throw new Error('Previous release did not create real authority records')
-  }
-  const marker = join(dataRoot, 'upgrade-preservation.md')
-  await writeFile(marker, '# must survive program upgrade\n')
+  children.delete(child)
+}
+async function get(origin: string, pathname: string) {
+  const response = await fetch(`${origin}${pathname}`)
+  assert.equal(response.status, 200, pathname)
+  return response
+}
+try {
+  await mkdir(packRoot, { recursive: true })
+  await cp(join(process.cwd(), 'apps/cli'), staging, {
+    recursive: true,
+    filter: (file) => !file.split(/[\\/]/u).includes('node_modules'),
+  })
+  const manifest = JSON.parse(
+    await readFile(join(staging, 'package.json'), 'utf8')
+  ) as { version: string; devDependencies?: unknown }
+  const currentVersion = manifest.version
+  // A prerelease of this build exercises npm replacement, not historical schema migration.
+  manifest.version = `${currentVersion}-acceptance.1`
+  delete manifest.devDependencies
+  await writeFile(join(staging, 'package.json'), JSON.stringify(manifest))
+  await execute('npm', ['pack', '--pack-destination', packRoot], {
+    cwd: staging,
+  })
+  const oldPackage = (await readdir(packRoot)).find((name) =>
+    name.endsWith('.tgz')
+  )!
+  await install(join(packRoot, oldPackage))
+  assert.equal(
+    (await execute(process.execPath, [cli, '--version'])).stdout.trim(),
+    manifest.version
+  )
+  let active = await start()
+  assert.equal(
+    (
+      (await (await get(active.origin, '/health')).json()) as {
+        service: string
+      }
+    ).service,
+    'airadar-single-table'
+  )
+  await get(active.origin, '/api/sources')
+  await stop(active.child)
+
+  const repository = await SingleTableRepository.open(dataRoot)
+  const row = await repository.saveOriginal({
+    platform: 'x',
+    sourceType: 'x',
+    sourceAccountId: 'release-test',
+    sourceAccountName: '安装验收',
+    externalContentId: 'preserved',
+    title: '升级保留测试',
+    body: '升级后正文保持不变。',
+    kind: 'short_post',
+    format: 'plain_text',
+    language: 'zh',
+  })
+  repository.setRead(row.id, true)
+  repository.setUtilizationActions(row.id, ['favorite'])
+  repository.close()
+  const profile = join(dataRoot, 'config/profile.yaml')
+  const profileBefore = `${await readFile(profile, 'utf8')}\n# user-owned configuration must survive\n`
+  await writeFile(profile, profileBefore)
+  const sourcesFile = join(dataRoot, 'config/sources.yaml')
+  const disabledSources = (await readFile(sourcesFile, 'utf8')).replaceAll(
+    'enabled: true',
+    'enabled: false'
+  )
+  await writeFile(sourcesFile, disabledSources)
+  const secretBefore = '# local secret file must survive\n'
+  await writeFile(join(dataRoot, '.env'), secretBefore, { mode: 0o600 })
 
   await execute(process.execPath, [
     packageManagerCli,
@@ -131,74 +183,52 @@ try {
     '--pack-destination',
     packRoot,
   ])
-  const tarballName = (await readdir(packRoot)).find((name) =>
-    name.endsWith('-0.1.0.tgz')
+  const currentPackage = join(packRoot, `airadar-cli-${currentVersion}.tgz`)
+  await install(currentPackage)
+  assert.equal(
+    (await execute(process.execPath, [cli, '--version'])).stdout.trim(),
+    currentVersion
   )
-  if (!tarballName) throw new Error('CLI package tarball was not produced')
-  await installPackage(join(packRoot, tarballName))
-
-  const cliPath = join(
-    installRoot,
-    'node_modules',
-    '@airadar',
-    'cli',
-    'dist',
-    'cli.js'
+  active = await start()
+  const html = await (await get(active.origin, '/')).text()
+  assert.ok(html.includes('<title>AI Radar</title>'))
+  const asset = /src="([^"]+\.js)"/u.exec(html)?.[1]
+  assert.ok(asset)
+  await get(active.origin, asset)
+  await get(active.origin, '/sources')
+  await get(active.origin, '/api/sources')
+  await get(active.origin, '/api/contents')
+  assert.equal((await fetch(`${active.origin}/api/not-found`)).status, 404)
+  assert.equal((await fetch(`${active.origin}/missing.js`)).status, 404)
+  await stop(active.child)
+  const collected = await execute(process.execPath, [cli, 'collect'], {
+    cwd: target,
+    env: {
+      ...process.env,
+      AIRADAR_DATA_ROOT: dataRoot,
+      AIRADAR_SECRET_FILE: join(dataRoot, '.env'),
+    },
+  })
+  assert.deepEqual(JSON.parse(collected.stdout), [])
+  assert.equal(await readFile(sourcesFile, 'utf8'), disabledSources)
+  const reopened = await SingleTableRepository.open(dataRoot)
+  assert.equal(reopened.getById(row.id)?.read, 1)
+  assert.ok(
+    reopened.getById(row.id)?.utilization_actions_json.includes('favorite')
   )
-  await execute(
-    process.execPath,
-    [
-      '--input-type=module',
-      '-e',
-      "import('@earendil-works/pi-ai/providers/openai-codex').then((module) => { if (typeof module.openaiCodexProvider !== 'function') process.exit(1) })",
-    ],
-    { cwd: join(installRoot, 'node_modules', '@airadar', 'cli') }
+  assert.equal(await reopened.readBody(row.id, 'zh'), '升级后正文保持不变。')
+  reopened.close()
+  assert.equal(await readFile(profile, 'utf8'), profileBefore)
+  assert.equal(await readFile(join(dataRoot, '.env'), 'utf8'), secretBefore)
+  assert.equal(
+    (await readdir(join(installRoot, 'node_modules/@airadar/cli/prompts')))
+      .length,
+    3
   )
-  const { stdout } = await execute(process.execPath, [cliPath, 'status'])
-  const status = JSON.parse(stdout) as { name?: string; status?: string }
-  if (status.name !== 'airadar' || status.status !== 'ready') {
-    throw new Error('Installed CLI returned an unexpected status')
-  }
-
-  const current = await startService(cliPath, [
-    'service',
-    'run',
-    '--host',
-    '127.0.0.1',
-  ])
-  try {
-    const origin = `http://${current.host}:${current.port}`
-    const page = await fetch(`${origin}/`)
-    const html = await page.text()
-    if (!page.ok || !html.includes('<title>AI Radar</title>')) {
-      throw new Error('Installed service did not serve the bundled Web app')
-    }
-    const sourcesResponse = await fetch(`${origin}/api/sources`)
-    const sources = (await sourcesResponse.json()) as {
-      items?: Array<{ id?: string; language?: string }>
-    }
-    const sourceIds = new Set(sources.items?.map((source) => source.id))
-    if (
-      !sourcesResponse.ok ||
-      sourceIds.size < 33 ||
-      sources.items?.some((source) => source.language !== 'en') ||
-      ['douyin_qinghua_jiang', 'wechat_zhangzhang_ai', 'xhs_itechtokai'].some(
-        (id) => sourceIds.has(id)
-      )
-    ) {
-      throw new Error('Current release did not recover previous authority data')
-    }
-  } finally {
-    await stopService(current.child)
-  }
-
-  await access(marker)
-  if ((await readFile(marker, 'utf8')) !== '# must survive program upgrade\n') {
-    throw new Error('Previous-to-current upgrade changed business data')
-  }
   process.stdout.write(
-    'Installed CLI, bundled Web, and previous-release data upgrade smoke passed\n'
+    `PASS: npm install ${manifest.version} → ${currentVersion}; standalone Web/assets/API; data/read/favorite/config/secrets preserved.\n`
   )
 } finally {
+  for (const child of children) await stop(child)
   await rm(target, { recursive: true, force: true })
 }

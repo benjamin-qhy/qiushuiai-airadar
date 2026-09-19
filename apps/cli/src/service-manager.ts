@@ -4,9 +4,10 @@ import { chmod, mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
+import { installedDataRoot, installedServiceRoot } from './paths.js'
 
 const executeFile = promisify(execFile)
-const launchdLabel = 'ai.qiushuiai.airadar'
+const launchdLabel = 'ai.qiushuiai.airadar-installed'
 const winswVersion = '2.12.0'
 const winswUrl = `https://github.com/winsw/winsw/releases/download/v${winswVersion}/WinSW.NET461.exe`
 const winswSha256 =
@@ -204,13 +205,11 @@ export function createSystemServiceManager(
 ): ServiceManager {
   const platform = options.platform ?? process.platform
   const home = options.home ?? homedir()
-  const serviceRoot = path.join(home, '.airadar', 'service')
-  const dataRoot =
-    process.env.AIRADAR_DATA_ROOT ?? path.join(home, '.airadar', 'data')
+  const serviceRoot = installedServiceRoot(home)
+  const dataRoot = process.env.AIRADAR_DATA_ROOT ?? installedDataRoot(home)
   const logRoot = path.join(serviceRoot, 'logs')
   const secretFile =
-    process.env.AIRADAR_SECRET_FILE ??
-    path.join(home, '.airadar', 'secrets.env')
+    process.env.AIRADAR_SECRET_FILE ?? path.join(dataRoot, '.env')
   const runtimeEnvironment = Object.fromEntries(
     [
       [
@@ -265,7 +264,14 @@ export function createSystemServiceManager(
             await runWithRetry('launchctl', ['bootstrap', domain, plistPath])
           }
         } else if (command === 'status') {
-          const running = await runAllowMissing('launchctl', ['print', target])
+          let running = false
+          try {
+            const { stdout } = await executeFile('launchctl', ['print', target])
+            running =
+              /state = running/u.test(stdout) && /pid = \d+/u.test(stdout)
+          } catch {
+            /* Unloaded service is stopped. */
+          }
           return {
             service: 'airadar',
             status: running ? 'running' : 'stopped',

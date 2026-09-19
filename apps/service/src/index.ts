@@ -22,7 +22,7 @@ import {
   type RuntimeTask,
   type UtilizationAction,
   validateRuntimeParameters,
-} from '@airadar/runtime'
+} from '@qiushuiai-airadar/runtime'
 import {
   analyzeStoredContent,
   createCodexPiGateway,
@@ -33,7 +33,7 @@ import {
   enrichYouTubeContent,
   runPlatformDiscovery,
   runRssDiscovery,
-} from '@airadar/pipeline'
+} from '@qiushuiai-airadar/pipeline'
 import {
   classifyNonArticlePage,
   createGetBijiDouyinProvider,
@@ -53,7 +53,7 @@ import {
   type CaptureProviderResponse,
   type SourceAdapter,
   type VideoTranscriber,
-} from '@airadar/source-adapters'
+} from '@qiushuiai-airadar/source-adapters'
 
 import { initialSources, retiredSourceIds } from './source-seeds.js'
 
@@ -359,139 +359,137 @@ const retiredSourceNames: Record<string, string> = {
 }
 
 function contentItems(repository: RuntimeRepository): FeedItem[] {
-  return repository.listContentList().map(contentListItem).sort((left, right) =>
-    (
-      right.analyzedAt ??
-      right.publishedAt ??
-      right.discoveredAt ??
-      ''
-    ).localeCompare(
-      left.analyzedAt ?? left.publishedAt ?? left.discoveredAt ?? ''
+  return repository
+    .listContentList()
+    .map(contentListItem)
+    .sort((left, right) =>
+      (
+        right.analyzedAt ??
+        right.publishedAt ??
+        right.discoveredAt ??
+        ''
+      ).localeCompare(
+        left.analyzedAt ?? left.publishedAt ?? left.discoveredAt ?? ''
+      )
     )
-  )
 }
 
 function contentListItem(content: ContentListRecord): FeedItem {
-      const analysis = content.analysis
-      const result = asRecord(analysis?.result)
-      const sourceId = content.sourceId
-        ? (acceptanceSourceAliases[content.sourceId] ?? content.sourceId)
-        : undefined
-      const source = content.source
-      const detectedLanguage = detectOriginalLanguage(content.bodyPreview)
-      const originalLanguage =
-        detectedLanguage === 'unknown'
-          ? (source?.language ?? 'unknown')
-          : detectedLanguage
-      const chineseTranslation = content.chinesePreview
-      const state = content.state
-      const junk = effectiveJunk(state, result, content)
-      const latestInteraction = content.interaction
+  const analysis = content.analysis
+  const result = asRecord(analysis?.result)
+  const sourceId = content.sourceId
+    ? (acceptanceSourceAliases[content.sourceId] ?? content.sourceId)
+    : undefined
+  const source = content.source
+  const detectedLanguage = detectOriginalLanguage(content.bodyPreview)
+  const originalLanguage =
+    detectedLanguage === 'unknown'
+      ? (source?.language ?? 'unknown')
+      : detectedLanguage
+  const chineseTranslation = content.chinesePreview
+  const state = content.state
+  const junk = effectiveJunk(state, result, content)
+  const latestInteraction = content.interaction
+  return {
+    id: content.id,
+    title: content.title,
+    chineseTitle:
+      !junk.isJunk && typeof result.chineseTitle === 'string'
+        ? result.chineseTitle.trim() || undefined
+        : undefined,
+    url: content.canonicalUrl,
+    publishedAt: content.publishedAt,
+    discoveredAt: content.discoveredAt,
+    firstInflowAt: content.firstInflowAt,
+    body: content.bodyPreview,
+    originalLanguage,
+    chineseTranslation: !junk.isJunk ? chineseTranslation : undefined,
+    translatedToChinese:
+      !junk.isJunk && originalLanguage === 'en' && Boolean(chineseTranslation),
+    summary:
+      typeof result.summary === 'string'
+        ? result.summary
+        : content.bodyPreview || content.enrichmentError || '等待处理',
+    topics: Array.isArray(result.topics)
+      ? result.topics.filter(
+          (topic): topic is string => typeof topic === 'string'
+        )
+      : [],
+    scores: asRecord(result.scores),
+    totalScore: typeof result.totalScore === 'number' ? result.totalScore : 0,
+    recommendation: recommendation(result.recommendation),
+    analyzedAt: analysis?.createdAt,
+    kind: contentKind(content.kind),
+    images: contentImages(content.images),
+    quotedPost: (() => {
+      const quote = asRecord(content.quotedPost)
+      const url = safeMediaUrl(quote.url)
+      if (!url) return undefined
       return {
-        id: content.id,
-        title: content.title,
-        chineseTitle:
-          !junk.isJunk && typeof result.chineseTitle === 'string'
-            ? result.chineseTitle.trim() || undefined
+        url,
+        authorName:
+          typeof quote.authorName === 'string' ? quote.authorName : undefined,
+        authorHandle:
+          typeof quote.authorHandle === 'string'
+            ? quote.authorHandle
             : undefined,
-        url: content.canonicalUrl,
-        publishedAt: content.publishedAt,
-        discoveredAt: content.discoveredAt,
-        firstInflowAt: content.firstInflowAt,
-        body: content.bodyPreview,
-        originalLanguage,
-        chineseTranslation: !junk.isJunk ? chineseTranslation : undefined,
-        translatedToChinese:
-          !junk.isJunk &&
-          originalLanguage === 'en' &&
-          Boolean(chineseTranslation),
-        summary:
-          typeof result.summary === 'string'
-            ? result.summary
-            : content.bodyPreview ||
-              content.enrichmentError ||
-              '等待处理',
-        topics: Array.isArray(result.topics)
-          ? result.topics.filter(
-              (topic): topic is string => typeof topic === 'string'
-            )
-          : [],
-        scores: asRecord(result.scores),
-        totalScore:
-          typeof result.totalScore === 'number' ? result.totalScore : 0,
-        recommendation: recommendation(result.recommendation),
-        analyzedAt: analysis?.createdAt,
-        kind: contentKind(content.kind),
-        images: contentImages(content.images),
-        quotedPost: (() => {
-          const quote = asRecord(content.quotedPost)
-          const url = safeMediaUrl(quote.url)
-          if (!url) return undefined
-          return {
-            url,
-            authorName: typeof quote.authorName === 'string' ? quote.authorName : undefined,
-            authorHandle: typeof quote.authorHandle === 'string' ? quote.authorHandle : undefined,
-            text: typeof quote.text === 'string' ? quote.text : '',
-            images: contentImages(quote.images) ?? [],
-          }
-        })(),
-        repostedBy: (() => {
-          const repost = asRecord(content.repostedBy)
-          const url = safeMediaUrl(repost.url)
-          if (!url) return undefined
-          return {
-            url,
-            name: typeof repost.name === 'string' ? repost.name : 'X 用户',
-            handle: typeof repost.handle === 'string' ? repost.handle : undefined,
-          }
-        })(),
-        video: contentVideo(content.video),
-        source: source
-          ? {
-              id: source.id,
-              name: source.name,
-              type: source.type,
-              language: source.language,
-            }
-          : content.sourceId
-            ? {
-                id: content.sourceId,
-                name:
-                  retiredSourceNames[sourceId ?? ''] ??
-                  content.sourceId
-                    .replace(/^accept-/u, '')
-                    .replaceAll('-', ' / '),
-                type: content.id.split(':')[0] ?? 'unknown',
-                language: 'en',
-              }
-            : undefined,
-        processStatus: content.processStatus,
-        originalStatus: content.originalStatus,
-        read: state?.read ?? false,
-        utilizationActions: junk.isJunk
-          ? []
-          : (state?.utilizationActions ?? []),
-        junk,
-        evidence: undefined,
-        interaction: latestInteraction
-          ? {
-              capturedAt: latestInteraction.capturedAt,
-              views: latestInteraction.views,
-              likes: latestInteraction.likes,
-              comments: latestInteraction.comments,
-              shares: latestInteraction.shares,
-              saves: latestInteraction.saves,
-            }
-          : undefined,
-        analysis: analysis
-          ? {
-              provider: analysis.provider,
-              model: analysis.model,
-              profileVersionId: analysis.profileVersionId,
-              ruleVersion: analysis.ruleVersion,
-            }
-          : undefined,
+        text: typeof quote.text === 'string' ? quote.text : '',
+        images: contentImages(quote.images) ?? [],
       }
+    })(),
+    repostedBy: (() => {
+      const repost = asRecord(content.repostedBy)
+      const url = safeMediaUrl(repost.url)
+      if (!url) return undefined
+      return {
+        url,
+        name: typeof repost.name === 'string' ? repost.name : 'X 用户',
+        handle: typeof repost.handle === 'string' ? repost.handle : undefined,
+      }
+    })(),
+    video: contentVideo(content.video),
+    source: source
+      ? {
+          id: source.id,
+          name: source.name,
+          type: source.type,
+          language: source.language,
+        }
+      : content.sourceId
+        ? {
+            id: content.sourceId,
+            name:
+              retiredSourceNames[sourceId ?? ''] ??
+              content.sourceId.replace(/^accept-/u, '').replaceAll('-', ' / '),
+            type: content.id.split(':')[0] ?? 'unknown',
+            language: 'en',
+          }
+        : undefined,
+    processStatus: content.processStatus,
+    originalStatus: content.originalStatus,
+    read: state?.read ?? false,
+    utilizationActions: junk.isJunk ? [] : (state?.utilizationActions ?? []),
+    junk,
+    evidence: undefined,
+    interaction: latestInteraction
+      ? {
+          capturedAt: latestInteraction.capturedAt,
+          views: latestInteraction.views,
+          likes: latestInteraction.likes,
+          comments: latestInteraction.comments,
+          shares: latestInteraction.shares,
+          saves: latestInteraction.saves,
+        }
+      : undefined,
+    analysis: analysis
+      ? {
+          provider: analysis.provider,
+          model: analysis.model,
+          profileVersionId: analysis.profileVersionId,
+          ruleVersion: analysis.ruleVersion,
+        }
+      : undefined,
+  }
 }
 
 function allowLocalWebOrigin(origin: string | undefined): string | undefined {
@@ -499,7 +497,7 @@ function allowLocalWebOrigin(origin: string | undefined): string | undefined {
   try {
     const url = new URL(origin)
     const configured = new Set(
-      (process.env.AIRADAR_WEB_ORIGINS ?? '')
+      (process.env.QIUSHUIAI_AIRADAR_WEB_ORIGINS ?? '')
         .split(',')
         .map((value) => value.trim())
         .filter(Boolean)
@@ -883,7 +881,7 @@ function configuredAdapter(
 }
 
 function configuredVideoTranscriber(): VideoTranscriber | undefined {
-  const endpoint = process.env.AIRADAR_TRANSCRIBER_URL
+  const endpoint = process.env.QIUSHUIAI_AIRADAR_TRANSCRIBER_URL
   if (!endpoint) return undefined
   const url = new URL(endpoint)
   if (url.protocol !== 'https:' && url.hostname !== '127.0.0.1') {
@@ -1083,7 +1081,7 @@ async function executeTask(
           : configuredVideoTranscriber()
       if (!transcriber) {
         throw new Error(
-          'Video transcriber is not configured; set AIRADAR_TRANSCRIBER_URL'
+          'Video transcriber is not configured; set QIUSHUIAI_AIRADAR_TRANSCRIBER_URL'
         )
       }
       const result = await enrichPlatformVideoContent({
@@ -1185,7 +1183,7 @@ async function ensureInitialState(
       id: 'parameters-global-initial',
       scope: { level: 'global' },
       values: defaultParameters,
-      description: 'AI Radar 初始运行参数',
+      description: 'qiushuiai-airadar 初始运行参数',
     })
   }
 }
@@ -1284,7 +1282,10 @@ async function handleRequest(
     }
   }
   if (method === 'GET' && url.pathname === '/health') {
-    return send(response, 200, { service: 'airadar', status: 'ready' })
+    return send(response, 200, {
+      service: 'qiushuiai-airadar',
+      status: 'ready',
+    })
   }
   if (
     method === 'GET' &&
@@ -1638,7 +1639,7 @@ export function createServiceApp(
   let schedulerTimer: ReturnType<typeof setInterval> | undefined
   const dataRoot =
     options.dataRoot ??
-    process.env.AIRADAR_DATA_ROOT ??
+    process.env.QIUSHUIAI_AIRADAR_DATA_ROOT ??
     path.join(homedir(), '.qiushuiai-airadar', 'data')
   const scheduleTasks = () => {
     if (!options.executeTasks || !repository) return
@@ -1698,7 +1699,8 @@ export function createServiceApp(
 
   return {
     async start(address) {
-      if (server) throw new Error('AI Radar service is already running')
+      if (server)
+        throw new Error('qiushuiai-airadar service is already running')
       repository = await RuntimeRepository.open(dataRoot)
       await ensureInitialState(repository)
       await enqueueTranslationBackfill(repository)

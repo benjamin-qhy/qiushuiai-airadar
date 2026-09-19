@@ -7,12 +7,12 @@ import {
   loadSingleTableConfig,
   loadSourceState,
   saveSourceState,
-} from '@airadar/config'
+} from '@qiushuiai-airadar/config'
 import {
   collectSourcesSerially,
   createSingleTableCodexGateway,
-} from '@airadar/pipeline'
-import { SingleTableRepository } from '@airadar/runtime'
+} from '@qiushuiai-airadar/pipeline'
+import { SingleTableRepository } from '@qiushuiai-airadar/runtime'
 import { createSingleTableSourceProvider } from './single-table-provider.js'
 
 export async function collectSingleTable(options: {

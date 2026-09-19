@@ -4,7 +4,7 @@ import {
   type ConfiguredSource,
   type DiscoveredContent,
   type SingleTableSourceProvider,
-} from '@airadar/pipeline'
+} from '@qiushuiai-airadar/pipeline'
 import {
   createTikHubXProvider,
   createTikHubYouTubeProvider,
@@ -15,8 +15,8 @@ import {
   isXArticleUrl,
   type DiscoveredItem,
   type SourceAdapter,
-} from '@airadar/source-adapters'
-import type { LogEvent } from '@airadar/runtime'
+} from '@qiushuiai-airadar/source-adapters'
+import type { LogEvent } from '@qiushuiai-airadar/runtime'
 
 interface ProviderOptions {
   tikHubToken?: string
@@ -197,7 +197,9 @@ export function createSingleTableSourceProvider(
       if (item.kind === 'article') {
         if (!url) throw new Error('Article URL is missing')
         const isXArticle =
-          source.platform === 'x' && isXArticleUrl(url) && Boolean(options.twitterApiKey)
+          source.platform === 'x' &&
+          isXArticleUrl(url) &&
+          Boolean(options.twitterApiKey)
         const article =
           isXArticle && options.twitterApiKey
             ? await fetchTwitterApiIoArticle({
@@ -260,7 +262,9 @@ export function createSingleTableSourceProvider(
           originalTitle:
             item.kind === 'short_post' ? undefined : title || undefined,
           body,
-          explicitLong: Boolean(sourceItem?.thread && sourceItem.thread.parts.length > 1),
+          explicitLong: Boolean(
+            sourceItem?.thread && sourceItem.thread.parts.length > 1
+          ),
           kind: item.kind,
           format,
           language: source.language,

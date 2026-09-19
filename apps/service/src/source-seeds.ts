@@ -1,4 +1,4 @@
-import type { ManagedSource } from '@airadar/runtime'
+import type { ManagedSource } from '@qiushuiai-airadar/runtime'
 
 const legacy: Array<Omit<ManagedSource, 'sortOrder' | 'status' | 'language'>> =
   [

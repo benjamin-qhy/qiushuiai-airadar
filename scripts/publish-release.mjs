@@ -8,9 +8,18 @@ const manifest = JSON.parse(
 )
 const version = manifest.version
 const tag = `v${version}`
-const archive = path.join(root, 'release', `airadar-cli-${version}.tgz`)
+const archive = path.join(
+  root,
+  'release',
+  `qiushuiai-airadar-cli-${version}.tgz`
+)
 const checksum = `${archive}.sha256`
-for (const file of [archive, checksum]) await access(file)
+const releaseManifest = path.join(
+  root,
+  'release',
+  'qiushuiai-airadar-release.json'
+)
+for (const file of [archive, checksum, releaseManifest]) await access(file)
 
 const status = execFileSync('git', ['status', '--porcelain'], {
   cwd: root,
@@ -39,11 +48,12 @@ execFileSync(
     tag,
     archive,
     checksum,
+    releaseManifest,
     path.join(root, 'scripts', 'install-release.sh'),
     '--target',
     head,
     '--title',
-    `AI Radar ${version}`,
+    `qiushuiai-airadar ${version}`,
     '--generate-notes',
   ],
   { cwd: root, stdio: 'inherit' }

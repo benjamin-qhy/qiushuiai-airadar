@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import type { Source } from '@airadar/domain'
+import type { Source } from '@qiushuiai-airadar/domain'
 
 import {
   createGetBijiDouyinProvider,

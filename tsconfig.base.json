@@ -9,12 +9,14 @@
     "noUncheckedIndexedAccess": true,
     "outDir": "dist",
     "paths": {
-      "@airadar/config": ["./packages/config/src/index.ts"],
-      "@airadar/domain": ["./packages/domain/src/index.ts"],
-      "@airadar/runtime": ["./packages/runtime/src/index.ts"],
-      "@airadar/pipeline": ["./packages/pipeline/src/index.ts"],
-      "@airadar/service": ["./apps/service/src/index.ts"],
-      "@airadar/source-adapters": ["./packages/source-adapters/src/index.ts"]
+      "@qiushuiai-airadar/config": ["./packages/config/src/index.ts"],
+      "@qiushuiai-airadar/domain": ["./packages/domain/src/index.ts"],
+      "@qiushuiai-airadar/runtime": ["./packages/runtime/src/index.ts"],
+      "@qiushuiai-airadar/pipeline": ["./packages/pipeline/src/index.ts"],
+      "@qiushuiai-airadar/service": ["./apps/service/src/index.ts"],
+      "@qiushuiai-airadar/source-adapters": [
+        "./packages/source-adapters/src/index.ts"
+      ]
     },
     "skipLibCheck": true,
     "strict": true,

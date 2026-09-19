@@ -9,7 +9,10 @@ const manifest = JSON.parse(
 )
 const directory = path.join(root, 'release')
 await mkdir(directory, { recursive: true })
-const file = path.join(directory, `airadar-cli-${manifest.version}.tgz`)
+const file = path.join(
+  directory,
+  `qiushuiai-airadar-cli-${manifest.version}.tgz`
+)
 try {
   await access(file)
   throw new Error(
@@ -23,7 +26,7 @@ execFileSync(
   [
     process.env.npm_execpath,
     '--filter',
-    '@airadar/cli',
+    '@qiushuiai-airadar/cli',
     'pack',
     '--pack-destination',
     directory,
@@ -34,4 +37,16 @@ const hash = createHash('sha256')
   .update(await readFile(file))
   .digest('hex')
 await writeFile(`${file}.sha256`, `${hash}  ${path.basename(file)}\n`)
+await writeFile(
+  path.join(directory, 'qiushuiai-airadar-release.json'),
+  `${JSON.stringify(
+    {
+      version: manifest.version,
+      package: path.basename(file),
+      checksum: `${path.basename(file)}.sha256`,
+    },
+    null,
+    2
+  )}\n`
+)
 process.stdout.write(`Release ready: ${file}\n`)

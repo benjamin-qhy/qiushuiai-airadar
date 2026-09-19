@@ -8,7 +8,11 @@ const exitCode = await runCli(['status'], {
   stdout: { write: (chunk) => chunks.push(chunk) },
 })
 const status = JSON.parse(chunks.join('')) as { name?: string; status?: string }
-if (exitCode !== 0 || status.name !== 'airadar' || status.status !== 'ready') {
+if (
+  exitCode !== 0 ||
+  status.name !== 'qiushuiai-airadar' ||
+  status.status !== 'ready'
+) {
   throw new Error('CLI source smoke failed')
 }
 
@@ -33,7 +37,7 @@ try {
   if (!address) throw new Error('Web source smoke did not bind a port')
   const response = await fetch(`http://127.0.0.1:${address.port}/`)
   const html = await response.text()
-  if (!response.ok || !html.includes('<title>AI Radar</title>')) {
+  if (!response.ok || !html.includes('<title>qiushuiai-airadar</title>')) {
     throw new Error('Web source smoke returned an unexpected page')
   }
 } finally {

@@ -18,7 +18,9 @@ const packageManagerCli = process.env.npm_execpath
 if (!packageManagerCli) throw new Error('Run through pnpm smoke:deployed')
 const tempRoot = join(process.cwd(), '.tmp')
 await mkdir(tempRoot, { recursive: true })
-const target = await mkdtemp(join(tempRoot, 'airadar-install-upgrade-'))
+const target = await mkdtemp(
+  join(tempRoot, 'qiushuiai-airadar-install-upgrade-')
+)
 const installRoot = join(target, 'install')
 const dataRoot = join(target, 'data')
 const staging = join(target, 'candidate')
@@ -42,7 +44,7 @@ async function install(tarball: string) {
     ])
   } else await execute('npm', args, { timeout: 120_000 })
 }
-const cli = join(installRoot, 'node_modules/@airadar/cli/dist/cli.js')
+const cli = join(installRoot, 'node_modules/@qiushuiai-airadar/cli/dist/cli.js')
 async function start() {
   const child = spawn(
     process.execPath,
@@ -51,8 +53,8 @@ async function start() {
       cwd: target,
       env: {
         ...process.env,
-        AIRADAR_DATA_ROOT: dataRoot,
-        AIRADAR_SECRET_FILE: join(dataRoot, '.env'),
+        QIUSHUIAI_AIRADAR_DATA_ROOT: dataRoot,
+        QIUSHUIAI_AIRADAR_SECRET_FILE: join(dataRoot, '.env'),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     }
@@ -142,7 +144,7 @@ try {
         service: string
       }
     ).service,
-    'airadar-single-table'
+    'qiushuiai-airadar-single-table'
   )
   await get(active.origin, '/api/sources')
   await stop(active.child)
@@ -178,12 +180,15 @@ try {
   await execute(process.execPath, [
     packageManagerCli,
     '--filter',
-    '@airadar/cli',
+    '@qiushuiai-airadar/cli',
     'pack',
     '--pack-destination',
     packRoot,
   ])
-  const currentPackage = join(packRoot, `airadar-cli-${currentVersion}.tgz`)
+  const currentPackage = join(
+    packRoot,
+    `qiushuiai-airadar-cli-${currentVersion}.tgz`
+  )
   await install(currentPackage)
   assert.equal(
     (await execute(process.execPath, [cli, '--version'])).stdout.trim(),
@@ -191,7 +196,7 @@ try {
   )
   active = await start()
   const html = await (await get(active.origin, '/')).text()
-  assert.ok(html.includes('<title>AI Radar</title>'))
+  assert.ok(html.includes('<title>qiushuiai-airadar</title>'))
   const asset = /src="([^"]+\.js)"/u.exec(html)?.[1]
   assert.ok(asset)
   await get(active.origin, asset)
@@ -205,8 +210,8 @@ try {
     cwd: target,
     env: {
       ...process.env,
-      AIRADAR_DATA_ROOT: dataRoot,
-      AIRADAR_SECRET_FILE: join(dataRoot, '.env'),
+      QIUSHUIAI_AIRADAR_DATA_ROOT: dataRoot,
+      QIUSHUIAI_AIRADAR_SECRET_FILE: join(dataRoot, '.env'),
     },
   })
   assert.deepEqual(JSON.parse(collected.stdout), [])
@@ -221,8 +226,11 @@ try {
   assert.equal(await readFile(profile, 'utf8'), profileBefore)
   assert.equal(await readFile(join(dataRoot, '.env'), 'utf8'), secretBefore)
   assert.equal(
-    (await readdir(join(installRoot, 'node_modules/@airadar/cli/prompts')))
-      .length,
+    (
+      await readdir(
+        join(installRoot, 'node_modules/@qiushuiai-airadar/cli/prompts')
+      )
+    ).length,
     3
   )
   process.stdout.write(

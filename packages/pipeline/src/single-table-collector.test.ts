@@ -4,7 +4,10 @@ import path from 'node:path'
 
 import { afterEach, expect, it } from 'vitest'
 
-import { SingleTableRepository, type ScoringRules } from '@airadar/runtime'
+import {
+  SingleTableRepository,
+  type ScoringRules,
+} from '@qiushuiai-airadar/runtime'
 
 import {
   collectSourcesSerially,
@@ -21,7 +24,9 @@ afterEach(async () => {
 })
 
 it('classifies an X plugin directory as rule junk without fetching an article or invoking the model', async () => {
-  const root = await mkdtemp(path.join(tmpdir(), 'airadar-directory-'))
+  const root = await mkdtemp(
+    path.join(tmpdir(), 'qiushuiai-airadar-directory-')
+  )
   roots.push(root)
   const repository = await SingleTableRepository.open(root)
   repositories.push(repository)
@@ -111,7 +116,7 @@ it('classifies an X plugin directory as rule junk without fetching an article or
 })
 
 it('runs sources and items serially with exactly one list call per source', async () => {
-  const root = await mkdtemp(path.join(tmpdir(), 'airadar-serial-'))
+  const root = await mkdtemp(path.join(tmpdir(), 'qiushuiai-airadar-serial-'))
   roots.push(root)
   const repository = await SingleTableRepository.open(root)
   repositories.push(repository)
@@ -234,7 +239,9 @@ it('runs sources and items serially with exactly one list call per source', asyn
 })
 
 it('does not automatically retry a failed content row on the next collection', async () => {
-  const root = await mkdtemp(path.join(tmpdir(), 'airadar-no-auto-retry-'))
+  const root = await mkdtemp(
+    path.join(tmpdir(), 'qiushuiai-airadar-no-auto-retry-')
+  )
   roots.push(root)
   const repository = await SingleTableRepository.open(root)
   repositories.push(repository)

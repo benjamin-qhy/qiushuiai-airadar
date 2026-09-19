@@ -8,7 +8,7 @@ import {
   sourceTypeSchema,
   type Source,
   type SourceType,
-} from '@airadar/domain'
+} from '@qiushuiai-airadar/domain'
 import { z } from 'zod'
 
 export * from './single-table.js'
@@ -453,7 +453,8 @@ export interface ContentListRecord {
   firstInflowAt?: string
   state?: Pick<ContentUserState, 'read' | 'utilizationActions' | 'manualJunk'>
   interaction?: InteractionSnapshot
-  processStatus: 'processing' | 'completed' | 'failed' | 'waiting-manual-transcription'
+  processStatus:
+    'processing' | 'completed' | 'failed' | 'waiting-manual-transcription'
 }
 
 export interface EnqueueTaskInput {
@@ -497,8 +498,8 @@ export interface DiscoveryCommitHooks {
   beforeProgress?(): void | Promise<void>
 }
 
-const markdownStart = '<!-- airadar-record:start -->\n```json\n'
-const markdownEnd = '\n```\n<!-- airadar-record:end -->\n'
+const markdownStart = '<!-- qiushuiai-airadar-record:start -->\n```json\n'
+const markdownEnd = '\n```\n<!-- qiushuiai-airadar-record:end -->\n'
 const sensitiveKey =
   /(?:apikey|accesskey(?:id)?|token|secret|password|passphrase|authorization|auth|cookie|privatekey|credentials?|bearer|signingkey|decodekey)$/iu
 const secretReferenceSchema = z
@@ -510,13 +511,14 @@ function nowIso(): string {
 }
 
 function recordMarkdown(kind: string, record: unknown): string {
-  return `# AI Radar ${kind}\n\n${markdownStart}${JSON.stringify(record, null, 2)}${markdownEnd}`
+  return `# qiushuiai-airadar ${kind}\n\n${markdownStart}${JSON.stringify(record, null, 2)}${markdownEnd}`
 }
 
 function parseRecord<T>(source: string, schema: z.ZodType<T>): T {
   const start = source.indexOf(markdownStart)
   const end = source.indexOf(markdownEnd, start + markdownStart.length)
-  if (start < 0 || end < 0) throw new Error('Invalid AI Radar Markdown record')
+  if (start < 0 || end < 0)
+    throw new Error('Invalid qiushuiai-airadar Markdown record')
   return schema.parse(
     JSON.parse(source.slice(start + markdownStart.length, end)) as unknown
   )
@@ -651,7 +653,9 @@ async function acquireRootLock(indexDirectory: string): Promise<RootLock> {
     return { database }
   } catch (error) {
     database.close()
-    throw new Error('AI Radar data root is already in use', { cause: error })
+    throw new Error('qiushuiai-airadar data root is already in use', {
+      cause: error,
+    })
   }
 }
 
@@ -871,11 +875,15 @@ export class RuntimeRepository {
         record_json TEXT NOT NULL
       );
     `)
-    const taskColumns = this.database.prepare('PRAGMA table_info(tasks)').all() as Array<{ name: string }>
+    const taskColumns = this.database
+      .prepare('PRAGMA table_info(tasks)')
+      .all() as Array<{ name: string }>
     if (!taskColumns.some((column) => column.name === 'content_id')) {
       this.database.exec('ALTER TABLE tasks ADD COLUMN content_id TEXT')
     }
-    this.database.exec('CREATE INDEX IF NOT EXISTS tasks_content_type ON tasks (content_id, type, created_at DESC)')
+    this.database.exec(
+      'CREATE INDEX IF NOT EXISTS tasks_content_type ON tasks (content_id, type, created_at DESC)'
+    )
     await this.rebuildIndex()
   }
 
@@ -960,7 +968,7 @@ export class RuntimeRepository {
   async rebuildIndex(): Promise<void> {
     this.rebuildingIndex = true
     try {
-    this.database.exec(`
+      this.database.exec(`
       DELETE FROM source_locks;
       DELETE FROM tasks;
       DELETE FROM parameters;
@@ -980,74 +988,87 @@ export class RuntimeRepository {
       DELETE FROM analysis_calls;
     `)
 
-    await this.rebuildTasks()
-    await this.rebuildFolder('parameters', parameterVersionSchema, (record) => {
-      this.upsertParameter(record)
-    })
-    await this.rebuildContents()
-    await this.rebuildFolder('sources', managedSourceSchema, (record) => {
-      this.upsertSource(record)
-    })
-    await this.rebuildFolder(
-      'content-user-states',
-      contentUserStateSchema,
-      (record) => {
-        this.upsertContentUserState(record)
-      }
-    )
-    await this.rebuildFolder('junk-samples', junkSampleSchema, (record) => {
-      this.upsertJunkSample(record)
-      const snapshot = record.stateSnapshot
-      const current = this.getContentUserState(record.contentId)
-      if (snapshot && (!current || current.updatedAt <= snapshot.updatedAt)) {
-        this.upsertContentUserState(snapshot)
-      }
-    })
-    await this.rebuildFolder('discoveries', discoveryRecordSchema, (record) => {
-      this.upsertDiscovery(record)
-    })
-    await this.rebuildFolder('progress', progressSchema, (record) => {
-      this.upsertProgress(record)
-    })
-    await this.rebuildFolder('audits', auditSchema, (record) => {
-      this.upsertAudit(record)
-    })
-    await this.rebuildFolder(
-      'provider-attempts',
-      providerAttemptSchema,
-      (record) => {
-        this.upsertProviderAttempt(record)
-      }
-    )
-    await this.rebuildFolder(
-      'provider-health',
-      providerHealthSchema,
-      (record) => {
-        this.upsertProviderHealth(record)
-      }
-    )
-    await this.rebuildFolder(
-      'interaction-snapshots',
-      interactionSnapshotSchema,
-      (record) => {
-        this.upsertInteractionSnapshot(record)
-      }
-    )
-    await this.rebuildFolder(
-      'content-relations',
-      relatedContentSchema,
-      (record) => {
-        this.upsertRelatedContent(record)
-      }
-    )
-    await this.rebuildFolder('analyses', analysisRecordSchema, (record) => {
-      this.upsertAnalysis(record)
-    })
-    await this.rebuildFolder('analysis-calls', analysisCallSchema, (record) => {
-      this.upsertAnalysisCall(record)
-    })
-    this.rebuildingIndex = false
-    for (const content of this.listContents()) this.refreshContentList(content.id)
+      await this.rebuildTasks()
+      await this.rebuildFolder(
+        'parameters',
+        parameterVersionSchema,
+        (record) => {
+          this.upsertParameter(record)
+        }
+      )
+      await this.rebuildContents()
+      await this.rebuildFolder('sources', managedSourceSchema, (record) => {
+        this.upsertSource(record)
+      })
+      await this.rebuildFolder(
+        'content-user-states',
+        contentUserStateSchema,
+        (record) => {
+          this.upsertContentUserState(record)
+        }
+      )
+      await this.rebuildFolder('junk-samples', junkSampleSchema, (record) => {
+        this.upsertJunkSample(record)
+        const snapshot = record.stateSnapshot
+        const current = this.getContentUserState(record.contentId)
+        if (snapshot && (!current || current.updatedAt <= snapshot.updatedAt)) {
+          this.upsertContentUserState(snapshot)
+        }
+      })
+      await this.rebuildFolder(
+        'discoveries',
+        discoveryRecordSchema,
+        (record) => {
+          this.upsertDiscovery(record)
+        }
+      )
+      await this.rebuildFolder('progress', progressSchema, (record) => {
+        this.upsertProgress(record)
+      })
+      await this.rebuildFolder('audits', auditSchema, (record) => {
+        this.upsertAudit(record)
+      })
+      await this.rebuildFolder(
+        'provider-attempts',
+        providerAttemptSchema,
+        (record) => {
+          this.upsertProviderAttempt(record)
+        }
+      )
+      await this.rebuildFolder(
+        'provider-health',
+        providerHealthSchema,
+        (record) => {
+          this.upsertProviderHealth(record)
+        }
+      )
+      await this.rebuildFolder(
+        'interaction-snapshots',
+        interactionSnapshotSchema,
+        (record) => {
+          this.upsertInteractionSnapshot(record)
+        }
+      )
+      await this.rebuildFolder(
+        'content-relations',
+        relatedContentSchema,
+        (record) => {
+          this.upsertRelatedContent(record)
+        }
+      )
+      await this.rebuildFolder('analyses', analysisRecordSchema, (record) => {
+        this.upsertAnalysis(record)
+      })
+      await this.rebuildFolder(
+        'analysis-calls',
+        analysisCallSchema,
+        (record) => {
+          this.upsertAnalysisCall(record)
+        }
+      )
+      this.rebuildingIndex = false
+      for (const content of this.listContents())
+        this.refreshContentList(content.id)
     } finally {
       this.rebuildingIndex = false
     }
@@ -1612,18 +1633,30 @@ export class RuntimeRepository {
   }
 
   listContentList(): ContentListRecord[] {
-    return this.database.prepare('SELECT record_json FROM content_list ORDER BY id').all()
-      .map((row) => JSON.parse((row as { record_json: string }).record_json) as ContentListRecord)
+    return this.database
+      .prepare('SELECT record_json FROM content_list ORDER BY id')
+      .all()
+      .map(
+        (row) =>
+          JSON.parse(
+            (row as { record_json: string }).record_json
+          ) as ContentListRecord
+      )
   }
 
   getContentList(id: string): ContentListRecord | undefined {
-    const row = this.database.prepare('SELECT record_json FROM content_list WHERE id = ?').get(id) as { record_json: string } | undefined
-    return row ? JSON.parse(row.record_json) as ContentListRecord : undefined
+    const row = this.database
+      .prepare('SELECT record_json FROM content_list WHERE id = ?')
+      .get(id) as { record_json: string } | undefined
+    return row ? (JSON.parse(row.record_json) as ContentListRecord) : undefined
   }
 
   async readContentMarkdown(id: string): Promise<ContentRecord | undefined> {
     if (!this.getContentList(id)) return undefined
-    return parseRecord(await readFile(this.contentMarkdownPath(id), 'utf8'), contentRecordSchema)
+    return parseRecord(
+      await readFile(this.contentMarkdownPath(id), 'utf8'),
+      contentRecordSchema
+    )
   }
 
   private refreshContentList(id: string): void {
@@ -1643,43 +1676,106 @@ export class RuntimeRepository {
       'accept-youtube-openai': 'yt_openai',
       'accept-youtube-ycombinator': 'yt_ycombinator',
     }
-    const source = content.sourceId ? this.getSource(sourceAlias[content.sourceId] ?? content.sourceId) : undefined
+    const source = content.sourceId
+      ? this.getSource(sourceAlias[content.sourceId] ?? content.sourceId)
+      : undefined
     const latestInteraction = this.listInteractionSnapshots(id).at(-1)
-    const taskStatus = (type: string) => (this.database.prepare(
-      'SELECT status FROM tasks WHERE content_id = ? AND type = ? ORDER BY created_at DESC LIMIT 1'
-    ).get(id, type) as { status?: string } | undefined)?.status
+    const taskStatus = (type: string) =>
+      (
+        this.database
+          .prepare(
+            'SELECT status FROM tasks WHERE content_id = ? AND type = ? ORDER BY created_at DESC LIMIT 1'
+          )
+          .get(id, type) as { status?: string } | undefined
+      )?.status
     const processStatus: ContentListRecord['processStatus'] =
-      content.enrichmentStatus === 'failed' ? 'failed' :
-      content.enrichmentStatus === 'waiting-manual-transcription' ? 'waiting-manual-transcription' :
-      content.enrichmentStatus !== 'succeeded' ? (taskStatus('enrich') === 'failed' ? 'failed' : 'processing') :
-      analyses.length > 0 ? 'completed' : (taskStatus('analyze') === 'failed' ? 'failed' : 'processing')
+      content.enrichmentStatus === 'failed'
+        ? 'failed'
+        : content.enrichmentStatus === 'waiting-manual-transcription'
+          ? 'waiting-manual-transcription'
+          : content.enrichmentStatus !== 'succeeded'
+            ? taskStatus('enrich') === 'failed'
+              ? 'failed'
+              : 'processing'
+            : analyses.length > 0
+              ? 'completed'
+              : taskStatus('analyze') === 'failed'
+                ? 'failed'
+                : 'processing'
     const firstInflowAt = analyses
-      .filter((analysis) => ['core', 'explore'].includes(String((analysis.result as Record<string, unknown>).recommendation)))
-      .map((analysis) => analysis.createdAt).sort()[0]
+      .filter((analysis) =>
+        ['core', 'explore'].includes(
+          String((analysis.result as Record<string, unknown>).recommendation)
+        )
+      )
+      .map((analysis) => analysis.createdAt)
+      .sort()[0]
     const row: ContentListRecord = {
-      id, title: content.title, bodyPreview: content.body.trim().slice(0, 240),
-      chinesePreview: typeof result.chineseTranslation === 'string' ? result.chineseTranslation.trim().slice(0, 240) : undefined,
-      canonicalUrl: content.canonicalUrl, sourceId: content.sourceId,
-      publishedAt: content.publishedAt, discoveredAt: content.discoveredAt,
-      kind: content.kind, enrichmentStatus: content.enrichmentStatus,
-      enrichmentError: content.enrichmentError, originalStatus: content.originalStatus,
-      images: Array.isArray(content.images) ? content.images.slice(0, 1) : undefined,
-      video: content.video, quotedPost: content.quotedPost, repostedBy: content.repostedBy,
-      source: source ? { id: source.id, name: source.name, type: source.type, language: source.language } : undefined,
-      analysis: latest ? {
-        result: {
-          summary: typeof result.summary === 'string' ? result.summary.slice(0, 500) : undefined,
-          topics: result.topics, scores: result.scores, totalScore: result.totalScore,
-          recommendation: result.recommendation, spam: result.spam,
-          chineseTitle: result.chineseTitle,
-        },
-        createdAt: latest.createdAt, provider: latest.provider, model: latest.model,
-        profileVersionId: latest.profileVersionId, ruleVersion: latest.ruleVersion,
-      } : undefined,
-      firstInflowAt, state: state ? { read: state.read, utilizationActions: state.utilizationActions, manualJunk: state.manualJunk } : undefined,
-      interaction: latestInteraction, processStatus,
+      id,
+      title: content.title,
+      bodyPreview: content.body.trim().slice(0, 240),
+      chinesePreview:
+        typeof result.chineseTranslation === 'string'
+          ? result.chineseTranslation.trim().slice(0, 240)
+          : undefined,
+      canonicalUrl: content.canonicalUrl,
+      sourceId: content.sourceId,
+      publishedAt: content.publishedAt,
+      discoveredAt: content.discoveredAt,
+      kind: content.kind,
+      enrichmentStatus: content.enrichmentStatus,
+      enrichmentError: content.enrichmentError,
+      originalStatus: content.originalStatus,
+      images: Array.isArray(content.images)
+        ? content.images.slice(0, 1)
+        : undefined,
+      video: content.video,
+      quotedPost: content.quotedPost,
+      repostedBy: content.repostedBy,
+      source: source
+        ? {
+            id: source.id,
+            name: source.name,
+            type: source.type,
+            language: source.language,
+          }
+        : undefined,
+      analysis: latest
+        ? {
+            result: {
+              summary:
+                typeof result.summary === 'string'
+                  ? result.summary.slice(0, 500)
+                  : undefined,
+              topics: result.topics,
+              scores: result.scores,
+              totalScore: result.totalScore,
+              recommendation: result.recommendation,
+              spam: result.spam,
+              chineseTitle: result.chineseTitle,
+            },
+            createdAt: latest.createdAt,
+            provider: latest.provider,
+            model: latest.model,
+            profileVersionId: latest.profileVersionId,
+            ruleVersion: latest.ruleVersion,
+          }
+        : undefined,
+      firstInflowAt,
+      state: state
+        ? {
+            read: state.read,
+            utilizationActions: state.utilizationActions,
+            manualJunk: state.manualJunk,
+          }
+        : undefined,
+      interaction: latestInteraction,
+      processStatus,
     }
-    this.database.prepare('INSERT INTO content_list (id, record_json) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET record_json = excluded.record_json')
+    this.database
+      .prepare(
+        'INSERT INTO content_list (id, record_json) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET record_json = excluded.record_json'
+      )
       .run(id, JSON.stringify(row))
   }
 
@@ -2044,7 +2140,11 @@ export class RuntimeRepository {
   async mergeContentIdentity(
     fromId: string,
     canonicalId: string,
-    input: { body: string; canonicalUrl: string; images?: Array<{ order: number; url: string }> }
+    input: {
+      body: string
+      canonicalUrl: string
+      images?: Array<{ order: number; url: string }>
+    }
   ): Promise<ContentRecord> {
     return this.serializeMutation(async () => {
       if (fromId === canonicalId) {
@@ -2565,9 +2665,12 @@ export class RuntimeRepository {
         task.createdAt,
         JSON.stringify(task.payload),
         JSON.stringify(task),
-        typeof task.payload.contentId === 'string' ? task.payload.contentId : null
+        typeof task.payload.contentId === 'string'
+          ? task.payload.contentId
+          : null
       )
-    if (typeof task.payload.contentId === 'string') this.refreshContentList(task.payload.contentId)
+    if (typeof task.payload.contentId === 'string')
+      this.refreshContentList(task.payload.contentId)
     return change
   }
 
@@ -2605,7 +2708,11 @@ export class RuntimeRepository {
       )
       .run(source.id, source.sortOrder ?? 999_999, JSON.stringify(source))
     if (!this.rebuildingIndex) {
-      for (const row of this.database.prepare('SELECT id FROM contents WHERE json_extract(record_json, \'$.sourceId\') = ?').all(source.id)) {
+      for (const row of this.database
+        .prepare(
+          "SELECT id FROM contents WHERE json_extract(record_json, '$.sourceId') = ?"
+        )
+        .all(source.id)) {
         this.refreshContentList((row as { id: string }).id)
       }
     }

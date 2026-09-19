@@ -61,28 +61,28 @@ importers:
         specifier: 0.85.1
         version: 0.85.1(ws@8.21.3)(zod@4.1.12)
     devDependencies:
-      '@airadar/config':
+      '@qiushuiai-airadar/config':
         specifier: workspace:*
         version: link:../../packages/config
-      '@airadar/service':
+      '@qiushuiai-airadar/service':
         specifier: workspace:*
         version: link:../service
-      '@airadar/web':
+      '@qiushuiai-airadar/web':
         specifier: workspace:*
         version: link:../web
 
   apps/service:
     dependencies:
-      '@airadar/config':
+      '@qiushuiai-airadar/config':
         specifier: workspace:*
         version: link:../../packages/config
-      '@airadar/pipeline':
+      '@qiushuiai-airadar/pipeline':
         specifier: workspace:*
         version: link:../../packages/pipeline
-      '@airadar/runtime':
+      '@qiushuiai-airadar/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime
-      '@airadar/source-adapters':
+      '@qiushuiai-airadar/source-adapters':
         specifier: workspace:*
         version: link:../../packages/source-adapters
 
@@ -212,13 +212,13 @@ importers:
 
   packages/pipeline:
     dependencies:
-      '@airadar/domain':
+      '@qiushuiai-airadar/domain':
         specifier: workspace:*
         version: link:../domain
-      '@airadar/runtime':
+      '@qiushuiai-airadar/runtime':
         specifier: workspace:*
         version: link:../runtime
-      '@airadar/source-adapters':
+      '@qiushuiai-airadar/source-adapters':
         specifier: workspace:*
         version: link:../source-adapters
       '@earendil-works/pi-ai':
@@ -242,7 +242,7 @@ importers:
 
   packages/runtime:
     dependencies:
-      '@airadar/domain':
+      '@qiushuiai-airadar/domain':
         specifier: workspace:*
         version: link:../domain
       yaml:
@@ -254,7 +254,7 @@ importers:
 
   packages/source-adapters:
     dependencies:
-      '@airadar/domain':
+      '@qiushuiai-airadar/domain':
         specifier: workspace:*
         version: link:../domain
 

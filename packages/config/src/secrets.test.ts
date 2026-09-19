@@ -6,7 +6,9 @@ import { asSecretStatusReader, createFileSecretReader } from './index.js'
 
 describe('local secret boundary', () => {
   it('keeps raw values behind the backend reader and exposes only masked status', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'airadar-secrets-'))
+    const directory = await mkdtemp(
+      join(tmpdir(), 'qiushuiai-airadar-secrets-')
+    )
     const file = join(directory, '.env')
     await writeFile(file, 'TIKHUB_TOKEN=super-secret-value\nEMPTY=\n', {
       mode: 0o600,
@@ -34,7 +36,9 @@ describe('local secret boundary', () => {
   it.runIf(process.platform !== 'win32')(
     'rejects secret files readable by other users on macOS',
     async () => {
-      const directory = await mkdtemp(join(tmpdir(), 'airadar-secrets-'))
+      const directory = await mkdtemp(
+        join(tmpdir(), 'qiushuiai-airadar-secrets-')
+      )
       const file = join(directory, '.env')
       await writeFile(file, 'TOKEN=value\n', { mode: 0o644 })
 

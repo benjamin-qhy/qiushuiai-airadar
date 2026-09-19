@@ -4,10 +4,10 @@ import { chmod, mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import { installedDataRoot, installedServiceRoot } from './paths.js'
+import { productionDataRoot, serviceRoot } from './paths.js'
 
 const executeFile = promisify(execFile)
-const launchdLabel = 'ai.qiushuiai.airadar-installed'
+const launchdLabel = 'ai.qiushuiai.qiushuiai-airadar'
 const winswVersion = '2.12.0'
 const winswUrl = `https://github.com/winsw/winsw/releases/download/v${winswVersion}/WinSW.NET461.exe`
 const winswSha256 =
@@ -58,9 +58,9 @@ export function createLaunchdDefinition(options: DefinitionOptions): string {
     String(options.port),
   ]
   const environment = [
-    ['AIRADAR_DATA_ROOT', options.dataRoot],
+    ['QIUSHUIAI_AIRADAR_DATA_ROOT', options.dataRoot],
     ...(options.secretFile
-      ? ([['AIRADAR_SECRET_FILE', options.secretFile]] as const)
+      ? ([['QIUSHUIAI_AIRADAR_SECRET_FILE', options.secretFile]] as const)
       : []),
     ...Object.entries(options.runtimeEnvironment ?? {}),
   ]
@@ -97,14 +97,16 @@ export function createWindowsServiceDefinition(
     `--port ${options.port}`,
   ].join(' ')
   const environment = {
-    AIRADAR_DATA_ROOT: options.dataRoot,
-    ...(options.secretFile ? { AIRADAR_SECRET_FILE: options.secretFile } : {}),
+    QIUSHUIAI_AIRADAR_DATA_ROOT: options.dataRoot,
+    ...(options.secretFile
+      ? { QIUSHUIAI_AIRADAR_SECRET_FILE: options.secretFile }
+      : {}),
     ...options.runtimeEnvironment,
   }
   return `<service>
-  <id>QiushuiAIAIRadar</id>
-  <name>QiushuiAI AI Radar</name>
-  <description>AI Radar local collection and Web service</description>
+  <id>qiushuiai-airadar</id>
+  <name>qiushuiai-airadar</name>
+  <description>qiushuiai-airadar local collection and Web service</description>
   <executable>${xml(options.nodePath)}</executable>
   <arguments>${argumentsValue}</arguments>
 ${Object.entries(environment)
@@ -205,19 +207,26 @@ export function createSystemServiceManager(
 ): ServiceManager {
   const platform = options.platform ?? process.platform
   const home = options.home ?? homedir()
-  const serviceRoot = installedServiceRoot(home)
-  const dataRoot = process.env.AIRADAR_DATA_ROOT ?? installedDataRoot(home)
-  const logRoot = path.join(serviceRoot, 'logs')
+  const managedServiceRoot = serviceRoot(home)
+  const dataRoot =
+    process.env.QIUSHUIAI_AIRADAR_DATA_ROOT ?? productionDataRoot(home)
+  const logRoot = path.join(managedServiceRoot, 'logs')
   const secretFile =
-    process.env.AIRADAR_SECRET_FILE ?? path.join(dataRoot, '.env')
+    process.env.QIUSHUIAI_AIRADAR_SECRET_FILE ?? path.join(dataRoot, '.env')
   const runtimeEnvironment = Object.fromEntries(
     [
       [
         'CODEX_AUTH_PATH',
         process.env.CODEX_AUTH_PATH ?? path.join(home, '.codex', 'auth.json'),
       ],
-      ['AIRADAR_WEB_ORIGINS', process.env.AIRADAR_WEB_ORIGINS],
-      ['AIRADAR_TRANSCRIBER_URL', process.env.AIRADAR_TRANSCRIBER_URL],
+      [
+        'QIUSHUIAI_AIRADAR_WEB_ORIGINS',
+        process.env.QIUSHUIAI_AIRADAR_WEB_ORIGINS,
+      ],
+      [
+        'QIUSHUIAI_AIRADAR_TRANSCRIBER_URL',
+        process.env.QIUSHUIAI_AIRADAR_TRANSCRIBER_URL,
+      ],
     ].filter((entry): entry is [string, string] => Boolean(entry[1]))
   )
 
@@ -273,7 +282,7 @@ export function createSystemServiceManager(
             /* Unloaded service is stopped. */
           }
           return {
-            service: 'airadar',
+            service: 'qiushuiai-airadar',
             status: running ? 'running' : 'stopped',
             platform: 'macOS',
             definition: plistPath,
@@ -285,7 +294,7 @@ export function createSystemServiceManager(
           })
         }
         return {
-          service: 'airadar',
+          service: 'qiushuiai-airadar',
           status: command === 'uninstall' ? 'uninstalled' : command,
           platform: 'macOS',
           definition: plistPath,
@@ -293,8 +302,14 @@ export function createSystemServiceManager(
       }
 
       if (platform === 'win32') {
-        const wrapperPath = path.join(serviceRoot, 'airadar-service.exe')
-        const definitionPath = path.join(serviceRoot, 'airadar-service.xml')
+        const wrapperPath = path.join(
+          managedServiceRoot,
+          'qiushuiai-airadar-service.exe'
+        )
+        const definitionPath = path.join(
+          managedServiceRoot,
+          'qiushuiai-airadar-service.xml'
+        )
         const fetchBinary =
           options.fetchBinary ??
           (async (url: string) => {
@@ -340,7 +355,7 @@ export function createSystemServiceManager(
             // A missing Windows service is reported as not installed.
           }
           return {
-            service: 'airadar',
+            service: 'qiushuiai-airadar',
             status,
             platform: 'Windows',
             definition: definitionPath,
@@ -349,7 +364,7 @@ export function createSystemServiceManager(
           await executeFile(wrapperPath, [command, definitionPath])
         }
         return {
-          service: 'airadar',
+          service: 'qiushuiai-airadar',
           status: command === 'uninstall' ? 'uninstalled' : command,
           platform: 'Windows',
           definition: definitionPath,

@@ -9,14 +9,17 @@ import {
   loadSourceState,
   saveSourceState,
   type SingleTableConfig,
-} from '@airadar/config'
-import { SingleTableRepository, type ContentRow } from '@airadar/runtime'
-import { classifyNonArticlePage } from '@airadar/source-adapters'
+} from '@qiushuiai-airadar/config'
+import {
+  SingleTableRepository,
+  type ContentRow,
+} from '@qiushuiai-airadar/runtime'
+import { classifyNonArticlePage } from '@qiushuiai-airadar/source-adapters'
 import {
   createSingleTableCodexGateway,
   processSingleTableContent,
   type SingleTableModelGateway,
-} from '@airadar/pipeline'
+} from '@qiushuiai-airadar/pipeline'
 import { createSingleTableSourceProvider } from './single-table-provider.js'
 
 const scoreNames = {
@@ -241,7 +244,7 @@ export function createSingleTableServiceApp(options: {
           const method = request.method ?? 'GET'
           if (method === 'GET' && url.pathname === '/health')
             return send(response, 200, {
-              service: 'airadar-single-table',
+              service: 'qiushuiai-airadar-single-table',
               status: 'ready',
             })
           const logMatch = /^\/api\/contents\/([^/]+)\/logs$/u.exec(
@@ -574,8 +577,9 @@ export function createSingleTableServiceApp(options: {
                   id,
                   row.original_language === 'zh' ? 'zh' : 'en'
                 )
-                let original: import('@airadar/runtime').OriginalContent
-                let capturedCalls: import('@airadar/runtime').LogEvent[] = []
+                let original: import('@qiushuiai-airadar/runtime').OriginalContent
+                let capturedCalls: import('@qiushuiai-airadar/runtime').LogEvent[] =
+                  []
                 if (originalBody) {
                   original = {
                     platform: String(row.source_platform),
@@ -590,7 +594,7 @@ export function createSingleTableServiceApp(options: {
                     body: originalBody,
                     kind: row.content_kind,
                     format:
-                      row.original_format as import('@airadar/runtime').OriginalContent['format'],
+                      row.original_format as import('@qiushuiai-airadar/runtime').OriginalContent['format'],
                     language: row.original_language === 'zh' ? 'zh' : 'en',
                     publishedAt: row.published_at as string | undefined,
                   }

@@ -13,7 +13,7 @@ import type {
   OriginalContent,
   ScoreDimension,
   ScoringRules,
-} from '@airadar/runtime'
+} from '@qiushuiai-airadar/runtime'
 import { createReadOnlyCodexCredentialStore } from './index.js'
 
 const promptNames = {

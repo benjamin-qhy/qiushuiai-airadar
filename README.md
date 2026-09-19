@@ -1,6 +1,6 @@
-# AI Radar
+# qiushuiai-airadar
 
-AI Radar 的 TypeScript 工程。Web 界面以 `satnaing/shadcn-admin` v2.2.1（MIT）为基座。
+qiushuiai-airadar 的 TypeScript 工程。Web 界面以 `satnaing/shadcn-admin` v2.2.1（MIT）为基座。
 
 开发、打包、安装和更新请看：[本地开发、发布、安装与更新](./本地开发、发布、安装与更新.md)。说明包含 2026-09-19 本机验收范围。
 
@@ -14,7 +14,7 @@ pnpm dev:service # 开发接口 43111；另开终端启动网页
 pnpm dev         # 开发网页 5173
 ```
 
-开发数据默认位于 `~/.qiushuiai-airadar/dev-data`。安装版独立使用 `43120` 和 `~/.qiushuiai-airadar/installed-data`。本机已有开发服务时，请按说明文档使用备用开发端口，不要重复启动或共用安装数据。
+开发数据默认位于 `~/.qiushuiai-airadar/development-data`。正式使用的数据位于 `~/.qiushuiai-airadar/production-data`，安装版独立使用端口 `43120`。两套数据不能混用。
 
 ```bash
 pnpm check         # 检查、测试、构建、独立安装升级验收
@@ -22,7 +22,7 @@ pnpm release:local # 生成 release/ 下的安装包和校验文件
 pnpm release:remote # 将已提交并推送的版本发布到 GitHub Releases
 ```
 
-安装包启动当前单表服务：`airadar.sqlite` 保存内容目录、状态和分析字段；Markdown 保存正文和执行日志；YAML 保存配置。密钥保存在数据目录的 `.env`，不随程序发布。手动采集使用 `airadar collect`，远程升级使用 `airadar upgrade`，当前服务尚未启用定时采集。
+安装包启动当前单表服务：`qiushuiai-airadar.sqlite` 保存内容目录、状态和分析字段；Markdown 保存正文和执行日志；YAML 保存配置。密钥保存在数据目录的 `.env`，不随程序发布。手动采集使用 `qiushuiai-airadar collect`，远程升级使用 `qiushuiai-airadar upgrade`，当前服务尚未启用定时采集。
 
 ## 工程目录
 

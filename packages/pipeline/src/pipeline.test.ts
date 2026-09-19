@@ -10,7 +10,7 @@ import {
 } from '@earendil-works/pi-ai'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { RuntimeRepository } from '@airadar/runtime'
+import { RuntimeRepository } from '@qiushuiai-airadar/runtime'
 
 import {
   calculateRecommendation,
@@ -34,7 +34,7 @@ import {
 const roots: string[] = []
 
 async function repository(): Promise<RuntimeRepository> {
-  const root = await mkdtemp(path.join(tmpdir(), 'airadar-pipeline-'))
+  const root = await mkdtemp(path.join(tmpdir(), 'qiushuiai-airadar-pipeline-'))
   roots.push(root)
   return RuntimeRepository.open(root)
 }
@@ -1589,11 +1589,19 @@ describe('RSS discovery and enrichment', () => {
   })
 
   it('keeps every inline article image in reading order', async () => {
-    const paragraph = 'A complete article paragraph with enough useful words to pass readability extraction. '.repeat(5)
-    const result = await enrichArticle('https://example.com/story', async () =>
-      new Response(`<html><head><title>Story</title></head><body><article><h1>Story</h1><p>${paragraph}</p><img src="/first.jpg"><p>${paragraph}</p><img src="https://cdn.example.com/second.png"></article></body></html>`, {
-        headers: { 'content-type': 'text/html' },
-      })
+    const paragraph =
+      'A complete article paragraph with enough useful words to pass readability extraction. '.repeat(
+        5
+      )
+    const result = await enrichArticle(
+      'https://example.com/story',
+      async () =>
+        new Response(
+          `<html><head><title>Story</title></head><body><article><h1>Story</h1><p>${paragraph}</p><img src="/first.jpg"><p>${paragraph}</p><img src="https://cdn.example.com/second.png"></article></body></html>`,
+          {
+            headers: { 'content-type': 'text/html' },
+          }
+        )
     )
     expect(result.images).toEqual([
       { order: 0, url: 'https://example.com/first.jpg' },
@@ -1610,7 +1618,7 @@ describe('RSS discovery and enrichment', () => {
 
 describe('analysis and end-to-end orchestration', () => {
   it('adapts Codex OAuth in memory without rewriting its auth file', async () => {
-    const root = await mkdtemp(path.join(tmpdir(), 'airadar-auth-'))
+    const root = await mkdtemp(path.join(tmpdir(), 'qiushuiai-airadar-auth-'))
     roots.push(root)
     const authPath = path.join(root, 'auth.json')
     const payload = Buffer.from(

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { compareVersions } from './remote-upgrade.js'
+import { compareVersions, upgradeFromGitHub } from './remote-upgrade.js'
 
 describe('remote release versions', () => {
   it('compares stable semantic versions', () => {
@@ -12,5 +12,35 @@ describe('remote release versions', () => {
     expect(() => compareVersions('latest', '0.3.0')).toThrow(
       'Unsupported release version'
     )
+  })
+
+  it('reads the static latest-release manifest without changing an up-to-date installation', async () => {
+    let requested = ''
+    let stopped = false
+    const result = await upgradeFromGitHub({
+      currentVersion: '0.4.0',
+      fetcher: (async (url: string | URL | Request) => {
+        requested = String(url)
+        return new Response(
+          JSON.stringify({
+            version: '0.4.0',
+            package: 'qiushuiai-airadar-cli-0.4.0.tgz',
+            checksum: 'qiushuiai-airadar-cli-0.4.0.tgz.sha256',
+          })
+        )
+      }) as typeof fetch,
+      serviceManager: {
+        async execute() {
+          stopped = true
+          return {}
+        },
+      },
+      stdout: { write() {} },
+    })
+    expect(requested).toBe(
+      'https://github.com/benjamin-qhy/qiushuiai-airadar/releases/latest/download/qiushuiai-airadar-release.json'
+    )
+    expect(result.changed).toBe(false)
+    expect(stopped).toBe(false)
   })
 })

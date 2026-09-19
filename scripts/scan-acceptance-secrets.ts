@@ -1,13 +1,13 @@
 import { readFile, readdir } from 'node:fs/promises'
 import path from 'node:path'
 
-const dataRoot = process.env.AIRADAR_ACCEPT_ROOT
-const secretFile = process.env.AIRADAR_SECRET_FILE
-const baseUrl = process.env.AIRADAR_ACCEPTANCE_URL
-const logRoot = process.env.AIRADAR_LOG_ROOT
+const dataRoot = process.env.QIUSHUIAI_AIRADAR_ACCEPT_ROOT
+const secretFile = process.env.QIUSHUIAI_AIRADAR_SECRET_FILE
+const baseUrl = process.env.QIUSHUIAI_AIRADAR_ACCEPTANCE_URL
+const logRoot = process.env.QIUSHUIAI_AIRADAR_LOG_ROOT
 if (!dataRoot || !secretFile || !baseUrl || !logRoot) {
   throw new Error(
-    'AIRADAR_ACCEPT_ROOT, AIRADAR_SECRET_FILE, AIRADAR_LOG_ROOT, and AIRADAR_ACCEPTANCE_URL are required'
+    'QIUSHUIAI_AIRADAR_ACCEPT_ROOT, QIUSHUIAI_AIRADAR_SECRET_FILE, QIUSHUIAI_AIRADAR_LOG_ROOT, and QIUSHUIAI_AIRADAR_ACCEPTANCE_URL are required'
   )
 }
 

@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite'
 
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 
-import { canonicalizeContentUrl } from '@airadar/domain'
+import { canonicalizeContentUrl } from '@qiushuiai-airadar/domain'
 
 export type Recommendation = 'core' | 'explore' | 'none'
 export type ScoreDimension =
@@ -348,7 +348,9 @@ export class SingleTableRepository {
 
   static async open(dataRoot: string): Promise<SingleTableRepository> {
     await mkdir(dataRoot, { recursive: true })
-    const database = new DatabaseSync(path.join(dataRoot, 'airadar.sqlite'))
+    const database = new DatabaseSync(
+      path.join(dataRoot, 'qiushuiai-airadar.sqlite')
+    )
     try {
       const tables = database
         .prepare(

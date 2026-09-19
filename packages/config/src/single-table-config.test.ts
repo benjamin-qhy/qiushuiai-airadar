@@ -99,7 +99,7 @@ it('accepts a source-specific collection limit and rejects invalid limits', () =
 })
 
 it('initializes editable YAML under the new data root without overwriting edits', async () => {
-  const root = await mkdtemp(path.join(tmpdir(), 'airadar-config-'))
+  const root = await mkdtemp(path.join(tmpdir(), 'qiushuiai-airadar-config-'))
   roots.push(root)
   const templates = path.resolve(import.meta.dirname, '../../../config')
   const configRoot = await initializeSingleTableConfig(templates, root)

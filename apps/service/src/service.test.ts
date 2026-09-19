@@ -3,7 +3,7 @@ import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { RuntimeRepository } from '@airadar/runtime'
+import { RuntimeRepository } from '@qiushuiai-airadar/runtime'
 import { createServiceApp, type ServiceApp } from './index.js'
 
 describe('background service shell', () => {
@@ -11,7 +11,7 @@ describe('background service shell', () => {
   let dataRoot: string
 
   beforeEach(async () => {
-    dataRoot = await mkdtemp(path.join(tmpdir(), 'airadar-service-'))
+    dataRoot = await mkdtemp(path.join(tmpdir(), 'qiushuiai-airadar-service-'))
   })
 
   afterEach(async () => {
@@ -147,7 +147,7 @@ describe('background service shell', () => {
       'http://localhost:5173'
     )
     expect(await response.json()).toEqual({
-      service: 'airadar',
+      service: 'qiushuiai-airadar',
       status: 'ready',
     })
   })
@@ -167,9 +167,12 @@ describe('background service shell', () => {
     await mkdir(path.join(webRoot, 'assets'), { recursive: true })
     await writeFile(
       path.join(webRoot, 'index.html'),
-      '<!doctype html><title>AI Radar installed</title>'
+      '<!doctype html><title>qiushuiai-airadar installed</title>'
     )
-    await writeFile(path.join(webRoot, 'assets', 'app.js'), 'window.airadar=1')
+    await writeFile(
+      path.join(webRoot, 'assets', 'app.js'),
+      'window.qiushuiai-airadar=1'
+    )
     service = createServiceApp({ dataRoot, webRoot })
     const address = await service.start({ host: '127.0.0.1', port: 0 })
     const origin = `http://${address.host}:${address.port}`
@@ -177,11 +180,11 @@ describe('background service shell', () => {
     const page = await fetch(`${origin}/daily`)
     expect(page.status).toBe(200)
     expect(page.headers.get('content-type')).toContain('text/html')
-    expect(await page.text()).toContain('AI Radar installed')
+    expect(await page.text()).toContain('qiushuiai-airadar installed')
 
     const asset = await fetch(`${origin}/assets/app.js`)
     expect(asset.headers.get('content-type')).toContain('text/javascript')
-    expect(await asset.text()).toBe('window.airadar=1')
+    expect(await asset.text()).toBe('window.qiushuiai-airadar=1')
 
     const api = await fetch(`${origin}/api/missing`)
     expect(api.status).toBe(404)
@@ -210,8 +213,8 @@ describe('background service shell', () => {
   })
 
   it('allows an explicitly trusted LAN or Tailscale Web origin', async () => {
-    process.env.AIRADAR_WEB_ORIGINS =
-      'http://192.168.3.108:5173,https://airadar.example.ts.net'
+    process.env.QIUSHUIAI_AIRADAR_WEB_ORIGINS =
+      'http://192.168.3.108:5173,https://qiushuiai-airadar.example.ts.net'
     try {
       service = createServiceApp({ dataRoot })
       const address = await service.start({ host: '127.0.0.1', port: 0 })
@@ -234,7 +237,7 @@ describe('background service shell', () => {
         'http://192.168.3.108:5173'
       )
     } finally {
-      delete process.env.AIRADAR_WEB_ORIGINS
+      delete process.env.QIUSHUIAI_AIRADAR_WEB_ORIGINS
     }
   })
 
@@ -359,7 +362,9 @@ describe('background service shell', () => {
     expect(
       all.items.find((item) => item.id === 'content-core')?.images
     ).toEqual([{ order: 0, url: 'https://media.example/core.webp' }])
-    expect(all.items.find((item) => item.id === 'content-core')?.quotedPost).toMatchObject({
+    expect(
+      all.items.find((item) => item.id === 'content-core')?.quotedPost
+    ).toMatchObject({
       text: 'Complete quote',
       images: [{ url: 'https://media.example/quote.jpg' }],
     })

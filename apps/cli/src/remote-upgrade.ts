@@ -4,20 +4,16 @@ import { cp, mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import { installedDataRoot, installedProgramRoot } from './paths.js'
+import { productionDataRoot, programRoot } from './paths.js'
 import type { ServiceManager } from './service-manager.js'
 
 const executeFile = promisify(execFile)
-const repository = 'benjamin-qhy/qiushuiai-airadar'
+const releaseBase = 'https://github.com/benjamin-qhy/qiushuiai-airadar/releases'
 
-interface ReleaseAsset {
-  name: string
-  browser_download_url: string
-}
-
-interface GitHubRelease {
-  tag_name: string
-  assets: ReleaseAsset[]
+interface ReleaseManifest {
+  version: string
+  package: string
+  checksum: string
 }
 
 interface UpgradeOptions {
@@ -71,20 +67,15 @@ export async function upgradeFromGitHub(options: UpgradeOptions): Promise<{
 }> {
   const fetcher = options.fetcher ?? fetch
   const response = await fetcher(
-    `https://api.github.com/repos/${repository}/releases/latest`,
-    {
-      headers: {
-        accept: 'application/vnd.github+json',
-        'user-agent': 'qiushuiai-airadar-updater',
-      },
-    }
+    `${releaseBase}/latest/download/qiushuiai-airadar-release.json`,
+    { headers: { 'user-agent': 'qiushuiai-airadar-updater' } }
   )
   if (!response.ok)
     throw new Error(
-      `Unable to read the latest release: HTTP ${response.status}`
+      `Unable to read the latest release manifest: HTTP ${response.status}`
     )
-  const release = (await response.json()) as GitHubRelease
-  const releaseVersion = release.tag_name.replace(/^v/u, '')
+  const release = (await response.json()) as ReleaseManifest
+  const releaseVersion = release.version
   const comparison = compareVersions(releaseVersion, options.currentVersion)
   if (comparison < 0)
     throw new Error(
@@ -97,26 +88,19 @@ export async function upgradeFromGitHub(options: UpgradeOptions): Promise<{
       changed: false,
     }
 
-  const packageName = `airadar-cli-${releaseVersion}.tgz`
+  const packageName = `qiushuiai-airadar-cli-${releaseVersion}.tgz`
   const checksumName = `${packageName}.sha256`
-  const packageAsset = release.assets.find(
-    (asset) => asset.name === packageName
-  )
-  const checksumAsset = release.assets.find(
-    (asset) => asset.name === checksumName
-  )
-  if (!packageAsset || !checksumAsset)
-    throw new Error(
-      `Release ${release.tag_name} is missing its package or checksum`
-    )
+  if (release.package !== packageName || release.checksum !== checksumName)
+    throw new Error('Release manifest names do not match its version')
+  const assetBase = `${releaseBase}/download/v${releaseVersion}`
 
   const temporary = await mkdtemp(
     path.join(tmpdir(), 'qiushuiai-airadar-upgrade-')
   )
   try {
     const [archive, checksumFile] = await Promise.all([
-      download(fetcher, packageAsset.browser_download_url),
-      download(fetcher, checksumAsset.browser_download_url),
+      download(fetcher, `${assetBase}/${packageName}`),
+      download(fetcher, `${assetBase}/${checksumName}`),
     ])
     const expected = new RegExp(
       `^([a-f0-9]{64})\\s+\\*?${packageName.replaceAll('.', '\\.')}$`,
@@ -130,7 +114,7 @@ export async function upgradeFromGitHub(options: UpgradeOptions): Promise<{
     const archivePath = path.join(temporary, packageName)
     await writeFile(archivePath, archive)
 
-    const dataRoot = installedDataRoot(options.home)
+    const dataRoot = productionDataRoot(options.home)
     let backup: string | undefined
     if (await exists(dataRoot)) {
       const timestamp = new Date().toISOString().replaceAll(/[:.]/gu, '-')
@@ -140,7 +124,7 @@ export async function upgradeFromGitHub(options: UpgradeOptions): Promise<{
         `${timestamp}-${options.currentVersion}`
       )
       await mkdir(backup, { recursive: true, mode: 0o700 })
-      await cp(dataRoot, path.join(backup, 'installed-data'), {
+      await cp(dataRoot, path.join(backup, 'production-data'), {
         recursive: true,
       })
     }
@@ -148,22 +132,24 @@ export async function upgradeFromGitHub(options: UpgradeOptions): Promise<{
     await options.serviceManager
       .execute('stop', { host: '127.0.0.1', port: 43120 })
       .catch(() => undefined)
-    const programRoot = installedProgramRoot(options.home)
-    await mkdir(programRoot, { recursive: true })
+    const targetProgramRoot = programRoot(options.home)
+    await mkdir(targetProgramRoot, { recursive: true })
     await executeFile(options.npmExecutable ?? 'npm', [
       'install',
       '-g',
       '--prefix',
-      programRoot,
+      targetProgramRoot,
       '--ignore-scripts',
       '--no-audit',
       '--no-fund',
       archivePath,
     ])
     const installedCli = path.join(
-      programRoot,
+      targetProgramRoot,
       'bin',
-      process.platform === 'win32' ? 'airadar.cmd' : 'airadar'
+      process.platform === 'win32'
+        ? 'qiushuiai-airadar.cmd'
+        : 'qiushuiai-airadar'
     )
     await executeFile(installedCli, ['service', 'install', '--port', '43120'])
     const { stdout } = await executeFile(installedCli, ['--version'])

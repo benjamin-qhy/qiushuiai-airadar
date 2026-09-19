@@ -1,7 +1,7 @@
 {
   "name": "qiushuiai-airadar",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
   "packageManager": "pnpm@10.34.1",
   "engines": {
@@ -16,8 +16,8 @@
     "accept:summary": "tsx scripts/summarize-acceptance.ts",
     "accept:x-youtube": "tsx scripts/accept-x-youtube-e2e.ts",
     "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm smoke:source && pnpm smoke:built && pnpm smoke:deployed",
-    "dev": "pnpm --filter @airadar/web dev",
-    "dev:cli": "pnpm --filter @airadar/cli dev",
+    "dev": "pnpm --filter @qiushuiai-airadar/web dev",
+    "dev:cli": "pnpm --filter @qiushuiai-airadar/cli dev",
     "dev:service": "tsx scripts/serve-single-table.ts",
     "collect:v2": "tsx scripts/run-single-table.ts",
     "serve:v2": "tsx scripts/serve-single-table.ts",

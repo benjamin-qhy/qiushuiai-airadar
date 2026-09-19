@@ -1,13 +1,19 @@
 #!/usr/bin/env node
 import { join } from 'node:path'
-import { asSecretStatusReader, createFileSecretReader } from '@airadar/config'
-import { createSingleTableServiceApp, type ServiceApp } from '@airadar/service'
+import {
+  asSecretStatusReader,
+  createFileSecretReader,
+} from '@qiushuiai-airadar/config'
+import {
+  createSingleTableServiceApp,
+  type ServiceApp,
+} from '@qiushuiai-airadar/service'
 import { runCli } from './index.js'
-import { installedDataRoot } from './paths.js'
+import { productionDataRoot } from './paths.js'
 
 const secretFile =
-  process.env.AIRADAR_SECRET_FILE ??
-  join(process.env.AIRADAR_DATA_ROOT ?? installedDataRoot(), '.env')
+  process.env.QIUSHUIAI_AIRADAR_SECRET_FILE ??
+  join(process.env.QIUSHUIAI_AIRADAR_DATA_ROOT ?? productionDataRoot(), '.env')
 const secretReader = createFileSecretReader(secretFile)
 let activeService: ServiceApp | undefined
 
@@ -19,8 +25,8 @@ try {
       'YOUTUBE_API_KEY',
       'GETBIJI_API_KEY',
       'GETBIJI_CLIENT_ID',
-      'AIRADAR_TRANSCRIBER_URL',
-      'AIRADAR_WEB_ORIGINS',
+      'QIUSHUIAI_AIRADAR_TRANSCRIBER_URL',
+      'QIUSHUIAI_AIRADAR_WEB_ORIGINS',
       'CODEX_AUTH_PATH',
     ]) {
       const value = await secretReader.get(name).catch((error: unknown) => {
@@ -48,6 +54,6 @@ try {
   }
 } catch (error) {
   const message = error instanceof Error ? error.message : 'Unknown error'
-  process.stderr.write(`airadar: ${message}\n`)
+  process.stderr.write(`qiushuiai-airadar: ${message}\n`)
   process.exitCode = 1
 }

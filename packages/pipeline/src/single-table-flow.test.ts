@@ -8,7 +8,7 @@ import {
   SingleTableRepository,
   type OriginalContent,
   type ScoringRules,
-} from '@airadar/runtime'
+} from '@qiushuiai-airadar/runtime'
 
 import {
   createSingleTableCodexGateway,
@@ -54,7 +54,7 @@ async function fixture(
   minimum = 60,
   content = original
 ) {
-  const root = await mkdtemp(path.join(tmpdir(), 'airadar-flow-'))
+  const root = await mkdtemp(path.join(tmpdir(), 'qiushuiai-airadar-flow-'))
   roots.push(root)
   const repository = await SingleTableRepository.open(root)
   repositories.push(repository)
@@ -138,19 +138,17 @@ describe('single-table AI flow', () => {
   it('translates at 10 points and skips English content below 10 points', async () => {
     const classify =
       '---\nkeywords: ["工作流"]\nspam:\n  isJunk: false\n  reason: null\n---'
-    const scoring = (interestFit: number) => JSON.stringify({
-      valueSummary: '提供基础参考。',
-      scores: {
-        interestFit: { level: interestFit, reason: '相关' },
-        concreteGain: { level: 1, reason: '少量收获' },
-        substance: { level: 1, reason: '内容较少' },
-        newInformation: { level: 1, reason: '信息较少' },
-      },
-    })
-    const untranslated = await fixture(
-      { classify, score: scoring(1) },
-      10
-    )
+    const scoring = (interestFit: number) =>
+      JSON.stringify({
+        valueSummary: '提供基础参考。',
+        scores: {
+          interestFit: { level: interestFit, reason: '相关' },
+          concreteGain: { level: 1, reason: '少量收获' },
+          substance: { level: 1, reason: '内容较少' },
+          newInformation: { level: 1, reason: '信息较少' },
+        },
+      })
+    const untranslated = await fixture({ classify, score: scoring(1) }, 10)
     expect(untranslated.result.total_score).toBe(0)
     expect(untranslated.calls.map((call) => call.stage)).toEqual([
       'classify',

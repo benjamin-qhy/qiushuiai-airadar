@@ -4,7 +4,7 @@ status: accepted
 
 # 使用跨平台 CLI 私网部署和 Markdown 主存储
 
-AI Radar 不使用 Docker，不提供应用内登录。正式环境固定使用 Node.js 24.21.0 LTS 安装 CLI，也允许从源代码直接运行；`airadar service` 在 Windows 和 macOS 上分别封装 Windows Service 和 launchd，负责开机启动、异常重启和服务管理。Web 默认只通过 Tailscale 私网访问，不直接暴露到公网。程序与数据目录完全分离，开发环境和正式环境使用不同的数据根目录，Windows 与 macOS 是本期同等的正式支持平台。Linux 不属于本期支持和验收范围，即使代码可能可以运行，也不能据此声称已经支持。
+qiushuiai-airadar 不使用 Docker，不提供应用内登录。正式环境固定使用 Node.js 24.21.0 LTS 安装 CLI，也允许从源代码直接运行；`qiushuiai-airadar service` 在 Windows 和 macOS 上分别封装 Windows Service 和 launchd，负责开机启动、异常重启和服务管理。Web 默认只通过 Tailscale 私网访问，不直接暴露到公网。程序与数据目录完全分离，开发环境和正式环境使用不同的数据根目录，Windows 与 macOS 是本期同等的正式支持平台。Linux 不属于本期支持和验收范围，即使代码可能可以运行，也不能据此声称已经支持。
 
 Markdown 文件及其相邻图片是业务数据的唯一权威来源；SQLite 只是可删除、可重建的辅助库，用于查询索引、队列、调度、锁和缓存。这项决定正式取代此前禁止 SQLite 的约束。后台服务是正式环境唯一的数据写入者：先将 Markdown 完整写入临时文件并原子替换，再更新使用 WAL 模式的 SQLite；启动时以 Markdown 为准核对并修复索引，SQLite 损坏不得影响主数据。正文、字幕、图文图片、封面和采集审计长期保留，完整视频和音频只作临时处理，脱敏供应商原始响应默认保留 30 天且可配置。
 

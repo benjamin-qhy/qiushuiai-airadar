@@ -4,13 +4,15 @@ import path from 'node:path'
 
 import { expect, it } from 'vitest'
 
-import { initializeSingleTableConfig } from '@airadar/config'
-import { SingleTableRepository } from '@airadar/runtime'
+import { initializeSingleTableConfig } from '@qiushuiai-airadar/config'
+import { SingleTableRepository } from '@qiushuiai-airadar/runtime'
 
 import { createSingleTableServiceApp } from './single-table-service.js'
 
 it('reclassifies a previously failed X plugin directory on retry without fetching it', async () => {
-  const root = await mkdtemp(path.join(tmpdir(), 'airadar-directory-retry-'))
+  const root = await mkdtemp(
+    path.join(tmpdir(), 'qiushuiai-airadar-directory-retry-')
+  )
   let service: ReturnType<typeof createSingleTableServiceApp> | undefined
   try {
     const configRoot = await initializeSingleTableConfig(
@@ -62,7 +64,9 @@ it('reclassifies a previously failed X plugin directory on retry without fetchin
 })
 
 it('serves and updates content from the single table, with field-only keyword search', async () => {
-  const root = await mkdtemp(path.join(tmpdir(), 'airadar-single-api-'))
+  const root = await mkdtemp(
+    path.join(tmpdir(), 'qiushuiai-airadar-single-api-')
+  )
   let service: ReturnType<typeof createSingleTableServiceApp> | undefined
   try {
     const configRoot = await initializeSingleTableConfig(
@@ -192,7 +196,9 @@ it('serves and updates content from the single table, with field-only keyword se
 })
 
 it('only reruns a failed row after an explicit manual retry request', async () => {
-  const root = await mkdtemp(path.join(tmpdir(), 'airadar-manual-retry-'))
+  const root = await mkdtemp(
+    path.join(tmpdir(), 'qiushuiai-airadar-manual-retry-')
+  )
   let service: ReturnType<typeof createSingleTableServiceApp> | undefined
   try {
     const configRoot = await initializeSingleTableConfig(

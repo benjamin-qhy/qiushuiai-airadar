@@ -4,7 +4,7 @@ import {
   type ContentKind,
   type Source,
   type SourceType,
-} from '@airadar/domain'
+} from '@qiushuiai-airadar/domain'
 
 /** Confirmed destinations that cannot provide a standalone article body. */
 export function classifyNonArticlePage(value: string): string | undefined {
@@ -671,7 +671,9 @@ function xPostText(tweet: Record<string, unknown>): string | undefined {
   ].sort((left, right) => (right?.length ?? 0) - (left?.length ?? 0))[0]
 }
 
-function xImages(tweet: Record<string, unknown>): Array<{ order: number; url: string }> {
+function xImages(
+  tweet: Record<string, unknown>
+): Array<{ order: number; url: string }> {
   const media = [
     ...array(record(tweet.extendedEntities).media),
     ...array(record(tweet.extended_entities).media),
@@ -681,7 +683,8 @@ function xImages(tweet: Record<string, unknown>): Array<{ order: number; url: st
   const seen = new Set<string>()
   return media.flatMap((entry) => {
     const item = record(entry)
-    const url = text(item.media_url_https) ?? text(item.media_url) ?? text(item.image_url)
+    const url =
+      text(item.media_url_https) ?? text(item.media_url) ?? text(item.image_url)
     if (item.type !== 'photo' || !url || seen.has(url)) return []
     seen.add(url)
     return [{ order: seen.size - 1, url }]
@@ -694,9 +697,15 @@ function xQuotedPost(tweet: Record<string, unknown>): XQuotedPost | undefined {
   if (!id) return undefined
   const author = record(quoted.author)
   return {
-    url: text(quoted.url) ?? text(quoted.twitterUrl) ?? `https://x.com/i/status/${id}`,
+    url:
+      text(quoted.url) ??
+      text(quoted.twitterUrl) ??
+      `https://x.com/i/status/${id}`,
     authorName: text(author.name),
-    authorHandle: text(author.userName) ?? text(author.user_name) ?? text(author.screen_name),
+    authorHandle:
+      text(author.userName) ??
+      text(author.user_name) ??
+      text(author.screen_name),
     text: xPostText(quoted) ?? '',
     images: xImages(quoted),
   }
@@ -775,7 +784,10 @@ function tweetId(tweet: Record<string, unknown>): string | undefined {
   )
 }
 
-export function mapXTweets(values: unknown[], capturedAt: string): DiscoveredItem[] {
+export function mapXTweets(
+  values: unknown[],
+  capturedAt: string
+): DiscoveredItem[] {
   const threads = new Map<string, Record<string, unknown>[]>()
   const results: DiscoveredItem[] = []
   for (const tweet of values.map(record)) {
@@ -788,9 +800,15 @@ export function mapXTweets(values: unknown[], capturedAt: string): DiscoveredIte
         results.push({
           ...mapped,
           repostedBy: {
-            name: text(record(tweet.author).name) ?? text(record(tweet.author).userName) ?? 'X 用户',
+            name:
+              text(record(tweet.author).name) ??
+              text(record(tweet.author).userName) ??
+              'X 用户',
             handle: text(record(tweet.author).userName),
-            url: text(tweet.url) ?? text(tweet.twitterUrl) ?? `https://x.com/i/status/${discoveryId}`,
+            url:
+              text(tweet.url) ??
+              text(tweet.twitterUrl) ??
+              `https://x.com/i/status/${discoveryId}`,
           },
           evidence: {
             carrier: mapped.evidence?.carrier ?? 'x-short',
@@ -890,7 +908,9 @@ export function mapXTweets(values: unknown[], capturedAt: string): DiscoveredIte
       const discoveryId = tweetId(root) ?? conversationId
       results.push({
         ...mapped,
-        images: tweets.flatMap((tweet) => xImages(tweet)).map((image, order) => ({ ...image, order })),
+        images: tweets
+          .flatMap((tweet) => xImages(tweet))
+          .map((image, order) => ({ ...image, order })),
         externalId: discoveryId,
         evidence: {
           carrier: mapped.evidence?.carrier ?? 'x-short',

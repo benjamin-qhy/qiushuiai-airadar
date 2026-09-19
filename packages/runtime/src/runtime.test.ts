@@ -23,7 +23,7 @@ import {
 const roots: string[] = []
 
 async function temporaryRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(tmpdir(), 'airadar-runtime-'))
+  const root = await mkdtemp(path.join(tmpdir(), 'qiushuiai-airadar-runtime-'))
   roots.push(root)
   return root
 }
@@ -708,15 +708,21 @@ describe('enriched content and analysis records', () => {
 
     await repository.commitDiscoveryBatch({
       sourceId: 'rss-source',
-      contents: [{
-        id: 'content-1',
-        title: 'Article',
-        body: 'A rediscovered excerpt',
-        enrichmentStatus: 'succeeded',
-        images: [{ order: 0, url: 'https://example.com/photo.jpg' }],
-        quotedPost: { url: 'https://x.com/i/status/2', text: 'A quoted post', images: [] },
-        mergePlatformMetadata: true,
-      }],
+      contents: [
+        {
+          id: 'content-1',
+          title: 'Article',
+          body: 'A rediscovered excerpt',
+          enrichmentStatus: 'succeeded',
+          images: [{ order: 0, url: 'https://example.com/photo.jpg' }],
+          quotedPost: {
+            url: 'https://x.com/i/status/2',
+            text: 'A quoted post',
+            images: [],
+          },
+          mergePlatformMetadata: true,
+        },
+      ],
       discoveries: [],
     })
     expect(repository.getContent('content-1')).toMatchObject({

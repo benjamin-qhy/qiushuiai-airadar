@@ -2,20 +2,20 @@ import {
   initializeSingleTableConfig,
   loadSingleTableConfig,
   type SecretStatusReader,
-} from '@airadar/config'
+} from '@qiushuiai-airadar/config'
 import path from 'node:path'
 import { readFile } from 'node:fs/promises'
 import {
   createSingleTableServiceApp,
   collectSingleTable,
-} from '@airadar/service'
+} from '@qiushuiai-airadar/service'
 import { fileURLToPath } from 'node:url'
 import {
   createSystemServiceManager,
   type ManagedServiceCommand,
   type ServiceManager,
 } from './service-manager.js'
-import { installedDataRoot } from './paths.js'
+import { productionDataRoot } from './paths.js'
 import { upgradeFromGitHub } from './remote-upgrade.js'
 
 interface Output {
@@ -37,15 +37,15 @@ const version = JSON.parse(
   await readFile(path.join(packageRoot, 'package.json'), 'utf8')
 ).version as string
 
-const help = `AI Radar command line
+const help = `qiushuiai-airadar command line
 
 Usage:
-  airadar status
-  airadar collect
-  airadar upgrade [--force]
-  airadar secrets status <NAME>
-  airadar service run [--host <HOST>] [--port <PORT>]
-  airadar service <install|start|stop|restart|status|uninstall> [--host <HOST>] [--port <PORT>]
+  qiushuiai-airadar status
+  qiushuiai-airadar collect
+  qiushuiai-airadar upgrade [--force]
+  qiushuiai-airadar secrets status <NAME>
+  qiushuiai-airadar service run [--host <HOST>] [--port <PORT>]
+  qiushuiai-airadar service <install|start|stop|restart|status|uninstall> [--host <HOST>] [--port <PORT>]
 `
 
 function writeJson(output: Output, value: unknown): void {
@@ -67,7 +67,7 @@ export async function runCli(
   }
   if (command === 'status') {
     writeJson(dependencies.stdout, {
-      name: 'airadar',
+      name: 'qiushuiai-airadar',
       status: 'ready',
       version,
     })
@@ -84,14 +84,15 @@ export async function runCli(
   }
   if (command === 'collect') {
     const dataRoot = path.resolve(
-      process.env.AIRADAR_DATA_ROOT ?? installedDataRoot()
+      process.env.QIUSHUIAI_AIRADAR_DATA_ROOT ?? productionDataRoot()
     )
     const results = await collectSingleTable({
       dataRoot,
       templateRoot: path.join(packageRoot, 'config'),
       promptsRoot: path.join(packageRoot, 'prompts'),
       secretFile:
-        process.env.AIRADAR_SECRET_FILE ?? path.join(dataRoot, '.env'),
+        process.env.QIUSHUIAI_AIRADAR_SECRET_FILE ??
+        path.join(dataRoot, '.env'),
     })
     writeJson(dependencies.stdout, results)
     return results.some((result) => result.failed) ? 1 : 0
@@ -159,7 +160,7 @@ export async function runCli(
       throw new Error(`Unknown service command: ${subcommand}`)
     }
     const dataRoot = path.resolve(
-      process.env.AIRADAR_DATA_ROOT ?? installedDataRoot()
+      process.env.QIUSHUIAI_AIRADAR_DATA_ROOT ?? productionDataRoot()
     )
     const configRoot = dependencies.prepareConfig
       ? await dependencies.prepareConfig(dataRoot)
@@ -174,12 +175,13 @@ export async function runCli(
       dataRoot,
       configRoot,
       secretFile:
-        process.env.AIRADAR_SECRET_FILE ?? path.join(dataRoot, '.env'),
+        process.env.QIUSHUIAI_AIRADAR_SECRET_FILE ??
+        path.join(dataRoot, '.env'),
       promptsRoot: path.join(packageRoot, 'prompts'),
       webRoot: fileURLToPath(new URL('../web', import.meta.url)),
     }).start({ host, port })
     writeJson(dependencies.stdout, {
-      service: 'airadar',
+      service: 'qiushuiai-airadar',
       status: 'ready',
       ...address,
     })

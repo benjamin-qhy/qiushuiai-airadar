@@ -1421,8 +1421,8 @@ export function Detail({
 }
 
 export function ContentWorkspace({ scope }: { scope: ContentScope }) {
-  const storageKey = `airadar:${scope}:filters`
-  const viewStorageKey = 'airadar:content:view'
+  const storageKey = `qiushuiai-airadar:${scope}:filters`
+  const viewStorageKey = 'qiushuiai-airadar:content:view'
   const title =
     scope === 'daily'
       ? '每日精选'
@@ -1488,7 +1488,7 @@ export function ContentWorkspace({ scope }: { scope: ContentScope }) {
       return typeof localStorage === 'undefined'
         ? undefined
         : ((JSON.parse(
-            localStorage.getItem('airadar:content-layout') ?? 'null'
+            localStorage.getItem('qiushuiai-airadar:content-layout') ?? 'null'
           ) as Record<string, number> | null) ?? undefined)
     } catch {
       return undefined
@@ -2105,7 +2105,10 @@ export function ContentWorkspace({ scope }: { scope: ContentScope }) {
       defaultLayout={defaultLayout}
       onLayoutChanged={(layout, meta) => {
         if (meta.isUserInteraction) {
-          localStorage.setItem('airadar:content-layout', JSON.stringify(layout))
+          localStorage.setItem(
+            'qiushuiai-airadar:content-layout',
+            JSON.stringify(layout)
+          )
         }
       }}
     >

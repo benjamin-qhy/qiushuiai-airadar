@@ -24,8 +24,11 @@ import { z } from 'zod'
 export * from './single-table-flow.js'
 export * from './single-table-collector.js'
 
-import { canonicalizeContentUrl, type Source } from '@airadar/domain'
-import type { AnalysisRecord, RuntimeRepository } from '@airadar/runtime'
+import { canonicalizeContentUrl, type Source } from '@qiushuiai-airadar/domain'
+import type {
+  AnalysisRecord,
+  RuntimeRepository,
+} from '@qiushuiai-airadar/runtime'
 import {
   classifyNonArticlePage,
   decideVideoEnrichment,
@@ -36,7 +39,7 @@ import {
   type DiscoveryRequest,
   type VideoTranscriptProvider,
   type VideoTranscriber,
-} from '@airadar/source-adapters'
+} from '@qiushuiai-airadar/source-adapters'
 
 type Fetcher = typeof globalThis.fetch
 
@@ -1147,7 +1150,12 @@ export class RssAdapter {
 export async function enrichArticle(
   url: string,
   fetcher: Fetcher = globalThis.fetch
-): Promise<{ title: string; body: string; canonicalUrl: string; images: Array<{ order: number; url: string }> }> {
+): Promise<{
+  title: string
+  body: string
+  canonicalUrl: string
+  images: Array<{ order: number; url: string }>
+}> {
   const articleUserAgent =
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'
   const readResponse = async (response: Response): Promise<string> => {
@@ -1294,10 +1302,16 @@ export async function enrichArticle(
     if (!source) continue
     try {
       const resolved = new URL(source, finalUrl)
-      if (!['http:', 'https:'].includes(resolved.protocol) || seenImages.has(resolved.href)) continue
+      if (
+        !['http:', 'https:'].includes(resolved.protocol) ||
+        seenImages.has(resolved.href)
+      )
+        continue
       seenImages.add(resolved.href)
       images.push({ order: images.length, url: resolved.href })
-    } catch { /* Ignore malformed image URLs. */ }
+    } catch {
+      /* Ignore malformed image URLs. */
+    }
   }
   return {
     title:

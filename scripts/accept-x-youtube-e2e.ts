@@ -68,7 +68,7 @@ async function main(): Promise<void> {
     'Acceptance requires Node.js 24'
   )
   const repository = await RuntimeRepository.open(
-    required('AIRADAR_ACCEPT_ROOT')
+    required('QIUSHUIAI_AIRADAR_ACCEPT_ROOT')
   )
   const twitterApiKey = required('TWITTERAPI_IO_KEY')
   const tikHubToken = required('TIKHUB_API_KEY')

@@ -7,14 +7,18 @@ export function applicationRoot(home = homedir()): string {
   return path.join(home, applicationDirectoryName)
 }
 
-export function installedDataRoot(home = homedir()): string {
-  return path.join(applicationRoot(home), 'installed-data')
+export function developmentDataRoot(home = homedir()): string {
+  return path.join(applicationRoot(home), 'development-data')
 }
 
-export function installedProgramRoot(home = homedir()): string {
-  return path.join(applicationRoot(home), 'installed-program')
+export function productionDataRoot(home = homedir()): string {
+  return path.join(applicationRoot(home), 'production-data')
 }
 
-export function installedServiceRoot(home = homedir()): string {
-  return path.join(applicationRoot(home), 'installed-service')
+export function programRoot(home = homedir()): string {
+  return path.join(applicationRoot(home), 'program')
+}
+
+export function serviceRoot(home = homedir()): string {
+  return path.join(applicationRoot(home), 'service')
 }

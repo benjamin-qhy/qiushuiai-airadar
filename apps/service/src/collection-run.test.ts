@@ -131,6 +131,14 @@ it('tracks real collector source completion and failures without stopping remain
       ['completed', 1],
       ['completed', 0],
     ])
+    expect(run?.events.map((event) => event.action)).toEqual([
+      'collection-started',
+      'source-started',
+      'source-completed',
+      'source-started',
+      'source-completed',
+      'collection-completed',
+    ])
     const next = await beginCollectionRun(root)
     await next.release()
   } finally {

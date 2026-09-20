@@ -145,6 +145,16 @@ interface LogEntry {
   response?: string
 }
 
+interface RuntimeLogEntry extends Omit<LogEntry, 'request' | 'response'> {
+  id: string
+  kind: 'collection' | 'content'
+  message: string
+  contentId?: string
+  contentTitle?: string
+  sourceId?: string
+  sourceName?: string
+}
+
 function logEntries(markdown: string): LogEntry[] {
   const sections = markdown.split(/^## /mu).slice(1)
   return sections.flatMap((section, index) => {
@@ -176,6 +186,67 @@ function logEntries(markdown: string): LogEntry[] {
       },
     ]
   })
+}
+
+const actionMessages: Record<string, string> = {
+  'save-original': '已保存原始内容',
+  discover: '已获取信源内容',
+  enrich: '已补充内容详情',
+  classify: '已完成内容判断',
+  score: '已完成内容分析和评分',
+  translate: '已完成英文内容翻译',
+  'write-content': '已写入内容文件',
+  'manual-retry': '已开始人工重试',
+  'manual-junk': '已更新人工垃圾标记',
+  'rule-junk': '已按规则排除内容',
+}
+
+function contentLogMessage(entry: LogEntry): string {
+  const base = actionMessages[entry.action] ?? `执行 ${entry.action}`
+  if (entry.status === 'failed') return `${base.replace(/^已/u, '')}失败`
+  return base
+}
+
+async function runtimeLogs(
+  repository: SingleTableRepository,
+  collection: Awaited<ReturnType<typeof readCollectionRun>>
+): Promise<RuntimeLogEntry[]> {
+  const documents = repository.runtimeLogDocuments()
+  const contentEntries = await Promise.all(
+    documents.map(async (document) => {
+      const markdown = await repository.readLog(document.contentId)
+      if (!markdown) return []
+      return logEntries(markdown).map(
+        ({ request: _request, response: _response, ...entry }) => ({
+          ...entry,
+          id: `content:${document.contentId}:${entry.index}`,
+          kind: 'content' as const,
+          message: contentLogMessage(entry),
+          contentId: document.contentId,
+          contentTitle: document.title,
+          sourceId: document.sourceId,
+          sourceName: document.sourceName,
+        })
+      )
+    })
+  )
+  const collectionEntries: RuntimeLogEntry[] = (collection?.events ?? []).map(
+    (event, index) => ({
+      id: `collection:${collection?.id ?? 'unknown'}:${event.id ?? index}`,
+      index,
+      timestamp: event.timestamp,
+      action: event.action,
+      status: event.status,
+      stage: event.action,
+      kind: 'collection',
+      message: event.message,
+      sourceId: event.sourceId,
+      sourceName: event.sourceName,
+    })
+  )
+  return [...collectionEntries, ...contentEntries.flat()].sort(
+    (left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp)
+  )
 }
 
 async function feedItem(
@@ -395,6 +466,47 @@ export function createSingleTableServiceApp(options: {
               service: 'qiushuiai-airadar-single-table',
               status: 'ready',
             })
+          if (method === 'GET' && url.pathname === '/api/runtime/logs') {
+            const collection = await readCollectionRun(options.dataRoot)
+            const status = url.searchParams.get('status')
+            const source = url.searchParams.get('source')
+            const stage = url.searchParams.get('stage')
+            const keyword = url.searchParams
+              .get('keyword')
+              ?.trim()
+              .toLocaleLowerCase()
+            const limit = Math.min(
+              Math.max(Number(url.searchParams.get('limit') ?? 100) || 100, 1),
+              500
+            )
+            const offset = Math.max(
+              Number(url.searchParams.get('offset') ?? 0) || 0,
+              0
+            )
+            const all = (
+              await runtimeLogs(activeRepository, collection)
+            ).filter(
+              (entry) =>
+                (!status || entry.status === status) &&
+                (!source || entry.sourceId === source) &&
+                (!stage || entry.stage === stage) &&
+                (!keyword ||
+                  [
+                    entry.message,
+                    entry.contentTitle,
+                    entry.sourceName,
+                    entry.error,
+                  ].some((value) =>
+                    value?.toLocaleLowerCase().includes(keyword)
+                  ))
+            )
+            return send(response, 200, {
+              items: all.slice(offset, offset + limit),
+              total: all.length,
+              running: collection?.status === 'running',
+              updatedAt: collection?.updatedAt,
+            })
+          }
           const logMatch = /^\/api\/contents\/([^/]+)\/logs$/u.exec(
             url.pathname
           )

@@ -14,7 +14,7 @@ import {
 } from '@qiushuiai-airadar/pipeline'
 import { SingleTableRepository } from '@qiushuiai-airadar/runtime'
 import { createSingleTableSourceProvider } from './single-table-provider.js'
-import { beginCollectionRun } from './collection-run.js'
+import { addCollectionRunEvent, beginCollectionRun } from './collection-run.js'
 
 export async function collectSingleTable(options: {
   dataRoot: string
@@ -33,12 +33,22 @@ export async function collectSingleTable(options: {
     const results = await executeCollection(options, tracker)
     tracker.run.status = 'completed'
     tracker.run.endedAt = new Date().toISOString()
+    addCollectionRunEvent(tracker.run, {
+      action: 'collection-completed',
+      status: 'succeeded',
+      message: '本轮采集已完成',
+    })
     await tracker.save()
     return results
   } catch (error) {
     tracker.run.status = 'failed'
     tracker.run.endedAt = new Date().toISOString()
     tracker.run.message = '采集任务异常退出，请检查信源和模型配置后重新执行。'
+    addCollectionRunEvent(tracker.run, {
+      action: 'collection-failed',
+      status: 'failed',
+      message: tracker.run.message,
+    })
     await tracker.save()
     throw error
   } finally {
@@ -129,9 +139,28 @@ async function executeCollection(
         const entry = tracker.run.sources.find(
           (row) => row.sourceId === source.id
         )!
+        const wasPending = entry.status === 'pending'
         Object.assign(entry, result, {
           status: finished ? 'completed' : 'running',
         })
+        if (wasPending)
+          addCollectionRunEvent(tracker.run, {
+            action: 'source-started',
+            status: 'running',
+            sourceId: source.id,
+            sourceName: source.account_name,
+            message: `开始处理信源「${source.account_name}」`,
+          })
+        if (finished)
+          addCollectionRunEvent(tracker.run, {
+            action: 'source-completed',
+            status: result.failed ? 'failed' : 'succeeded',
+            sourceId: source.id,
+            sourceName: source.account_name,
+            message: result.failed
+              ? `信源「${source.account_name}」处理结束，有 ${result.failed} 条异常`
+              : `信源「${source.account_name}」处理完成`,
+          })
         await tracker.save()
       },
       promptsRoot: options.promptsRoot,

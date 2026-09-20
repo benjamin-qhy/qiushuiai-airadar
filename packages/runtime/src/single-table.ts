@@ -86,6 +86,14 @@ export interface LogEvent {
   error?: string
 }
 
+export interface RuntimeLogDocument {
+  contentId: string
+  title: string
+  sourceId: string
+  sourceName: string
+  logPath: string
+}
+
 // Only this one application table is created. SQLite's internal tables are not
 // used for queues, sources, logs or search projections.
 const schema = `
@@ -1152,5 +1160,15 @@ export class SingleTableRepository {
       waiting: counts.waiting ?? 0,
       recent,
     }
+  }
+
+  runtimeLogDocuments(): RuntimeLogDocument[] {
+    return this.database
+      .prepare(
+        `SELECT id AS contentId, title, source_account_id AS sourceId,
+        source_account_name AS sourceName, execution_log_markdown_path AS logPath
+        FROM contents ORDER BY updated_at DESC`
+      )
+      .all() as unknown as RuntimeLogDocument[]
   }
 }

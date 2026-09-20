@@ -24,6 +24,34 @@ export interface CollectionRun {
     }
   >
   message?: string
+  events: CollectionRunEvent[]
+}
+
+export interface CollectionRunEvent {
+  id: string
+  timestamp: string
+  action:
+    | 'collection-started'
+    | 'source-started'
+    | 'source-completed'
+    | 'collection-completed'
+    | 'collection-failed'
+  status: 'running' | 'succeeded' | 'failed'
+  sourceId?: string
+  sourceName?: string
+  message: string
+}
+
+export function addCollectionRunEvent(
+  run: CollectionRun,
+  event: Omit<CollectionRunEvent, 'id' | 'timestamp'>
+) {
+  run.events ??= []
+  run.events.push({
+    id: randomUUID(),
+    timestamp: new Date().toISOString(),
+    ...event,
+  })
 }
 
 const file = (root: string) => path.join(root, 'collection-run.json')
@@ -73,7 +101,13 @@ export async function beginCollectionRun(root: string) {
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     sources: [],
+    events: [],
   }
+  addCollectionRunEvent(run, {
+    action: 'collection-started',
+    status: 'running',
+    message: '开始执行本轮信源采集',
+  })
   async function save() {
     run.updatedAt = new Date().toISOString()
     const temporary = `${file(root)}.${run.id}.tmp`

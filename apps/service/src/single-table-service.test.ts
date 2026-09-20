@@ -129,6 +129,24 @@ it('serves and updates content from the single table, with field-only keyword se
     expect(logDetail.item.request).toContain('[REDACTED]')
     expect(logDetail.item.request).not.toContain('private-secret')
     expect(logDetail.item.response).toContain('智能体')
+    const runtimeLogs = (await fetch(`${base}/api/runtime/logs`).then(
+      (response) => response.json()
+    )) as {
+      items: Array<{
+        contentId?: string
+        contentTitle?: string
+        message: string
+        request?: string
+      }>
+      total: number
+    }
+    expect(runtimeLogs.total).toBeGreaterThan(0)
+    expect(runtimeLogs.items[0]).toMatchObject({
+      contentId: row.id,
+      contentTitle: 'English post',
+      message: '已完成内容判断',
+    })
+    expect(runtimeLogs.items[0]).not.toHaveProperty('request')
     expect(
       (await fetch(`${base}/api/contents/${row.id}/logs?entry=-1`)).status
     ).toBe(404)

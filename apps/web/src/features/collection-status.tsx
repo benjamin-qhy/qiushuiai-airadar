@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { api, post } from '@/lib/api'
+import { RuntimeLog } from './runtime-log'
 
 interface Run {
   status: 'running' | 'completed' | 'failed' | 'interrupted'
@@ -233,6 +234,7 @@ export function CollectionStatus({ initial }: { initial: CollectionData }) {
           </div>
         </section>
       )}
+      <RuntimeLog />
       <section className='border-t pt-5'>
         <h2 className='font-semibold'>累计内容概况</h2>
         <p className='mt-2 text-sm'>

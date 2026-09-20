@@ -35,7 +35,11 @@ import {
   type SingleTableModelGateway,
 } from '@qiushuiai-airadar/pipeline'
 import { createSingleTableSourceProvider } from './single-table-provider.js'
-import { collectSingleTable } from './collect-single-table.js'
+import {
+  collectSingleTable,
+  createCollectionControl,
+  type CollectionControl,
+} from './collect-single-table.js'
 import { readCollectionRun } from './collection-run.js'
 
 const scoreNames = {
@@ -411,6 +415,7 @@ export function createSingleTableServiceApp(options: {
   const translating = new Set<string>()
   const translationTasks = new Set<Promise<unknown>>()
   let collection: Promise<unknown> | undefined
+  let collectionControl: CollectionControl | undefined
   const secretFile = options.secretFile ?? path.join(options.dataRoot, '.env')
   const credentialFile = path.join(options.dataRoot, 'model-auth.json')
   const credentialStore = createFileModelCredentialStore(credentialFile)
@@ -518,7 +523,9 @@ export function createSingleTableServiceApp(options: {
             return send(response, 200, {
               items: all.slice(offset, offset + limit),
               total: all.length,
-              running: collection?.status === 'running',
+              running:
+                collection?.status === 'running' ||
+                collection?.status === 'paused',
               updatedAt: collection?.updatedAt,
             })
           }
@@ -651,7 +658,9 @@ export function createSingleTableServiceApp(options: {
               })
             if (
               collection ||
-              (await readCollectionRun(options.dataRoot))?.status === 'running'
+              ['running', 'paused'].includes(
+                (await readCollectionRun(options.dataRoot))?.status ?? ''
+              )
             )
               return send(response, 409, { message: '已有采集任务正在执行。' })
             if (!options.promptsRoot)
@@ -664,6 +673,8 @@ export function createSingleTableServiceApp(options: {
               started = resolve
               rejected = reject
             })
+            const control = createCollectionControl()
+            collectionControl = control
             collection = collectSingleTable({
               dataRoot: options.dataRoot,
               templateRoot: options.configRoot,
@@ -673,16 +684,48 @@ export function createSingleTableServiceApp(options: {
               gateway: options.gateway,
               provider: options.collectionProvider,
               onStarted: started,
+              control,
             })
               .catch((error: unknown) => {
                 rejected(error)
               })
               .finally(() => {
                 collection = undefined
+                if (collectionControl === control) collectionControl = undefined
               })
             await ready
             return send(response, 202, {
               message: '采集已启动，关闭页面后仍会继续执行。',
+            })
+          }
+          if (
+            method === 'POST' &&
+            (url.pathname === '/api/collection/pause' ||
+              url.pathname === '/api/collection/resume')
+          ) {
+            const origin = request.headers.origin
+            if (origin && new URL(origin).host !== request.headers.host)
+              return send(response, 403, {
+                message: '只能从本机页面控制采集。',
+              })
+            if (!collection || !collectionControl)
+              return send(response, 409, { message: '当前没有采集任务。' })
+            const pausing = url.pathname.endsWith('/pause')
+            const current = await readCollectionRun(options.dataRoot)
+            if (
+              (pausing && current?.status !== 'running') ||
+              (!pausing && current?.status !== 'paused')
+            )
+              return send(response, 409, {
+                message: pausing ? '当前任务不能暂停。' : '当前任务没有暂停。',
+              })
+            await (pausing
+              ? collectionControl.pause()
+              : collectionControl.resume())
+            return send(response, 200, {
+              message: pausing
+                ? '已暂停；当前正在处理的内容会安全结束。'
+                : '已恢复，将从暂停位置继续采集。',
             })
           }
           if (method === 'GET' && url.pathname === '/api/runtime') {
@@ -1695,6 +1738,7 @@ export function createSingleTableServiceApp(options: {
     },
     async stop() {
       logins.stop()
+      await collectionControl?.resume()
       const current = server
       server = undefined
       if (current)

@@ -1,31 +1,8 @@
 import { useEffect, useState } from 'react'
-import { Button } from '@/components/ui/button'
-import { api, post } from '@/lib/api'
-import { RuntimeLog } from './runtime-log'
+import { api } from '@/lib/api'
+import { CollectionControls, type CollectionData } from './collection-controls'
 
-interface Run {
-  status: 'running' | 'completed' | 'failed' | 'interrupted'
-  startedAt: string
-  updatedAt: string
-  endedAt?: string
-  message?: string
-  sources: Array<{
-    sourceId: string
-    name: string
-    status: string
-    discovered: number
-    completed: number
-    failed: number
-    skipped: number
-  }>
-}
-export interface CollectionData {
-  collection?: Run | null
-  schedule?: { expression: string; active: boolean }
-  total?: number
-  failed?: number
-  waiting?: number
-}
+export type { CollectionData } from './collection-controls'
 const time = (value?: string) =>
   value
     ? new Date(value).toLocaleString('zh-CN', {
@@ -35,6 +12,7 @@ const time = (value?: string) =>
     : '—'
 const labels = {
   running: '正在采集',
+  paused: '采集已暂停',
   completed: '本轮已结束',
   failed: '本轮执行失败',
   interrupted: '本轮采集中断',
@@ -42,9 +20,7 @@ const labels = {
 
 export function CollectionStatus({ initial }: { initial: CollectionData }) {
   const [data, setData] = useState(initial)
-  const [starting, setStarting] = useState(false)
   const [error, setError] = useState('')
-  const [notice, setNotice] = useState('')
   useEffect(() => {
     let disposed = false
     let busy = false
@@ -77,23 +53,6 @@ export function CollectionStatus({ initial }: { initial: CollectionData }) {
     run?.sources.filter((source) => source.status === 'completed').length ?? 0
   const total = run?.sources.length ?? 0
   const current = run?.sources.find((source) => source.status === 'running')
-  async function start() {
-    setStarting(true)
-    setError('')
-    setNotice('')
-    try {
-      const result = await post<{ message: string }>(
-        '/api/collection/start',
-        {}
-      )
-      setNotice(result.message)
-      setData(await api<CollectionData>('/api/runtime'))
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '启动失败，请重试。')
-    } finally {
-      setStarting(false)
-    }
-  }
   const totals = run?.sources.reduce(
     (sum, source) => ({
       discovered: sum.discovered + source.discovered,
@@ -113,15 +72,13 @@ export function CollectionStatus({ initial }: { initial: CollectionData }) {
             </h2>
             <p className='mt-2 text-sm text-muted-foreground'>
               {current
-                ? `${running ? '当前信源' : '最后处理信源'}：${current.name}`
+                ? `${running ? '当前信源' : run?.status === 'paused' ? '暂停在信源' : '最后处理信源'}：${current.name}`
                 : run
                   ? '本轮信源处理情况见下方列表'
                   : '手工执行后，将记录本轮进度；历史任务无法还原。'}
             </p>
           </div>
-          <Button disabled={running || starting} onClick={() => void start()}>
-            {starting ? '正在启动…' : running ? '采集中…' : '手工执行'}
-          </Button>
+          <CollectionControls data={data} onChanged={setData} />
         </div>
         <p className='text-sm text-muted-foreground'>
           执行所有已启用信源；已有内容不会重复分析。关闭页面后继续运行，电脑和服务需要保持运行。
@@ -131,7 +88,6 @@ export function CollectionStatus({ initial }: { initial: CollectionData }) {
             {error}
           </p>
         )}
-        {notice && <p className='text-sm'>{notice}</p>}
         {run?.message && <p className='text-sm'>{run.message}</p>}
         {run && (
           <>
@@ -173,7 +129,7 @@ export function CollectionStatus({ initial }: { initial: CollectionData }) {
       <section className='border-t pt-5'>
         <h2 className='font-semibold'>自动执行</h2>
         <p className='mt-2 text-sm'>
-          当前服务尚未启用定时调度，请使用“手工执行”。
+          当前服务尚未启用定时调度，请使用“手工采集”。
         </p>
         <p className='mt-1 text-sm text-muted-foreground'>
           已保存计划：
@@ -234,7 +190,6 @@ export function CollectionStatus({ initial }: { initial: CollectionData }) {
           </div>
         </section>
       )}
-      <RuntimeLog />
       <section className='border-t pt-5'>
         <h2 className='font-semibold'>累计内容概况</h2>
         <p className='mt-2 text-sm'>

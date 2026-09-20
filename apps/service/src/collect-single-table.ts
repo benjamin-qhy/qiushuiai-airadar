@@ -16,6 +16,42 @@ import { SingleTableRepository } from '@qiushuiai-airadar/runtime'
 import { createSingleTableSourceProvider } from './single-table-provider.js'
 import { addCollectionRunEvent, beginCollectionRun } from './collection-run.js'
 
+export interface CollectionControl {
+  bind(onPausedChange: (paused: boolean) => Promise<void>): void
+  pause(): Promise<void>
+  resume(): Promise<void>
+  waitUntilRunnable(): Promise<void>
+}
+
+export function createCollectionControl(): CollectionControl {
+  let paused = false
+  let onPausedChange: ((paused: boolean) => Promise<void>) | undefined
+  let resumeWaiter: (() => void) | undefined
+  return {
+    bind(callback) {
+      onPausedChange = callback
+    },
+    async pause() {
+      if (paused) return
+      paused = true
+      await onPausedChange?.(true)
+    },
+    async resume() {
+      if (!paused) return
+      paused = false
+      await onPausedChange?.(false)
+      resumeWaiter?.()
+      resumeWaiter = undefined
+    },
+    async waitUntilRunnable() {
+      if (!paused) return
+      await new Promise<void>((resolve) => {
+        resumeWaiter = resolve
+      })
+    },
+  }
+}
+
 export async function collectSingleTable(options: {
   dataRoot: string
   templateRoot: string
@@ -25,9 +61,22 @@ export async function collectSingleTable(options: {
   gateway?: import('@qiushuiai-airadar/pipeline').SingleTableModelGateway
   provider?: import('@qiushuiai-airadar/pipeline').SingleTableSourceProvider
   onStarted?: () => void
+  control?: CollectionControl
 }) {
   const tracker = await beginCollectionRun(options.dataRoot)
   try {
+    options.control?.bind(async (paused) => {
+      tracker.run.status = paused ? 'paused' : 'running'
+      tracker.run.message = paused
+        ? '采集已暂停，恢复后将从当前位置继续。'
+        : '采集已恢复，正在从暂停位置继续。'
+      addCollectionRunEvent(tracker.run, {
+        action: paused ? 'collection-paused' : 'collection-resumed',
+        status: paused ? 'paused' : 'running',
+        message: tracker.run.message,
+      })
+      await tracker.save()
+    })
     await tracker.save()
     options.onStarted?.()
     const results = await executeCollection(options, tracker)
@@ -135,6 +184,9 @@ async function executeCollection(
       provider,
       gateway,
       sources,
+      waitUntilRunnable: options.control
+        ? () => options.control!.waitUntilRunnable()
+        : undefined,
       async onProgress(source, result, finished) {
         const entry = tracker.run.sources.find(
           (row) => row.sourceId === source.id

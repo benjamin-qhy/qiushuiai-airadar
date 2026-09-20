@@ -4,6 +4,7 @@ import { ConfigPage } from '@/features/config-page'
 import { ContentWorkspace } from '@/features/content-workspace'
 import { ModelManagementPage } from '@/features/model-management-page'
 import { RuntimePage } from '@/features/runtime-page'
+import { RuntimeLogPage } from '@/features/runtime-log-page'
 import { SourcesPage } from '@/features/sources-page'
 import type { PageKey } from '@/types'
 
@@ -30,6 +31,8 @@ export function App() {
         <ModelManagementPage />
       ) : page === 'runtime' ? (
         <RuntimePage />
+      ) : page === 'runtime-log' ? (
+        <RuntimeLogPage />
       ) : (
         <ConfigPage />
       )}

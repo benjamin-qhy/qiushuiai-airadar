@@ -6,6 +6,7 @@ import {
   Database,
   ListFilter,
   Radar,
+  ScrollText,
   Settings2,
   Sparkles,
   Trash2,
@@ -53,6 +54,7 @@ const navigationGroups: Array<{
     label: '系统',
     items: [
       { id: 'runtime', label: '运行状态', icon: Database },
+      { id: 'runtime-log', label: '运行日志', icon: ScrollText },
       { id: 'config', label: '系统配置', icon: Settings2 },
     ],
   },

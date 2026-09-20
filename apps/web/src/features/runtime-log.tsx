@@ -5,6 +5,7 @@ import {
   CircleDot,
   Info,
   LoaderCircle,
+  PauseCircle,
   SkipForward,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -55,6 +56,7 @@ interface RuntimeLogsData {
 
 const statusLabels: Record<string, string> = {
   running: '执行中',
+  paused: '已暂停',
   succeeded: '成功',
   failed: '失败',
   skipped: '跳过',
@@ -69,6 +71,8 @@ const stageLabels: Record<string, string> = {
   completed: '处理完成',
   failed: '处理失败',
   'collection-started': '开始采集',
+  'collection-paused': '暂停采集',
+  'collection-resumed': '恢复采集',
   'source-started': '开始处理信源',
   'source-completed': '信源处理结束',
   'collection-completed': '采集完成',
@@ -93,19 +97,23 @@ function Status({ status }: { status: string }) {
   const Icon =
     status === 'running'
       ? LoaderCircle
-      : status === 'failed'
-        ? AlertCircle
-        : status === 'skipped'
-          ? SkipForward
-          : CheckCircle2
+      : status === 'paused'
+        ? PauseCircle
+        : status === 'failed'
+          ? AlertCircle
+          : status === 'skipped'
+            ? SkipForward
+            : CheckCircle2
   return (
     <span
       className={
         status === 'failed'
           ? 'flex items-center gap-1.5 text-destructive'
-          : status === 'running'
-            ? 'flex items-center gap-1.5 text-blue-500'
-            : 'flex items-center gap-1.5'
+          : status === 'paused'
+            ? 'flex items-center gap-1.5 text-muted-foreground'
+            : status === 'running'
+              ? 'flex items-center gap-1.5 text-blue-500'
+              : 'flex items-center gap-1.5'
       }
     >
       <Icon
@@ -251,7 +259,7 @@ export function RuntimeLog() {
     [data.items]
   )
   return (
-    <section className='border-t pt-5' aria-live='polite'>
+    <section aria-live='polite'>
       <div className='flex flex-wrap items-start justify-between gap-3'>
         <div>
           <h2 className='font-semibold'>运行日志</h2>
@@ -280,6 +288,7 @@ export function RuntimeLog() {
           <SelectContent>
             <SelectItem value='all'>全部状态</SelectItem>
             <SelectItem value='running'>执行中</SelectItem>
+            <SelectItem value='paused'>已暂停</SelectItem>
             <SelectItem value='succeeded'>成功</SelectItem>
             <SelectItem value='failed'>失败</SelectItem>
           </SelectContent>

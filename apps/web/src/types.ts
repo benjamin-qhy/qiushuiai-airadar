@@ -7,6 +7,7 @@ export type PageKey =
   | 'sources'
   | 'models'
   | 'runtime'
+  | 'runtime-log'
   | 'config'
 export type UtilizationAction =
   'favorite' | 'card' | 'video' | 'article' | 'project'

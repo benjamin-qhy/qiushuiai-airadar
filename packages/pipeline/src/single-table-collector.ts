@@ -89,6 +89,7 @@ export interface CollectSourcesOptions {
     result: SourceRunResult,
     page: SinglePageDiscovery
   ) => Promise<void>
+  waitUntilRunnable?: () => Promise<void>
 }
 
 export interface SourceRunResult {
@@ -105,6 +106,7 @@ export async function collectSourcesSerially(
   const results: SourceRunResult[] = []
   for (const source of options.sources) {
     if (!source.enabled) continue
+    await options.waitUntilRunnable?.()
     const result = {
       sourceId: source.id,
       discovered: 0,
@@ -123,9 +125,11 @@ export async function collectSourcesSerially(
       await options.onProgress?.(source, result, true)
       continue
     }
+    await options.waitUntilRunnable?.()
     result.discovered = page.items.length
     await options.onProgress?.(source, result, false)
     for (const item of page.items) {
+      await options.waitUntilRunnable?.()
       let original: OriginalContent | undefined
       try {
         const nonArticleReason =
@@ -250,6 +254,7 @@ export async function collectSourcesSerially(
           )
       }
     }
+    await options.waitUntilRunnable?.()
     if (options.afterSource) await options.afterSource(source, result, page)
     await options.onProgress?.(source, result, true)
   }

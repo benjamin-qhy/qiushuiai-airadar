@@ -13,7 +13,7 @@ import type { SourceRunResult } from '@qiushuiai-airadar/pipeline'
 export interface CollectionRun {
   id: string
   pid: number
-  status: 'running' | 'completed' | 'failed' | 'interrupted'
+  status: 'running' | 'paused' | 'completed' | 'failed' | 'interrupted'
   startedAt: string
   updatedAt: string
   endedAt?: string
@@ -32,11 +32,13 @@ export interface CollectionRunEvent {
   timestamp: string
   action:
     | 'collection-started'
+    | 'collection-paused'
+    | 'collection-resumed'
     | 'source-started'
     | 'source-completed'
     | 'collection-completed'
     | 'collection-failed'
-  status: 'running' | 'succeeded' | 'failed'
+  status: 'running' | 'paused' | 'succeeded' | 'failed'
   sourceId?: string
   sourceName?: string
   message: string
@@ -68,7 +70,10 @@ export async function readCollectionRun(
 ): Promise<CollectionRun | null> {
   try {
     const run = JSON.parse(await readFile(file(root), 'utf8')) as CollectionRun
-    if (run.status === 'running' && !alive(run.pid)) {
+    if (
+      (run.status === 'running' || run.status === 'paused') &&
+      !alive(run.pid)
+    ) {
       run.status = 'interrupted'
       run.message =
         '采集进程已退出，本轮未完成。可以重新执行；已有内容不会重复分析。'

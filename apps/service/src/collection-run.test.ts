@@ -72,6 +72,78 @@ it('starts asynchronously via HTTP, prevents duplicate starts and reports final 
   }
 })
 
+it('pauses at a safe checkpoint and resumes the same collection', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'airadar-pause-resume-'))
+  let releaseFirst!: () => void
+  const firstGate = new Promise<void>((resolve) => {
+    releaseFirst = resolve
+  })
+  const discovered: string[] = []
+  const { initializeSingleTableConfig } =
+    await import('@qiushuiai-airadar/config')
+  const configRoot = await initializeSingleTableConfig(
+    path.resolve(import.meta.dirname, '../../../config'),
+    root
+  )
+  await writeFile(
+    path.join(configRoot, 'sources.yaml'),
+    'sources:\n  - {id: first, platform: x, account_name: First, external_identity: first, language: en, enabled: true}\n  - {id: second, platform: x, account_name: Second, external_identity: second, language: en, enabled: true}\n'
+  )
+  const service = createSingleTableServiceApp({
+    dataRoot: root,
+    configRoot,
+    promptsRoot: 'unused',
+    gateway: {
+      complete: async () => {
+        throw new Error('unexpected model call')
+      },
+    },
+    collectionProvider: {
+      discover: async (source) => {
+        discovered.push(source.id)
+        if (source.id === 'first') await firstGate
+        return { items: [], request: {}, response: {} }
+      },
+      resolve: async () => {
+        throw new Error('unexpected resolve')
+      },
+    },
+  })
+  try {
+    const { port } = await service.start({ host: '127.0.0.1', port: 0 })
+    const url = `http://127.0.0.1:${port}`
+    expect(
+      (await fetch(url + '/api/collection/start', { method: 'POST' })).status
+    ).toBe(202)
+    expect(
+      (await fetch(url + '/api/collection/pause', { method: 'POST' })).status
+    ).toBe(200)
+    expect(
+      (await (await fetch(url + '/api/runtime')).json()).collection.status
+    ).toBe('paused')
+    releaseFirst()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(discovered).not.toContain('second')
+    expect(
+      (await fetch(url + '/api/collection/resume', { method: 'POST' })).status
+    ).toBe(200)
+    for (let attempt = 0; attempt < 50; attempt++) {
+      if ((await readCollectionRun(root))?.status === 'completed') break
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    const run = await readCollectionRun(root)
+    expect(run?.status).toBe('completed')
+    expect(discovered).toEqual(['first', 'second'])
+    expect(run?.events.map((event) => event.action)).toEqual(
+      expect.arrayContaining(['collection-paused', 'collection-resumed'])
+    )
+  } finally {
+    releaseFirst()
+    await service.stop()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 it('persists progress, rejects overlapping runs and detects an exited owner', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'airadar-run-'))
   try {

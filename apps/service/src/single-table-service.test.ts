@@ -9,6 +9,141 @@ import { SingleTableRepository } from '@qiushuiai-airadar/runtime'
 
 import { createSingleTableServiceApp } from './single-table-service.js'
 
+it('starts one manual translation for completed English content and rejects retry', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'airadar-manual-translate-'))
+  let service: ReturnType<typeof createSingleTableServiceApp> | undefined
+  let release!: () => void
+  const wait = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  try {
+    const configRoot = await initializeSingleTableConfig(
+      path.resolve(import.meta.dirname, '../../../config'),
+      root
+    )
+    const repository = await SingleTableRepository.open(root)
+    const row = await repository.saveOriginal({
+      platform: 'youtube',
+      sourceType: 'youtube',
+      sourceAccountId: 'yt_test',
+      sourceAccountName: 'Test',
+      externalContentId: 'long-video',
+      title: 'Long video',
+      originalTitle: 'Long video',
+      body: 'Complete English transcript.',
+      kind: 'video',
+      format: 'subtitle',
+      language: 'en',
+      videoDurationSeconds: 2_000,
+    })
+    await repository.saveClassification(row.id, {
+      keywords: ['视频'],
+      isJunk: false,
+      summary: '视频总结。',
+    })
+    await repository.saveScoring(
+      row.id,
+      '测试价值。',
+      {
+        interest_fit: { level: 1, reason: '测试' },
+        concrete_gain: { level: 1, reason: '测试' },
+        substance: { level: 1, reason: '测试' },
+        new_information: { level: 1, reason: '测试' },
+      },
+      {
+        weights: {
+          interest_fit: 40,
+          concrete_gain: 30,
+          substance: 20,
+          new_information: 10,
+        },
+        coreThreshold: 80,
+        exploreThreshold: 60,
+        coreMinLevels: {},
+        exploreMinLevels: {},
+      }
+    )
+    repository.setTranslationSkipped(row.id, 'video_duration_limit')
+    repository.close()
+    service = createSingleTableServiceApp({
+      dataRoot: root,
+      configRoot,
+      gateway: {
+        getCapacity() {
+          return {
+            contextWindow: 32_000,
+            maxOutputTokens: 16_000,
+            provider: 'mock',
+            model: 'mock',
+          }
+        },
+        async complete() {
+          await wait
+          return {
+            text: JSON.stringify({
+              chineseTitle: '长视频',
+              chineseBody: '完整中文译文。',
+            }),
+            provider: 'mock',
+            model: 'mock',
+            durationMs: 1,
+          }
+        },
+      },
+    })
+    const address = await service.start({ host: '127.0.0.1', port: 0 })
+    const base = `http://${address.host}:${address.port}`
+    const accepted = await fetch(`${base}/api/contents/${row.id}/translate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    })
+    expect(accepted.status).toBe(202)
+    expect(
+      (
+        await fetch(`${base}/api/contents/${row.id}/translate`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: '{}',
+        })
+      ).status
+    ).toBe(409)
+    expect(
+      (
+        await fetch(`${base}/api/contents/${row.id}/retry`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: '{}',
+        })
+      ).status
+    ).toBe(409)
+    release()
+    let item: Record<string, unknown> | undefined
+    for (let attempt = 0; attempt < 50; attempt++) {
+      const listResponse = await fetch(`${base}/api/contents`)
+      if (!listResponse.ok)
+        throw new Error(
+          `Content polling failed: ${listResponse.status} ${await listResponse.text()}`
+        )
+      const payload = (await listResponse.json()) as {
+        items: Array<Record<string, unknown>>
+      }
+      item = payload.items.find((candidate) => candidate.id === row.id)
+      if (item?.translationStatus === 'succeeded') break
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    expect(item).toMatchObject({
+      translatedToChinese: true,
+      translationStatus: 'succeeded',
+      chineseTranslation: '完整中文译文。',
+    })
+  } finally {
+    release()
+    await service?.stop()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 it('reclassifies a previously failed X plugin directory on retry without fetching it', async () => {
   const root = await mkdtemp(
     path.join(tmpdir(), 'qiushuiai-airadar-directory-retry-')

@@ -34,6 +34,17 @@ export interface FeedItem {
   originalLanguage?: 'zh' | 'en' | 'unknown'
   chineseTranslation?: string
   translatedToChinese?: boolean
+  translationStatus?:
+    | 'not_applicable'
+    | 'pending'
+    | 'skipped'
+    | 'running'
+    | 'succeeded'
+    | 'failed'
+  translationSkipReason?: string
+  translationError?: string
+  translationChunkCount?: number
+  translationCompletedChunks?: number
   topics: string[]
   scores: Record<string, unknown>
   totalScore: number | null

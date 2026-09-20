@@ -31,6 +31,7 @@ import {
   listSingleTableModels,
   normalizeSingleTableProviderId,
   processSingleTableContent,
+  translateSingleTableContent,
   type SingleTableModelGateway,
 } from '@qiushuiai-airadar/pipeline'
 import { createSingleTableSourceProvider } from './single-table-provider.js'
@@ -265,7 +266,10 @@ async function feedItem(
         : []
     })
   )
-  const chinese = await repository.readBody(row.id, 'zh')
+  const chinese =
+    row.original_language === 'zh' || row.translated_to_chinese
+      ? await repository.readBody(row.id, 'zh')
+      : undefined
   const english = await repository.readBody(row.id, 'en')
   return {
     id: row.id,
@@ -290,6 +294,11 @@ async function feedItem(
     originalLanguage: row.original_language,
     chineseTranslation: row.original_language === 'en' ? chinese : undefined,
     translatedToChinese: Boolean(row.translated_to_chinese),
+    translationStatus: row.translation_status,
+    translationSkipReason: row.translation_skip_reason ?? undefined,
+    translationError: row.translation_error ?? undefined,
+    translationChunkCount: row.translation_chunk_count,
+    translationCompletedChunks: row.translation_completed_chunks,
     topics: arrayValue(row.keywords_json),
     scores,
     totalScore: row.total_score,
@@ -399,6 +408,8 @@ export function createSingleTableServiceApp(options: {
   let repository: SingleTableRepository | undefined
   let server: Server | undefined
   const retrying = new Set<string>()
+  const translating = new Set<string>()
+  const translationTasks = new Set<Promise<unknown>>()
   let collection: Promise<unknown> | undefined
   const secretFile = options.secretFile ?? path.join(options.dataRoot, '.env')
   const credentialFile = path.join(options.dataRoot, 'model-auth.json')
@@ -1279,6 +1290,103 @@ export function createSingleTableServiceApp(options: {
                 )
               return send(response, 200, { updated: body.ids.length })
             }
+            const translateMatch =
+              /^\/api\/contents\/([^/]+)\/translate$/u.exec(url.pathname)
+            if (translateMatch) {
+              await bodyOf(request)
+              const id = decodeURIComponent(translateMatch[1]!)
+              const row = activeRepository.getById(id)
+              if (!row)
+                return send(response, 404, { error: 'content_not_found' })
+              if (translating.has(id))
+                return send(response, 409, {
+                  error: 'translation_already_running',
+                })
+              if (row.translated_to_chinese)
+                return send(response, 200, {
+                  item: await feedItem(
+                    activeRepository,
+                    row,
+                    (await loadSingleTableConfig(options.configRoot)).sources
+                      .sources
+                  ),
+                })
+              if (
+                row.original_language !== 'en' ||
+                row.is_junk ||
+                row.process_status !== 'completed'
+              )
+                return send(response, 409, {
+                  error: 'content_not_translatable',
+                })
+              const body = await activeRepository.readBody(id, 'en')
+              if (!body)
+                return send(response, 409, { error: 'english_body_missing' })
+              const config = await loadSingleTableConfig(options.configRoot)
+              const gateway =
+                options.gateway ??
+                createSingleTableModelGateway(
+                  credentialStore,
+                  config.analysis.model.provider,
+                  config.analysis.model
+                )
+              const original: import('@qiushuiai-airadar/runtime').OriginalContent =
+                {
+                  platform: String(row.source_platform),
+                  sourceType: String(row.source_type),
+                  sourceAccountId: String(row.source_account_id),
+                  sourceAccountName: String(row.source_account_name),
+                  externalContentId: row.external_content_id as
+                    string | undefined,
+                  canonicalUrl: row.canonical_url as string | undefined,
+                  title: row.title,
+                  originalTitle: row.original_title ?? undefined,
+                  body,
+                  kind: row.content_kind,
+                  format:
+                    row.original_format as import('@qiushuiai-airadar/runtime').OriginalContent['format'],
+                  language: 'en',
+                  videoDurationSeconds:
+                    typeof row.video_duration_seconds === 'number'
+                      ? row.video_duration_seconds
+                      : undefined,
+                  publishedAt: row.published_at as string | undefined,
+                }
+              translating.add(id)
+              const translationTask = translateSingleTableContent({
+                repository: activeRepository,
+                gateway,
+                promptsRoot:
+                  options.promptsRoot ??
+                  path.resolve(
+                    import.meta.dirname,
+                    '../../../docs/prompts/single-table-content'
+                  ),
+                original,
+                row,
+                manual: true,
+                profile: config.profile,
+                profileVersion: String(config.profile.version),
+                scoring: {
+                  weights: config.analysis.scoring.weights,
+                  coreThreshold: config.analysis.scoring.core_threshold,
+                  exploreThreshold: config.analysis.scoring.explore_threshold,
+                  coreMinLevels: config.analysis.scoring.core_min_levels,
+                  exploreMinLevels: config.analysis.scoring.explore_min_levels,
+                },
+                longContentMinChars:
+                  config.analysis.summarization.long_content_min_chars,
+                translationMinimumTotalScore:
+                  config.analysis.translation.minimum_total_score,
+              })
+                .catch(() => undefined)
+                .finally(() => {
+                  translating.delete(id)
+                  translationTasks.delete(translationTask)
+                })
+              translationTasks.add(translationTask)
+              return send(response, 202, { taskId: id })
+            }
             const retryMatch = /^\/api\/contents\/([^/]+)\/retry$/u.exec(
               url.pathname
             )
@@ -1372,6 +1480,10 @@ export function createSingleTableServiceApp(options: {
                     format:
                       row.original_format as import('@qiushuiai-airadar/runtime').OriginalContent['format'],
                     language: row.original_language === 'zh' ? 'zh' : 'en',
+                    videoDurationSeconds:
+                      typeof row.video_duration_seconds === 'number'
+                        ? row.video_duration_seconds
+                        : undefined,
                     publishedAt: row.published_at as string | undefined,
                   }
                 } else {
@@ -1442,6 +1554,14 @@ export function createSingleTableServiceApp(options: {
                     config.analysis.summarization.long_content_min_chars,
                   translationMinimumTotalScore:
                     config.analysis.translation.minimum_total_score,
+                  automaticTranslationLimits: {
+                    maximumVideoDurationSeconds:
+                      config.analysis.translation
+                        .automatic_video_max_duration_seconds,
+                    maximumSourceCharacters:
+                      config.analysis.translation
+                        .automatic_max_source_characters,
+                  },
                 })
                 return send(response, 200, {
                   item: await feedItem(
@@ -1580,6 +1700,7 @@ export function createSingleTableServiceApp(options: {
       if (current)
         await new Promise<void>((resolve) => current.close(() => resolve()))
       await collection
+      await Promise.allSettled([...translationTasks])
       repository?.close()
       repository = undefined
     },

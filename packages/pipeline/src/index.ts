@@ -23,6 +23,7 @@ import { z } from 'zod'
 
 export * from './single-table-flow.js'
 export * from './single-table-collector.js'
+export * from './document-translation.js'
 export * from './model-credential-store.js'
 export * from './provider-login.js'
 
@@ -1464,7 +1465,7 @@ export function createPiModelGateway(
       tools: [analysisTool],
     },
     options: {
-      reasoning: 'low' as const,
+      reasoning: 'off' as const,
       maxTokens: input.translateToChinese
         ? Math.min(
             32_000,
@@ -1481,11 +1482,25 @@ export function createPiModelGateway(
     async analyze(input) {
       const started = Date.now()
       const request = requestFor(input)
-      const message = await models.completeSimple(
-        model,
-        request.context,
-        request.options
-      )
+      const executionOptions = {
+        maxTokens: request.options.maxTokens,
+        maxRetries: request.options.maxRetries,
+      }
+      const message =
+        model.api === 'openai-codex-responses'
+          ? await models.complete(
+              model as Model<'openai-codex-responses'>,
+              request.context,
+              {
+                ...executionOptions,
+                reasoningEffort: 'none',
+              }
+            )
+          : await models.completeSimple(
+              model,
+              request.context,
+              executionOptions
+            )
       const evidence: ModelEvidence = {
         provider: message.provider,
         model: message.model,

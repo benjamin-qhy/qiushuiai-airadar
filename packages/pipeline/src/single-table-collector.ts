@@ -30,6 +30,7 @@ export interface DiscoveredContent {
   body?: string
   kind: OriginalContent['kind']
   format?: OriginalContent['format']
+  videoDurationSeconds?: number
   interaction?: ContentInteraction
   opaque?: unknown
 }
@@ -69,6 +70,10 @@ export interface CollectSourcesOptions {
   scoring: ScoringRules
   longContentMinChars: number
   translationMinimumTotalScore: number
+  automaticTranslationLimits?: {
+    maximumVideoDurationSeconds: number
+    maximumSourceCharacters: number
+  }
   onProgress?: (
     source: ConfiguredSource,
     result: SourceRunResult,
@@ -185,6 +190,7 @@ export async function collectSourcesSerially(
           scoring: options.scoring,
           longContentMinChars: options.longContentMinChars,
           translationMinimumTotalScore: options.translationMinimumTotalScore,
+          automaticTranslationLimits: options.automaticTranslationLimits,
           capturedCalls: [
             {
               action: 'discover',

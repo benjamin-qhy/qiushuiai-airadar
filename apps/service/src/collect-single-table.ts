@@ -176,6 +176,12 @@ async function executeCollection(
       longContentMinChars: config.analysis.summarization.long_content_min_chars,
       translationMinimumTotalScore:
         config.analysis.translation.minimum_total_score,
+      automaticTranslationLimits: {
+        maximumVideoDurationSeconds:
+          config.analysis.translation.automatic_video_max_duration_seconds,
+        maximumSourceCharacters:
+          config.analysis.translation.automatic_max_source_characters,
+      },
       onError(source, item) {
         process.stderr.write(
           `Source ${source.id}, item ${item?.externalId ?? 'list'} failed; see content log if created.\n`

@@ -4,6 +4,7 @@ import type {
   AuthEvent,
   AuthPrompt,
   CredentialStore,
+  Model,
   Models,
 } from '@earendil-works/pi-ai'
 
@@ -158,15 +159,31 @@ export function createProviderLoginManager(
       const model = models.getModel(providerId, modelId)
       if (!model || !(await models.checkAuth(providerId)))
         throw new Error('请先登录并选择可用模型。')
-      const response = await models.completeSimple(
-        model,
-        {
-          messages: [
-            { role: 'user', content: 'Reply with OK.', timestamp: Date.now() },
-          ],
-        },
-        { maxTokens: 256, maxRetries: 0, signal: AbortSignal.timeout(45_000) }
-      )
+      const context = {
+        messages: [
+          {
+            role: 'user' as const,
+            content: 'Reply with OK.',
+            timestamp: Date.now(),
+          },
+        ],
+      }
+      const options = {
+        maxTokens: 256,
+        maxRetries: 0,
+        signal: AbortSignal.timeout(45_000),
+      }
+      const response =
+        model.api === 'openai-codex-responses'
+          ? await models.complete(
+              model as Model<'openai-codex-responses'>,
+              context,
+              {
+                ...options,
+                reasoningEffort: 'none',
+              }
+            )
+          : await models.completeSimple(model, context, options)
       if (
         response.stopReason === 'error' ||
         response.stopReason === 'aborted' ||

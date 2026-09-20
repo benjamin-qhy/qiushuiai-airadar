@@ -3,7 +3,11 @@ import path from 'node:path'
 
 import { parse as parseYaml } from 'yaml'
 import { z } from 'zod'
-import { createModels, type CredentialStore } from '@earendil-works/pi-ai'
+import {
+  createModels,
+  type CredentialStore,
+  type Model,
+} from '@earendil-works/pi-ai'
 import {
   builtinModels,
   getBuiltinModels,
@@ -20,6 +24,12 @@ import type {
   ScoringRules,
 } from '@qiushuiai-airadar/runtime'
 import { createReadOnlyCodexCredentialStore } from './index.js'
+import {
+  automaticTranslationSkipReason,
+  translateDocument,
+  type AutomaticTranslationLimits,
+  type ModelCapacity,
+} from './document-translation.js'
 
 const promptNames = {
   classify: '01-中文总结与内容判定.md',
@@ -63,7 +73,9 @@ export interface SingleTableModelGateway {
     system: string
     user: string
     stage: keyof typeof promptNames
+    maxTokens?: number
   }): Promise<SingleTableModelResponse>
+  getCapacity?(stage: keyof typeof promptNames): ModelCapacity
 }
 
 export interface SingleTableModelRouting {
@@ -191,6 +203,16 @@ function createGateway(
   routes: SingleTableModelRouting
 ): SingleTableModelGateway {
   return {
+    getCapacity(stage) {
+      const route = resolveSingleTableModelRoute(providerId, routes, stage)
+      const model = models.getModel(route.provider, route.model)!
+      return {
+        contextWindow: model.contextWindow,
+        maxOutputTokens: model.maxTokens,
+        provider: model.provider,
+        model: model.id,
+      }
+    },
     async complete(input) {
       const route = resolveSingleTableModelRoute(
         providerId,
@@ -198,6 +220,13 @@ function createGateway(
         input.stage
       )
       const model = models.getModel(route.provider, route.model)!
+      const maxTokens =
+        input.maxTokens ??
+        (input.stage === 'translate'
+          ? 32_000
+          : input.stage === 'classify'
+            ? 8_000
+            : 4_000)
       const request = {
         context: {
           systemPrompt: input.system,
@@ -206,22 +235,28 @@ function createGateway(
           ],
         },
         options: {
-          reasoning: 'low' as const,
-          maxTokens:
-            input.stage === 'translate'
-              ? 32_000
-              : input.stage === 'classify'
-                ? 8_000
-                : 4_000,
+          reasoning: 'off' as const,
+          maxTokens,
           maxRetries: 0,
         },
       }
       const started = Date.now()
-      const message = await models.completeSimple(
-        model,
-        request.context,
-        request.options
-      )
+      const executionOptions = { maxTokens, maxRetries: 0 }
+      const message =
+        model.api === 'openai-codex-responses'
+          ? await models.complete(
+              model as Model<'openai-codex-responses'>,
+              request.context,
+              {
+                ...executionOptions,
+                reasoningEffort: 'none',
+              }
+            )
+          : await models.completeSimple(
+              model,
+              request.context,
+              executionOptions
+            )
       const response = {
         provider: message.provider,
         model: message.model,
@@ -309,6 +344,7 @@ export interface ContentFlowOptions {
   scoring: ScoringRules
   longContentMinChars: number
   translationMinimumTotalScore: number
+  automaticTranslationLimits?: AutomaticTranslationLimits
   capturedCalls?: LogEvent[]
 }
 
@@ -378,7 +414,8 @@ async function call<T>(
   row: ContentRow,
   stage: keyof typeof promptNames,
   variables: Record<string, string>,
-  validate: (text: string) => T
+  validate: (text: string) => T,
+  maxTokens?: number
 ): Promise<{ value: T; metadata: SingleTableModelResponse }> {
   const name = promptNames[stage]
   const prompt = await readFile(path.join(options.promptsRoot, name), 'utf8')
@@ -392,7 +429,12 @@ async function call<T>(
   const started = Date.now()
   let received: SingleTableModelResponse | undefined
   try {
-    received = await options.gateway.complete({ stage, system, user })
+    received = await options.gateway.complete({
+      stage,
+      system,
+      user,
+      maxTokens,
+    })
     const parsed = validate(received.text)
     await options.repository.appendLog(row.id, {
       action: stage,
@@ -411,7 +453,8 @@ async function call<T>(
     })
     return { value: parsed, metadata: received }
   } catch (error) {
-    options.repository.fail(row.id, stage, error)
+    if (stage === 'translate') options.repository.failTranslation(row.id, error)
+    else options.repository.fail(row.id, stage, error)
     await options.repository.appendLog(row.id, {
       action: stage,
       stage,
@@ -513,28 +556,116 @@ export async function processSingleTableContent(
       durationMs: analysisCall.metadata.durationMs,
     }
   )
+  if (original.language !== 'en') return scored
   if (
-    original.language !== 'en' ||
     scored.total_score === null ||
     scored.total_score < options.translationMinimumTotalScore
   )
-    return scored
-
-  const translationCall = await call(
-    options,
-    row,
-    'translate',
-    variables,
-    (text) => translationSchema.parse(JSON.parse(text))
-  )
-  return options.repository.saveTranslation(
-    row.id,
-    translationCall.value.chineseBody,
-    translationCall.value.chineseTitle,
-    options.translationMinimumTotalScore,
+    return options.repository.setTranslationSkipped(
+      row.id,
+      'below_score_threshold'
+    )
+  const skipReason = automaticTranslationSkipReason(
     {
-      provider: translationCall.metadata.provider,
-      model: translationCall.metadata.model,
+      contentId: row.id,
+      title: original.originalTitle,
+      body: original.body,
+      format: original.format,
+      kind: original.kind,
+      videoDurationSeconds: original.videoDurationSeconds,
+    },
+    options.automaticTranslationLimits ?? {
+      maximumVideoDurationSeconds: 1_800,
+      maximumSourceCharacters: 27_000,
     }
   )
+  if (skipReason)
+    return options.repository.setTranslationSkipped(row.id, skipReason)
+  return translateSingleTableContent({
+    ...options,
+    row: scored,
+    manual: false,
+  })
+}
+
+export async function translateSingleTableContent(
+  options: ContentFlowOptions & { row: ContentRow; manual: boolean }
+): Promise<ContentRow> {
+  const { original, row } = options
+  if (
+    original.language !== 'en' ||
+    row.is_junk ||
+    !original.body.trim() ||
+    row.translated_to_chinese
+  )
+    throw new Error('Content does not qualify for translation')
+  const capacity = options.gateway.getCapacity?.('translate') ?? {
+    contextWindow: 32_000,
+    maxOutputTokens: 16_000,
+    provider: 'unknown',
+    model: 'unknown',
+  }
+  let metadata: SingleTableModelResponse | undefined
+  try {
+    const translated = await translateDocument({
+      document: {
+        contentId: row.id,
+        title: original.originalTitle,
+        body: original.body,
+        format: original.format,
+        kind: original.kind,
+        videoDurationSeconds: original.videoDurationSeconds,
+      },
+      capacity,
+      checkpointRoot: path.join(
+        options.repository.dataRoot,
+        'translation-work'
+      ),
+      promptVersion: '5',
+      onPlan(total) {
+        options.repository.beginTranslation(row.id, total)
+      },
+      onProgress(completed, total) {
+        options.repository.updateTranslationProgress(row.id, completed, total)
+      },
+      async translateChunk(body, index, count, previousTranslationTail) {
+        const translationCall = await call(
+          options,
+          row,
+          'translate',
+          {
+            original_title_or_none:
+              index === 0 ? (original.originalTitle ?? '无') : '无',
+            content_kind: original.kind,
+            source_format: original.format,
+            english_body: body,
+            translation_chunk_position: `${index + 1}/${count}`,
+            previous_translation_tail: previousTranslationTail || '无',
+          },
+          (text) => translationSchema.parse(JSON.parse(text)),
+          Math.min(
+            capacity.maxOutputTokens,
+            Math.max(2_000, Buffer.byteLength(body, 'utf8') + 1_000)
+          )
+        )
+        metadata = translationCall.metadata
+        return translationCall.value
+      },
+    })
+    return options.repository.saveTranslation(
+      row.id,
+      translated.chineseBody,
+      translated.chineseTitle,
+      options.translationMinimumTotalScore,
+      {
+        provider: metadata?.provider ?? capacity.provider,
+        model: metadata?.model ?? capacity.model,
+        manual: options.manual,
+        chunkCount: translated.chunkCount,
+      }
+    )
+  } catch (error) {
+    options.repository.failTranslation(row.id, error)
+    throw error
+  }
 }

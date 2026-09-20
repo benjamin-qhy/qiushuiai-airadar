@@ -69,6 +69,16 @@ export const analysisConfigSchema = z.object({
   }),
   translation: z.object({
     minimum_total_score: z.number().int().min(0).max(100),
+    automatic_video_max_duration_seconds: z
+      .number()
+      .int()
+      .positive()
+      .default(1_800),
+    automatic_max_source_characters: z
+      .number()
+      .int()
+      .positive()
+      .default(27_000),
   }),
   summarization: z.object({
     long_content_min_chars: z.number().int().positive(),

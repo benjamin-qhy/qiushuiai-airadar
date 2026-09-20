@@ -218,6 +218,44 @@ describe('single-table AI flow', () => {
     ])
   })
 
+  it('skips automatic video translation when duration or equivalent characters reach half an hour', async () => {
+    const outputs = {
+      classify:
+        '---\nkeywords: ["视频"]\nspam:\n  isJunk: false\n  reason: null\n---\n\n视频总结。',
+      score,
+    }
+    const duration = await fixture(outputs, 10, {
+      ...original,
+      externalContentId: 'duration-limit',
+      body: 'English transcript.',
+      kind: 'video',
+      format: 'subtitle',
+      videoDurationSeconds: 1_800,
+    })
+    expect(duration.calls.map((call) => call.stage)).toEqual([
+      'classify',
+      'score',
+    ])
+    expect(duration.result.translation_status).toBe('skipped')
+    expect(duration.result.translation_skip_reason).toBe('video_duration_limit')
+
+    const characters = await fixture(outputs, 10, {
+      ...original,
+      externalContentId: 'character-limit',
+      body: 'a'.repeat(27_000),
+      kind: 'video',
+      format: 'subtitle',
+      videoDurationSeconds: 1_799,
+    })
+    expect(characters.calls.map((call) => call.stage)).toEqual([
+      'classify',
+      'score',
+    ])
+    expect(characters.result.translation_skip_reason).toBe(
+      'source_character_limit'
+    )
+  })
+
   it('keeps Chinese original and makes only classification plus scoring calls', async () => {
     const { result, calls } = await fixture(
       {

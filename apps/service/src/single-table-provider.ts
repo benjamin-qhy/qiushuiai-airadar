@@ -193,6 +193,7 @@ export function createSingleTableSourceProvider(
           interaction: item.interaction,
           kind: item.content.kind,
           format: item.content.kind === 'article' ? 'plain_text' : 'plain_text',
+          videoDurationSeconds: item.video?.durationSeconds,
         }
       })
       return {
@@ -284,6 +285,7 @@ export function createSingleTableSourceProvider(
           kind: item.kind,
           format,
           language: source.language,
+          videoDurationSeconds: item.videoDurationSeconds,
           publishedAt: item.publishedAt,
         },
         calls: toLogEvents(calls, 'enrich'),

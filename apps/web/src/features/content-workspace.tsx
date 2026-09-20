@@ -23,6 +23,7 @@ import {
   Heart,
   Image as ImageIcon,
   LayoutGrid,
+  Languages,
   MessageCircle,
   PlayCircle,
   RotateCcw,
@@ -733,6 +734,18 @@ export function Detail({
     )
     setOperationMessage(`恢复任务已进入队列：${result.taskId.slice(0, 8)}`)
   }
+  async function translate() {
+    const result = await post<{ taskId: string }>(
+      `/api/contents/${encodeURIComponent(item.id)}/translate`,
+      {}
+    )
+    onChanged({
+      ...item,
+      translationStatus: 'running',
+      translationCompletedChunks: 0,
+    })
+    setOperationMessage(`翻译任务已开始：${result.taskId.slice(0, 8)}`)
+  }
   const showHeaderMetadata =
     item.junk.isJunk ||
     item.originalStatus === 'deleted' ||
@@ -750,6 +763,23 @@ export function Detail({
     item.interaction?.shares,
     item.interaction?.saves,
   ].some((value) => typeof value === 'number' && value > 0)
+  const canTranslate =
+    item.processStatus === 'completed' &&
+    item.originalLanguage === 'en' &&
+    item.hasEnglishBody !== false &&
+    !item.translatedToChinese &&
+    !item.junk.isJunk
+  const translationRunning = item.translationStatus === 'running'
+  const translationSkipMessage =
+    item.translationSkipReason === 'video_duration_limit'
+      ? '视频达到 30 分钟，已跳过自动翻译。'
+      : item.translationSkipReason === 'source_character_limit'
+        ? '内容字数达到半小时等价值，已跳过自动翻译。'
+        : item.translationSkipReason === 'video_duration_unknown'
+          ? '视频时长未知，已跳过自动翻译。'
+          : item.translationSkipReason === 'below_score_threshold'
+            ? '内容评分未达到自动翻译条件。'
+            : undefined
   return (
     <Sidebar
       side='right'
@@ -822,31 +852,34 @@ export function Detail({
                   <Trash2 />
                 </Button>
               )}
-              {(item.processStatus !== 'completed' ||
-                (item.originalLanguage === 'en' &&
-                  !item.translatedToChinese &&
-                  !item.junk.isJunk) ||
-                item.originalStatus === 'deleted' ||
-                item.originalStatus === 'private') && (
+              {canTranslate && (
                 <Button
                   variant='ghost'
                   size='icon'
                   className='size-8'
-                  aria-label={
-                    item.originalLanguage === 'en' && !item.translatedToChinese
-                      ? '生成中文意译'
-                      : '单条恢复'
-                  }
-                  title={
-                    item.originalLanguage === 'en' && !item.translatedToChinese
-                      ? '生成中文意译'
-                      : '单条恢复'
-                  }
-                  onClick={() => void retry()}
+                  aria-label='生成中文意译'
+                  title='生成中文意译'
+                  disabled={translationRunning}
+                  onClick={() => void translate()}
                 >
-                  <RotateCcw />
+                  <Languages />
                 </Button>
               )}
+              {(item.processStatus !== 'completed' ||
+                item.originalStatus === 'deleted' ||
+                item.originalStatus === 'private') &&
+                !canTranslate && (
+                  <Button
+                    variant='ghost'
+                    size='icon'
+                    className='size-8'
+                    aria-label='单条恢复'
+                    title='单条恢复'
+                    onClick={() => void retry()}
+                  >
+                    <RotateCcw />
+                  </Button>
+                )}
               {item.url && (
                 <Button asChild variant='ghost' size='icon' className='size-8'>
                   <a
@@ -1014,11 +1047,33 @@ export function Detail({
                   </ReactMarkdown>
                 </div>
               ) : (
-                <p className='text-sm text-muted-foreground'>
-                  {item.originalLanguage === 'en'
-                    ? '未生成中文意译；中文 AI 总结可在“AI 总结”中查看。'
-                    : '暂无中文正文'}
-                </p>
+                <div className='space-y-3'>
+                  <p className='text-sm text-muted-foreground'>
+                    {item.originalLanguage === 'en'
+                      ? (translationSkipMessage ??
+                        '未生成中文意译；中文 AI 总结可在“AI 总结”中查看。')
+                      : '暂无中文正文'}
+                  </p>
+                  {canTranslate && (
+                    <Button
+                      variant='outline'
+                      disabled={translationRunning}
+                      onClick={() => void translate()}
+                    >
+                      <Languages />
+                      {translationRunning
+                        ? `正在翻译 ${item.translationCompletedChunks ?? 0}/${item.translationChunkCount ?? '?'}`
+                        : item.translationStatus === 'failed'
+                          ? '重新生成中文意译'
+                          : '生成中文意译'}
+                    </Button>
+                  )}
+                  {item.translationError && (
+                    <p className='text-xs text-destructive'>
+                      {item.translationError}
+                    </p>
+                  )}
+                </div>
               )}
               {item.repostedBy && (
                 <p className='text-sm text-muted-foreground'>

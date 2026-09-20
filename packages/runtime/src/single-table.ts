@@ -38,6 +38,7 @@ export interface OriginalContent {
   kind: 'short_post' | 'video' | 'image_post' | 'article'
   format: 'plain_text' | 'markdown_article' | 'subtitle'
   language: 'zh' | 'en'
+  videoDurationSeconds?: number
   publishedAt?: string
   discoveredAt?: string
 }
@@ -70,6 +71,17 @@ export interface ContentRow {
   chinese_markdown_path: string | null
   english_markdown_path: string | null
   execution_log_markdown_path: string
+  translation_status:
+    | 'not_applicable'
+    | 'pending'
+    | 'skipped'
+    | 'running'
+    | 'succeeded'
+    | 'failed'
+  translation_skip_reason: string | null
+  translation_error: string | null
+  translation_chunk_count: number
+  translation_completed_chunks: number
 }
 
 export interface LogEvent {
@@ -115,6 +127,11 @@ CREATE TABLE IF NOT EXISTS contents (
   original_format TEXT NOT NULL DEFAULT 'plain_text' CHECK (original_format IN ('plain_text', 'markdown_article', 'subtitle')),
   original_language TEXT NOT NULL CHECK (original_language IN ('zh', 'en', 'unknown')),
   translated_to_chinese INTEGER NOT NULL DEFAULT 0 CHECK (translated_to_chinese IN (0, 1)),
+  translation_status TEXT NOT NULL DEFAULT 'not_applicable' CHECK (translation_status IN ('not_applicable', 'pending', 'skipped', 'running', 'succeeded', 'failed')),
+  translation_skip_reason TEXT,
+  translation_error TEXT,
+  translation_chunk_count INTEGER NOT NULL DEFAULT 0,
+  translation_completed_chunks INTEGER NOT NULL DEFAULT 0,
   original_status TEXT NOT NULL DEFAULT 'available' CHECK (original_status IN ('available', 'deleted', 'private', 'unavailable')),
   published_at TEXT,
   discovered_at TEXT NOT NULL,
@@ -373,6 +390,29 @@ export class SingleTableRepository {
         'PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA busy_timeout = 5000;'
       )
       database.exec(schema)
+      const columns = new Set(
+        (
+          database.prepare('PRAGMA table_info(contents)').all() as Array<{
+            name: string
+          }>
+        ).map((column) => column.name)
+      )
+      const migrations: Array<[string, string]> = [
+        ['translation_status', "TEXT NOT NULL DEFAULT 'not_applicable'"],
+        ['translation_skip_reason', 'TEXT'],
+        ['translation_error', 'TEXT'],
+        ['translation_chunk_count', 'INTEGER NOT NULL DEFAULT 0'],
+        ['translation_completed_chunks', 'INTEGER NOT NULL DEFAULT 0'],
+      ]
+      for (const [name, definition] of migrations)
+        if (!columns.has(name))
+          database.exec(`ALTER TABLE contents ADD COLUMN ${name} ${definition}`)
+      database.exec(
+        `UPDATE contents SET translation_status = CASE
+          WHEN translated_to_chinese = 1 THEN 'succeeded'
+          WHEN original_language = 'en' AND translation_status = 'not_applicable' THEN 'pending'
+          ELSE translation_status END`
+      )
       return new SingleTableRepository(database, dataRoot)
     } catch (error) {
       database.close()
@@ -469,8 +509,9 @@ export class SingleTableRepository {
         source_account_id, source_account_name, external_content_id, canonical_url,
         title, original_title, content_kind, original_format, original_language,
         published_at, discovered_at, first_inflow_at, chinese_markdown_path,
-        english_markdown_path, execution_log_markdown_path, summary, created_at, updated_at
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+        english_markdown_path, execution_log_markdown_path, summary,
+        video_duration_seconds, translation_status, created_at, updated_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
         )
         .run(
           randomUUID(),
@@ -497,6 +538,8 @@ export class SingleTableRepository {
           englishPath,
           logPath,
           input.kind === 'short_post' ? input.body : null,
+          input.videoDurationSeconds ?? null,
+          input.language === 'en' ? 'pending' : 'not_applicable',
           now,
           now
         )
@@ -505,6 +548,7 @@ export class SingleTableRepository {
         .prepare(
           `UPDATE contents SET discovered_at=?, updated_at=?,
         source_account_name=?, published_at=COALESCE(?, published_at),
+        video_duration_seconds=COALESCE(?, video_duration_seconds),
         chinese_markdown_path=COALESCE(chinese_markdown_path, ?),
         english_markdown_path=COALESCE(english_markdown_path, ?),
         process_status='processing', processing_stage='discovered', last_error=NULL WHERE id=?`
@@ -514,6 +558,7 @@ export class SingleTableRepository {
           now,
           input.sourceAccountName,
           input.publishedAt ?? null,
+          input.videoDurationSeconds ?? null,
           chinesePath,
           englishPath,
           existing.id
@@ -897,15 +942,20 @@ export class SingleTableRepository {
     chineseBody: string,
     chineseTitle: string | null,
     minimumTotalScore: number,
-    metadata?: { provider: string; model: string }
+    metadata?: {
+      provider: string
+      model: string
+      manual?: boolean
+      chunkCount?: number
+    }
   ): Promise<ContentRow> {
     const row = this.getById(id)
     if (
       !row ||
       row.original_language !== 'en' ||
       row.is_junk ||
-      row.total_score == null ||
-      row.total_score < minimumTotalScore
+      (!metadata?.manual &&
+        (row.total_score == null || row.total_score < minimumTotalScore))
     )
       throw new Error('Content does not qualify for translation')
     if (!chineseBody.trim()) throw new Error('Translation cannot be empty')
@@ -916,11 +966,18 @@ export class SingleTableRepository {
     const now = new Date().toISOString()
     this.database
       .prepare(
-        `UPDATE contents SET chinese_markdown_path=?, translated_to_chinese=1,
-      chinese_title=?, title=COALESCE(?,title), summary=CASE WHEN content_kind='short_post' THEN ? ELSE summary END,
+        `UPDATE contents SET chinese_markdown_path=?, translation_status='running',
+      translation_skip_reason=NULL, translation_error=NULL,
+      translation_chunk_count=?, translation_completed_chunks=?,
       updated_at=? WHERE id=?`
       )
-      .run(relative, chineseTitle, chineseTitle, chineseBody, now, id)
+      .run(
+        relative,
+        metadata?.chunkCount ?? 1,
+        metadata?.chunkCount ?? 1,
+        now,
+        id
+      )
     try {
       await this.writeContent(this.getById(id)!, chineseBody, 'zh')
       if (metadata) {
@@ -941,11 +998,76 @@ export class SingleTableRepository {
           )
         )
       }
+      this.database
+        .prepare(
+          `UPDATE contents SET chinese_title=?, title=COALESCE(?,title),
+          summary=CASE WHEN content_kind='short_post' THEN ? ELSE summary END,
+          updated_at=? WHERE id=?`
+        )
+        .run(chineseTitle, chineseTitle, chineseBody, now, id)
       await this.refreshFrontmatter(id)
+      this.database
+        .prepare(
+          `UPDATE contents SET translated_to_chinese=1,
+          translation_status='succeeded', updated_at=? WHERE id=?`
+        )
+        .run(now, id)
     } catch (error) {
       await this.fileFailure(id, 'translating', error)
       throw error
     }
+    return this.getById(id)!
+  }
+
+  setTranslationSkipped(id: string, reason: string): ContentRow {
+    if (!this.getById(id)) throw new Error('Content not found')
+    this.database
+      .prepare(
+        `UPDATE contents SET translation_status='skipped', translation_skip_reason=?,
+        translation_error=NULL, translation_chunk_count=0,
+        translation_completed_chunks=0, updated_at=? WHERE id=?`
+      )
+      .run(reason, new Date().toISOString(), id)
+    return this.getById(id)!
+  }
+
+  beginTranslation(id: string, chunkCount: number): ContentRow {
+    if (!this.getById(id)) throw new Error('Content not found')
+    this.database
+      .prepare(
+        `UPDATE contents SET translation_status='running', translation_skip_reason=NULL,
+        translation_error=NULL, translation_chunk_count=?,
+        translation_completed_chunks=0, updated_at=? WHERE id=?`
+      )
+      .run(chunkCount, new Date().toISOString(), id)
+    return this.getById(id)!
+  }
+
+  updateTranslationProgress(
+    id: string,
+    completed: number,
+    total: number
+  ): void {
+    this.database
+      .prepare(
+        `UPDATE contents SET translation_status='running', translation_chunk_count=?,
+        translation_completed_chunks=?, updated_at=? WHERE id=?`
+      )
+      .run(total, completed, new Date().toISOString(), id)
+  }
+
+  failTranslation(id: string, error: unknown): ContentRow {
+    if (!this.getById(id)) throw new Error('Content not found')
+    this.database
+      .prepare(
+        `UPDATE contents SET translation_status='failed', translation_error=?,
+        updated_at=? WHERE id=?`
+      )
+      .run(
+        String(redact(error instanceof Error ? error.message : error)),
+        new Date().toISOString(),
+        id
+      )
     return this.getById(id)!
   }
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertCircle,
   CheckCircle2,
@@ -226,7 +226,10 @@ export function RuntimeLog() {
   const [keyword, setKeyword] = useState('')
   const [limit, setLimit] = useState(100)
   const [error, setError] = useState('')
+  const loadingRef = useRef(false)
   const load = useCallback(async () => {
+    if (loadingRef.current) return
+    loadingRef.current = true
     const query = new URLSearchParams({ limit: String(limit) })
     if (status !== 'all') query.set('status', status)
     if (source !== 'all') query.set('source', source)
@@ -236,6 +239,8 @@ export function RuntimeLog() {
       setError('')
     } catch {
       setError('日志更新失败，当前显示的是上次结果。')
+    } finally {
+      loadingRef.current = false
     }
   }, [keyword, limit, source, status])
   useEffect(() => {

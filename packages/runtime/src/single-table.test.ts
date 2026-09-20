@@ -119,6 +119,52 @@ describe('single-table content storage', () => {
     ).toBe(contentIdentity(article).key)
   })
 
+  it('updates only positive interaction values and preserves the capture time when none are usable', async () => {
+    const { repository } = await setup()
+    await repository.saveOriginal(shortPost)
+    expect(
+      repository.updateInteractionBySourceId('openai', '123', {
+        capturedAt: '2026-09-18T00:00:00.000Z',
+        views: 100,
+        likes: 10,
+        comments: 5,
+        shares: 2,
+        saves: 1,
+      })
+    ).toBe(1)
+    expect(
+      repository.updateInteractionBySourceId('openai', '123', {
+        capturedAt: '2026-09-20T00:00:00.000Z',
+        views: 120,
+        likes: 0,
+        comments: null,
+        shares: 3,
+        saves: 0,
+      })
+    ).toBe(1)
+    expect(repository.search()[0]).toMatchObject({
+      views: 120,
+      likes: 10,
+      comments: 5,
+      shares: 3,
+      saves: 1,
+      interaction_captured_at: '2026-09-20T00:00:00.000Z',
+    })
+    expect(
+      repository.updateInteractionBySourceId('openai', '123', {
+        capturedAt: '2026-09-21T00:00:00.000Z',
+        views: 0,
+        likes: null,
+        comments: 0,
+        shares: null,
+        saves: 0,
+      })
+    ).toBe(0)
+    expect(repository.search()[0]?.interaction_captured_at).toBe(
+      '2026-09-20T00:00:00.000Z'
+    )
+  })
+
   it('keeps junk and low-scored English untranslated, but translates qualifying English short posts', async () => {
     const { root, repository } = await setup()
     const first = await repository.saveOriginal(shortPost)
@@ -214,6 +260,22 @@ describe('single-table content storage', () => {
     })
     expect(repository.search({ keyword: '智能体' })).toHaveLength(1)
     expect(repository.search({ keyword: '不存在' })).toHaveLength(0)
+  })
+
+  it('bounds detailed log payloads while preserving the execution summary', async () => {
+    const { repository } = await setup()
+    const row = await repository.saveOriginal(shortPost)
+    await repository.appendLog(row.id, {
+      action: 'enrich',
+      stage: 'enriching',
+      status: 'failed',
+      request: { payload: 'r'.repeat(100_000) },
+      response: { payload: 's'.repeat(100_000) },
+      error: 'provider failed',
+    })
+    const log = await repository.readLog(row.id)
+    expect(log).toContain('[TRUNCATED original_bytes=')
+    expect(Buffer.byteLength(log!)).toBeLessThan(80_000)
   })
 
   it('gives manual junk decisions priority and clears old scores', async () => {

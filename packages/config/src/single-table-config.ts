@@ -140,15 +140,64 @@ export const retentionConfigSchema = z.object({
   }),
 })
 
-export const providersConfigSchema = z.object({
-  platforms: z.object({
-    x: z.object({ preferred: z.enum(['twitterapi.io', 'tikhub-x']) }),
-    youtube: z.object({
-      preferred: z.enum(['youtube-data-api', 'tikhub-youtube']),
-    }),
-    rss: z.object({ preferred: z.literal('native-rss') }),
-  }),
-})
+const orderedProviders = <T extends [string, ...string[]]>(values: T) =>
+  z
+    .array(z.enum(values))
+    .min(1)
+    .max(values.length)
+    .refine((items) => new Set(items).size === items.length, {
+      message: 'Provider routes cannot contain duplicates',
+    })
+
+export const providerRoutesSchema = z
+  .object({
+    x_list: orderedProviders(['twitterapi.io', 'tikhub-x']),
+    x_article: orderedProviders(['twitterapi.io', 'native-http']),
+    youtube_list: orderedProviders(['youtube-data-api', 'tikhub-youtube']),
+    youtube_captions: orderedProviders(['tikhub-youtube']),
+    rss_list: orderedProviders(['native-rss']),
+    web_article: orderedProviders(['native-http']),
+  })
+  .strict()
+
+export type ProviderRoutes = z.output<typeof providerRoutesSchema>
+
+export const defaultProviderRoutes: ProviderRoutes = {
+  x_list: ['twitterapi.io', 'tikhub-x'],
+  x_article: ['twitterapi.io', 'native-http'],
+  youtube_list: ['youtube-data-api', 'tikhub-youtube'],
+  youtube_captions: ['tikhub-youtube'],
+  rss_list: ['native-rss'],
+  web_article: ['native-http'],
+}
+
+export const providersConfigSchema = z.preprocess(
+  (value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value))
+      return value
+    const record = value as Record<string, unknown>
+    if (record.routes) return value
+    const platforms = record.platforms as
+      Record<string, { preferred?: string } | undefined> | undefined
+    if (!platforms) return value
+    const xPreferred = platforms.x?.preferred
+    const youtubePreferred = platforms.youtube?.preferred
+    return {
+      routes: {
+        ...defaultProviderRoutes,
+        x_list:
+          xPreferred === 'tikhub-x'
+            ? ['tikhub-x', 'twitterapi.io']
+            : defaultProviderRoutes.x_list,
+        youtube_list:
+          youtubePreferred === 'tikhub-youtube'
+            ? ['tikhub-youtube', 'youtube-data-api']
+            : defaultProviderRoutes.youtube_list,
+      },
+    }
+  },
+  z.object({ routes: providerRoutesSchema }).strict()
+)
 
 export const singleTableConfigFileNames = [
   'sources.yaml',

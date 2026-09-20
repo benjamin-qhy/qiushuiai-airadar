@@ -1,7 +1,7 @@
-platforms:
-  x:
-    preferred: twitterapi.io
-  youtube:
-    preferred: youtube-data-api
-  rss:
-    preferred: native-rss
+routes:
+  x_list: [twitterapi.io, tikhub-x]
+  x_article: [twitterapi.io, native-http]
+  youtube_list: [youtube-data-api, tikhub-youtube]
+  youtube_captions: [tikhub-youtube]
+  rss_list: [native-rss]
+  web_article: [native-http]

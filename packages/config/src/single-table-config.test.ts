@@ -10,6 +10,7 @@ import {
   loadSingleTableConfig,
   loadSourceState,
   runtimeConfigSchema,
+  providersConfigSchema,
   saveAnalysisModelConfig,
   saveEditableConfigFile,
   saveSourceState,
@@ -45,8 +46,8 @@ it('validates editable YAML before replacing the saved file', async () => {
     (await loadSingleTableConfig(configRoot)).runtime.collection.max_retries
   ).toBe(3)
   expect(
-    (await loadSingleTableConfig(configRoot)).providers.platforms.x.preferred
-  ).toBe('twitterapi.io')
+    (await loadSingleTableConfig(configRoot)).providers.routes.x_list
+  ).toEqual(['twitterapi.io', 'tikhub-x'])
 })
 
 it('loads all YAML configuration and preserves source order', async () => {
@@ -62,6 +63,15 @@ it('loads all YAML configuration and preserves source order', async () => {
   ).toEqual(['x_openai', 'yt_openai', 'openai_news'])
   expect(config.runtime.collection.list_pages).toBe(1)
   expect(config.runtime.collection.serial_sources).toBe(true)
+  expect(config.providers.routes).toEqual({
+    x_list: ['twitterapi.io', 'tikhub-x'],
+    x_article: ['twitterapi.io', 'native-http'],
+    youtube_list: ['youtube-data-api', 'tikhub-youtube'],
+    youtube_captions: ['tikhub-youtube'],
+    rss_list: ['native-rss'],
+    web_article: ['native-http'],
+  })
+  expect(config.providers.routes).not.toHaveProperty('interaction')
   expect(config.analysis.scoring.weights).toEqual({
     interest_fit: 40,
     concrete_gain: 30,
@@ -73,6 +83,27 @@ it('loads all YAML configuration and preserves source order', async () => {
     provider: 'codex',
     default: 'gpt-5.5',
     stages: {},
+  })
+})
+
+it('normalizes legacy preferred providers into ordered capability routes', () => {
+  expect(
+    providersConfigSchema.parse({
+      platforms: {
+        x: { preferred: 'tikhub-x' },
+        youtube: { preferred: 'tikhub-youtube' },
+        rss: { preferred: 'native-rss' },
+      },
+    })
+  ).toEqual({
+    routes: {
+      x_list: ['tikhub-x', 'twitterapi.io'],
+      x_article: ['twitterapi.io', 'native-http'],
+      youtube_list: ['tikhub-youtube', 'youtube-data-api'],
+      youtube_captions: ['tikhub-youtube'],
+      rss_list: ['native-rss'],
+      web_article: ['native-http'],
+    },
   })
 })
 

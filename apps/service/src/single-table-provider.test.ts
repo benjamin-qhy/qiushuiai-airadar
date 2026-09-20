@@ -164,3 +164,99 @@ it('keeps the provider default page size when collection does not set a limit', 
   })
   expect(page.items).toHaveLength(25)
 })
+
+it('tries the configured X list providers in order until one succeeds', async () => {
+  const calls: string[] = []
+  const provider = createSingleTableSourceProvider({
+    twitterApiKey: 'twitter-test-only',
+    tikHubToken: 'tikhub-test-only',
+    providerRoutes: {
+      x_list: ['twitterapi.io', 'tikhub-x'],
+    },
+    fetch: async (input) => {
+      const url = String(input)
+      calls.push(url)
+      if (url.includes('api.twitterapi.io'))
+        return new Response('temporary failure', { status: 503 })
+      return Response.json({
+        code: 200,
+        data: {
+          timeline: [
+            {
+              tweet_id: '123456789',
+              text: 'Fallback provider result',
+              created_at: 'Fri Sep 18 01:00:00 +0000 2026',
+              views: '100',
+            },
+          ],
+        },
+      })
+    },
+  })
+  const page = await provider.discover({
+    id: 'x-example',
+    platform: 'x',
+    account_name: 'X / Example',
+    external_identity: 'Example',
+    language: 'en',
+    enabled: true,
+  })
+  expect(page.providerId).toBe('tikhub-x')
+  expect(page.items[0]?.externalId).toBe('123456789')
+  expect(calls.some((url) => url.includes('api.twitterapi.io'))).toBe(true)
+  expect(calls.some((url) => url.includes('api.tikhub.io'))).toBe(true)
+})
+
+it('falls back to native HTTP when the configured X article provider fails', async () => {
+  const articleUrl = 'https://x.com/i/article/123456789'
+  const articleEnricher = vi.fn(async () => ({
+    title: 'Native fallback article',
+    body: 'Complete native fallback body. '.repeat(20),
+    canonicalUrl: articleUrl,
+    images: [],
+  }))
+  const provider = createSingleTableSourceProvider({
+    twitterApiKey: 'twitter-test-only',
+    providerRoutes: {
+      x_list: ['twitterapi.io'],
+      x_article: ['twitterapi.io', 'native-http'],
+    },
+    articleEnricher,
+    fetch: async (input) => {
+      const url = String(input)
+      if (url.includes('/twitter/user/info'))
+        return Response.json({ data: { id: 'author-1' } })
+      if (url.includes('/twitter/user/tweet_timeline'))
+        return Response.json({
+          data: {
+            tweets: [
+              {
+                id: '123456789',
+                text: 'Article introduction',
+                createdAt: 'Fri Sep 18 01:00:00 +0000 2026',
+                article: { url: articleUrl },
+              },
+            ],
+          },
+        })
+      if (url.includes('/twitter/article'))
+        return new Response('temporary failure', { status: 503 })
+      throw new Error(`Unexpected request: ${url}`)
+    },
+  })
+  const source = {
+    id: 'x-example',
+    platform: 'x',
+    account_name: 'X / Example',
+    external_identity: 'Example',
+    language: 'en' as const,
+    enabled: true,
+  }
+  const page = await provider.discover(source, 1)
+  const resolved = await provider.resolve(source, page.items[0]!)
+  expect(articleEnricher).toHaveBeenCalledWith(articleUrl, expect.any(Function))
+  expect(resolved.original.title).toBe('Native fallback article')
+  expect(resolved.original.body).toContain('Complete native fallback body')
+  expect(resolved.calls).toHaveLength(1)
+  expect(resolved.calls?.[0]?.response).toMatchObject({ status: 503 })
+})

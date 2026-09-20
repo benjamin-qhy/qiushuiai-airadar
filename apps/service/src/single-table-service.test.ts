@@ -1,4 +1,11 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import {
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
@@ -282,6 +289,15 @@ it('serves and updates content from the single table, with field-only keyword se
       message: '已完成内容判断',
     })
     expect(runtimeLogs.items[0]).not.toHaveProperty('request')
+    const detailedLog = path.join(root, row.execution_log_markdown_path)
+    const offlineLog = `${detailedLog}.offline`
+    await rename(detailedLog, offlineLog)
+    const summariesWithoutDetails = await fetch(`${base}/api/runtime/logs`)
+    expect(summariesWithoutDetails.status).toBe(200)
+    expect(
+      ((await summariesWithoutDetails.json()) as { items: unknown[] }).items
+    ).not.toHaveLength(0)
+    await rename(offlineLog, detailedLog)
     expect(
       (await fetch(`${base}/api/contents/${row.id}/logs?entry=-1`)).status
     ).toBe(404)
@@ -498,10 +514,17 @@ it('manages sources, provider credentials, connection tests, and validated YAML'
       providerId: 'native-rss',
     })
     const providerSave = await mutate('/api/providers/tikhub-x', 'PUT', {
-      preferred: true,
       secret: 'test-provider-secret',
     })
     expect(providerSave.status).toBe(200)
+    const routeSave = await mutate('/api/provider-routes/x_list', 'PUT', {
+      providers: ['tikhub-x', 'twitterapi.io'],
+    })
+    expect(routeSave.status).toBe(200)
+    expect(await routeSave.json()).toMatchObject({
+      saved: 'x_list',
+      providers: ['tikhub-x', 'twitterapi.io'],
+    })
     const providers = await fetch(`${base}/api/providers`).then((response) =>
       response.text()
     )
@@ -510,11 +533,22 @@ it('manages sources, provider credentials, connection tests, and validated YAML'
       items: expect.arrayContaining([
         expect.objectContaining({
           id: 'tikhub-x',
-          preferred: true,
           secretStatus: { configured: true },
         }),
       ]),
+      routes: expect.arrayContaining([
+        expect.objectContaining({
+          id: 'x_list',
+          providers: ['tikhub-x', 'twitterapi.io'],
+        }),
+      ]),
     })
+    const invalidInteractionRoute = await mutate(
+      '/api/provider-routes/interaction',
+      'PUT',
+      { providers: ['twitterapi.io'] }
+    )
+    expect(invalidInteractionRoute.status).toBe(404)
     const models = (await fetch(`${base}/api/models`).then((response) =>
       response.json()
     )) as {

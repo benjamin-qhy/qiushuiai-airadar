@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { AppShell } from '@/components/app-shell'
 import { ConfigPage } from '@/features/config-page'
+import { CollectionSettingsPage } from '@/features/collection-settings-page'
 import { ContentWorkspace } from '@/features/content-workspace'
 import { ModelManagementPage } from '@/features/model-management-page'
 import { RuntimePage } from '@/features/runtime-page'
@@ -27,6 +28,8 @@ export function App() {
         <ContentWorkspace scope='junk' />
       ) : page === 'sources' ? (
         <SourcesPage />
+      ) : page === 'collection-settings' ? (
+        <CollectionSettingsPage />
       ) : page === 'models' ? (
         <ModelManagementPage />
       ) : page === 'runtime' ? (

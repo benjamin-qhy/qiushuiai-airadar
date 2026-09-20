@@ -17,6 +17,10 @@ import {
   type SourceAdapter,
 } from '@qiushuiai-airadar/source-adapters'
 import type { LogEvent } from '@qiushuiai-airadar/runtime'
+import {
+  defaultProviderRoutes,
+  type ProviderRoutes,
+} from '@qiushuiai-airadar/config'
 
 interface ProviderOptions {
   tikHubToken?: string
@@ -24,7 +28,13 @@ interface ProviderOptions {
   youtubeApiKey?: string
   fetch?: typeof fetch
   articleEnricher?: typeof enrichArticle
-  providerOrder?: Partial<Record<'x' | 'youtube', string[]>>
+  providerRoutes?: Partial<ProviderRoutes>
+}
+
+function routeFailure(capability: string, errors: string[]): Error {
+  return new Error(
+    `All providers failed for ${capability}: ${errors.join(' | ')}`
+  )
 }
 
 function auditFetch(
@@ -72,13 +82,19 @@ function toLogEvents(
   calls: Array<{ request: unknown; response: unknown }>,
   action: string
 ): LogEvent[] {
-  return calls.map(({ request, response }) => ({
-    action,
-    stage: action === 'discover' ? 'discovered' : 'enriching',
-    status: 'succeeded',
-    request,
-    response,
-  }))
+  return calls.map(({ request, response }) => {
+    const result = response as { status?: number; received?: boolean }
+    return {
+      action,
+      stage: action === 'discover' ? 'discovered' : 'enriching',
+      status:
+        result.received === false || (result.status ?? 200) >= 400
+          ? 'failed'
+          : 'succeeded',
+      request,
+      response,
+    }
+  })
 }
 
 function accountName(source: ConfiguredSource): string {
@@ -95,6 +111,12 @@ export function createSingleTableSourceProvider(
       const calls: Array<{ request: unknown; response: unknown }> = []
       const trackedFetch = auditFetch(fetcher, calls)
       if (source.platform === 'rss') {
+        if (
+          !(
+            options.providerRoutes?.rss_list ?? defaultProviderRoutes.rss_list
+          ).includes('native-rss')
+        )
+          throw routeFailure('rss_list', ['native-rss is not configured'])
         const batch = await new RssAdapter(trackedFetch).discover({
           feedUrl: source.external_identity,
           limit,
@@ -113,75 +135,106 @@ export function createSingleTableSourceProvider(
           response: calls.map((call) => call.response),
         }
       }
-      let adapter: SourceAdapter
+      let adapter: SourceAdapter | undefined
+      let batch: Awaited<ReturnType<SourceAdapter['discover']>> | undefined
       if (source.platform === 'x') {
-        const order = options.providerOrder?.x ?? ['twitterapi.io', 'tikhub-x']
-        const selected = order.find(
-          (id) =>
-            (id === 'twitterapi.io' && options.twitterApiKey) ||
-            (id === 'tikhub-x' && options.tikHubToken)
-        )
-        if (selected === 'twitterapi.io' && options.twitterApiKey)
-          adapter = createTwitterApiIoProvider({
-            apiKey: options.twitterApiKey,
-            fetch: trackedFetch,
-          })
-        else if (selected === 'tikhub-x' && options.tikHubToken)
-          adapter = createTikHubXProvider({
-            token: options.tikHubToken,
-            fetch: trackedFetch,
-          })
-        else throw new Error('X provider credential is not configured')
+        const errors: string[] = []
+        for (const id of options.providerRoutes?.x_list ??
+          defaultProviderRoutes.x_list) {
+          try {
+            if (id === 'twitterapi.io') {
+              if (!options.twitterApiKey)
+                throw new Error('credential is not configured')
+              adapter = createTwitterApiIoProvider({
+                apiKey: options.twitterApiKey,
+                fetch: trackedFetch,
+              })
+            } else {
+              if (!options.tikHubToken)
+                throw new Error('credential is not configured')
+              adapter = createTikHubXProvider({
+                token: options.tikHubToken,
+                fetch: trackedFetch,
+              })
+            }
+            batch = await adapter.discover({
+              source: {
+                id: source.id,
+                slug: source.id,
+                name: source.account_name,
+                type: 'x',
+                language: source.language,
+                externalIdentity: source.external_identity,
+                status: 'enabled',
+              },
+              limit,
+            })
+            break
+          } catch (error) {
+            errors.push(
+              `${id}: ${error instanceof Error ? error.message : String(error)}`
+            )
+          }
+        }
+        if (!batch || !adapter) throw routeFailure('x_list', errors)
       } else if (source.platform === 'youtube') {
-        const order = options.providerOrder?.youtube ?? [
-          'youtube-data-api',
-          'tikhub-youtube',
-        ]
-        const selected = order.find(
-          (id) =>
-            (id === 'youtube-data-api' && options.youtubeApiKey) ||
-            (id === 'tikhub-youtube' && options.tikHubToken)
-        )
-        if (selected === 'youtube-data-api' && options.youtubeApiKey)
-          adapter = createYouTubeDataApiProvider({
-            apiKey: options.youtubeApiKey,
-            fetch: trackedFetch,
-          })
-        else if (selected === 'tikhub-youtube' && options.tikHubToken) {
-          const channelUrl = new URL(source.external_identity)
-          const response = await trackedFetch(channelUrl, {
-            signal: AbortSignal.timeout(10_000),
-          })
-          if (!response.ok)
-            throw new Error(`YouTube channel lookup failed: ${response.status}`)
-          const html = await response.text()
-          const channelId =
-            html.match(/"channelId":"(UC[A-Za-z0-9_-]+)"/u)?.[1] ??
-            html.match(
-              /itemprop="channelId" content="(UC[A-Za-z0-9_-]+)"/u
-            )?.[1]
-          if (!channelId) throw new Error('YouTube channel ID was not found')
-          adapter = createTikHubYouTubeProvider({
-            token: options.tikHubToken,
-            channelId,
-            fetch: trackedFetch,
-          })
-        } else throw new Error('YouTube provider credential is not configured')
+        const errors: string[] = []
+        for (const id of options.providerRoutes?.youtube_list ??
+          defaultProviderRoutes.youtube_list) {
+          try {
+            if (id === 'youtube-data-api') {
+              if (!options.youtubeApiKey)
+                throw new Error('credential is not configured')
+              adapter = createYouTubeDataApiProvider({
+                apiKey: options.youtubeApiKey,
+                fetch: trackedFetch,
+              })
+            } else {
+              if (!options.tikHubToken)
+                throw new Error('credential is not configured')
+              const channelUrl = new URL(source.external_identity)
+              const response = await trackedFetch(channelUrl, {
+                signal: AbortSignal.timeout(10_000),
+              })
+              if (!response.ok)
+                throw new Error(
+                  `YouTube channel lookup failed: ${response.status}`
+                )
+              const html = await response.text()
+              const channelId =
+                html.match(/"channelId":"(UC[A-Za-z0-9_-]+)"/u)?.[1] ??
+                html.match(
+                  /itemprop="channelId" content="(UC[A-Za-z0-9_-]+)"/u
+                )?.[1]
+              if (!channelId)
+                throw new Error('YouTube channel ID was not found')
+              adapter = createTikHubYouTubeProvider({
+                token: options.tikHubToken,
+                channelId,
+                fetch: trackedFetch,
+              })
+            }
+            batch = await adapter.discover({
+              source: {
+                id: source.id,
+                slug: source.id,
+                name: source.account_name,
+                type: 'youtube',
+                language: source.language,
+                externalIdentity: source.external_identity,
+                status: 'enabled',
+              },
+              limit,
+            })
+            break
+          } catch (error) {
+            errors.push(
+              `${id}: ${error instanceof Error ? error.message : String(error)}`
+            )
+          }
+        }
+        if (!batch || !adapter) throw routeFailure('youtube_list', errors)
       } else throw new Error(`No single-table provider for ${source.platform}`)
-
-      const batch = await adapter.discover({
-        source: {
-          id: source.id,
-          slug: source.id,
-          name: source.account_name,
-          type: source.platform as 'x' | 'youtube',
-          language: source.language,
-          externalIdentity: source.external_identity,
-          status: 'enabled',
-        },
-        limit,
-        // Deliberately no cursor, even when the adapter returns nextCursor.
-      })
       const items: DiscoveredContent[] = batch.items.map((item) => {
         discovered.set(`${source.id}:${item.externalId}`, item)
         return {
@@ -213,49 +266,84 @@ export function createSingleTableSourceProvider(
       let format: 'plain_text' | 'subtitle' = 'plain_text'
       if (item.kind === 'article') {
         if (!url) throw new Error('Article URL is missing')
-        const isXArticle =
-          source.platform === 'x' &&
-          isXArticleUrl(url) &&
-          Boolean(options.twitterApiKey)
-        const article =
-          isXArticle && options.twitterApiKey
-            ? await fetchTwitterApiIoArticle({
+        const capability =
+          source.platform === 'x' && isXArticleUrl(url)
+            ? 'x_article'
+            : 'web_article'
+        const routes =
+          options.providerRoutes?.[capability] ??
+          defaultProviderRoutes[capability]
+        const errors: string[] = []
+        let article:
+          { title: string; body: string; canonicalUrl: string } | undefined
+        for (const id of routes) {
+          try {
+            if (id === 'twitterapi.io') {
+              if (!options.twitterApiKey)
+                throw new Error('credential is not configured')
+              article = await fetchTwitterApiIoArticle({
                 apiKey: options.twitterApiKey,
                 tweetId: item.externalId,
                 canonicalUrl: url,
                 fetch: trackedFetch,
               })
-            : options.fetch
-              ? await (options.articleEnricher ?? enrichArticle)(
-                  url,
-                  trackedFetch
-                )
-              : await (options.articleEnricher ?? enrichArticle)(url)
-        if (!isXArticle && !options.fetch) {
-          calls.push({
-            request: { method: 'GET', url, transport: 'native-http' },
-            response: {
-              title: article.title,
-              canonicalUrl: article.canonicalUrl,
-              bodyLength: article.body.length,
-            },
-          })
+            } else {
+              article = options.fetch
+                ? await (options.articleEnricher ?? enrichArticle)(
+                    url,
+                    trackedFetch
+                  )
+                : await (options.articleEnricher ?? enrichArticle)(url)
+              if (!options.fetch) {
+                calls.push({
+                  request: { method: 'GET', url, transport: 'native-http' },
+                  response: {
+                    title: article.title,
+                    canonicalUrl: article.canonicalUrl,
+                    bodyLength: article.body.length,
+                  },
+                })
+              }
+            }
+            break
+          } catch (error) {
+            errors.push(
+              `${id}: ${error instanceof Error ? error.message : String(error)}`
+            )
+          }
         }
+        if (!article) throw routeFailure(capability, errors)
         body = article.body
         title = article.title
         url = article.canonicalUrl
       } else if (item.kind === 'video') {
-        if (source.platform !== 'youtube' || !options.tikHubToken)
+        if (source.platform !== 'youtube')
           throw new Error('Video captions provider is unavailable')
-        const captions = await createTikHubYouTubeTranscriptProvider({
-          token: options.tikHubToken,
-          fetch: trackedFetch,
-        }).fetchTranscript(item.externalId)
-        if (captions.status !== 'available' || !captions.text?.trim())
-          throw new Error(
-            `Video captions are ${captions.status}; manual transcription required`
-          )
-        body = captions.text
+        const errors: string[] = []
+        for (const id of options.providerRoutes?.youtube_captions ??
+          defaultProviderRoutes.youtube_captions) {
+          try {
+            if (id !== 'tikhub-youtube')
+              throw new Error('provider is not supported')
+            if (!options.tikHubToken)
+              throw new Error('credential is not configured')
+            const captions = await createTikHubYouTubeTranscriptProvider({
+              token: options.tikHubToken,
+              fetch: trackedFetch,
+            }).fetchTranscript(item.externalId)
+            if (captions.status !== 'available' || !captions.text?.trim())
+              throw new Error(
+                `captions are ${captions.status}; manual transcription required`
+              )
+            body = captions.text
+            break
+          } catch (error) {
+            errors.push(
+              `${id}: ${error instanceof Error ? error.message : String(error)}`
+            )
+          }
+        }
+        if (!body) throw routeFailure('youtube_captions', errors)
         format = 'subtitle'
       } else if (sourceItem?.thread) {
         if (!sourceItem.thread.complete)

@@ -113,11 +113,16 @@ export async function beginCollectionRun(root: string) {
     status: 'running',
     message: '开始执行本轮信源采集',
   })
-  async function save() {
-    run.updatedAt = new Date().toISOString()
-    const temporary = `${file(root)}.${run.id}.tmp`
-    await writeFile(temporary, JSON.stringify(run), 'utf8')
-    await rename(temporary, file(root))
+  let pendingSave = Promise.resolve()
+  function save() {
+    const currentSave = pendingSave.then(async () => {
+      run.updatedAt = new Date().toISOString()
+      const temporary = `${file(root)}.${run.id}.tmp`
+      await writeFile(temporary, JSON.stringify(run), 'utf8')
+      await rename(temporary, file(root))
+    })
+    pendingSave = currentSave.catch(() => undefined)
+    return currentSave
   }
   return { run, save, release: () => unlink(lock) }
 }

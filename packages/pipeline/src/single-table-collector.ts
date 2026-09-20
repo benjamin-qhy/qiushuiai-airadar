@@ -100,6 +100,32 @@ export interface SourceRunResult {
   skipped: number
 }
 
+function discoveredIdentity(
+  source: ConfiguredSource,
+  item: DiscoveredContent
+): ReturnType<typeof contentIdentity> | undefined {
+  if (item.kind === 'article' && !item.url) return undefined
+  return contentIdentity({
+    platform: source.platform,
+    sourceType: source.platform,
+    sourceAccountId: source.id,
+    sourceAccountName: source.account_name,
+    externalContentId: item.externalId,
+    canonicalUrl: item.url,
+    title: item.title ?? item.externalId,
+    body: item.body ?? '',
+    kind: item.kind,
+    format: item.format ?? 'plain_text',
+    language: source.language,
+    publishedAt: item.publishedAt,
+  })
+}
+
+function isProviderBalanceFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /\bHTTP 402\b|insufficient balance|余额不足/iu.test(message)
+}
+
 export async function collectSourcesSerially(
   options: CollectSourcesOptions
 ): Promise<SourceRunResult[]> {
@@ -132,6 +158,21 @@ export async function collectSourcesSerially(
       await options.waitUntilRunnable?.()
       let original: OriginalContent | undefined
       try {
+        const earlyIdentity = discoveredIdentity(source, item)
+        const earlyExisting = earlyIdentity
+          ? options.repository.get(earlyIdentity.key)
+          : undefined
+        if (earlyExisting) {
+          if (item.interaction)
+            options.repository.updateInteractionBySourceId(
+              source.id,
+              item.externalId,
+              item.interaction
+            )
+          if (earlyExisting.process_status === 'completed') result.completed++
+          else result.skipped++
+          continue
+        }
         const nonArticleReason =
           source.platform === 'x' && item.kind === 'article' && item.url
             ? classifyNonArticlePage(item.url)
@@ -244,6 +285,7 @@ export async function collectSourcesSerially(
           options.onError?.(source, item, recordError)
         }
         options.onError?.(source, item, error)
+        if (isProviderBalanceFailure(error)) break
       } finally {
         await options.onProgress?.(source, result, false)
         if (item.interaction)

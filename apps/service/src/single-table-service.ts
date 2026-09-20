@@ -14,6 +14,7 @@ import {
   saveSourcesConfig,
   saveSourceState,
   sourcesConfigSchema,
+  providerRoutesSchema,
   updateFileSecret,
   type SingleTableConfig,
 } from '@qiushuiai-airadar/config'
@@ -79,6 +80,20 @@ const providerDefinitions = [
     name: '原生 RSS',
     sourceType: 'rss',
   },
+  {
+    id: 'native-http',
+    name: '原生网页抓取',
+    sourceType: 'web',
+  },
+] as const
+
+const providerRouteDefinitions = [
+  { id: 'x_list', name: 'X 博主作品列表' },
+  { id: 'x_article', name: 'X 文章正文' },
+  { id: 'youtube_list', name: 'YouTube 博主作品列表' },
+  { id: 'youtube_captions', name: 'YouTube 字幕' },
+  { id: 'rss_list', name: 'RSS 作品列表' },
+  { id: 'web_article', name: '网页文章正文' },
 ] as const
 
 function sourceItem(
@@ -107,22 +122,6 @@ function sourceFromBody(body: Record<string, unknown>) {
     enabled: body.enabled !== false,
   }
   return sourcesConfigSchema.parse({ sources: [candidate] }).sources[0]!
-}
-
-function providerOrder(
-  config: SingleTableConfig,
-  platform: 'x' | 'youtube'
-): string[] {
-  const preferred = config.providers.platforms[platform].preferred
-  const fallback =
-    platform === 'x'
-      ? preferred === 'twitterapi.io'
-        ? 'tikhub-x'
-        : 'twitterapi.io'
-      : preferred === 'youtube-data-api'
-        ? 'tikhub-youtube'
-        : 'youtube-data-api'
-  return [preferred, fallback]
 }
 
 function arrayValue(value: unknown): unknown[] {
@@ -217,24 +216,37 @@ async function runtimeLogs(
   collection: Awaited<ReturnType<typeof readCollectionRun>>
 ): Promise<RuntimeLogEntry[]> {
   const documents = repository.runtimeLogDocuments()
-  const contentEntries = await Promise.all(
-    documents.map(async (document) => {
+  let summaries = await repository.readRuntimeLogSummaries()
+  if (!summaries.length && documents.length) {
+    const rebuilt: typeof summaries = []
+    for (const document of documents) {
       const markdown = await repository.readLog(document.contentId)
-      if (!markdown) return []
-      return logEntries(markdown).map(
-        ({ request: _request, response: _response, ...entry }) => ({
-          ...entry,
-          id: `content:${document.contentId}:${entry.index}`,
-          kind: 'content' as const,
-          message: contentLogMessage(entry),
-          contentId: document.contentId,
-          contentTitle: document.title,
-          sourceId: document.sourceId,
-          sourceName: document.sourceName,
-        })
+      if (!markdown) continue
+      rebuilt.push(
+        ...logEntries(markdown).map(
+          ({ request: _request, response: _response, ...entry }) => ({
+            ...entry,
+            stage: entry.stage ?? entry.action,
+            trigger: entry.trigger ?? 'scheduled',
+            duration: entry.duration ?? '0 ms',
+            retryCount: entry.retryCount ?? '0',
+            contentId: document.contentId,
+            contentTitle: document.title,
+            sourceId: document.sourceId,
+            sourceName: document.sourceName,
+          })
+        )
       )
-    })
-  )
+    }
+    await repository.replaceRuntimeLogSummaries(rebuilt)
+    summaries = rebuilt
+  }
+  const contentEntries: RuntimeLogEntry[] = summaries.map((entry) => ({
+    ...entry,
+    id: `content:${entry.contentId}:${entry.index}`,
+    kind: 'content',
+    message: contentLogMessage(entry),
+  }))
   const collectionEntries: RuntimeLogEntry[] = (collection?.events ?? []).map(
     (event, index) => ({
       id: `collection:${collection?.id ?? 'unknown'}:${event.id ?? index}`,
@@ -249,7 +261,7 @@ async function runtimeLogs(
       sourceName: event.sourceName,
     })
   )
-  return [...collectionEntries, ...contentEntries.flat()].sort(
+  return [...collectionEntries, ...contentEntries].sort(
     (left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp)
   )
 }
@@ -608,16 +620,22 @@ export function createSingleTableServiceApp(options: {
                       throw error
                   }
                 }
-                const preferred =
-                  config.providers.platforms[
-                    provider.sourceType as 'x' | 'youtube' | 'rss'
-                  ].preferred === provider.id
+                const listRoute =
+                  provider.sourceType === 'x'
+                    ? config.providers.routes.x_list
+                    : provider.sourceType === 'youtube'
+                      ? config.providers.routes.youtube_list
+                      : provider.sourceType === 'rss'
+                        ? config.providers.routes.rss_list
+                        : []
+                const priority =
+                  (listRoute as readonly string[]).indexOf(provider.id) + 1
                 return {
                   id: provider.id,
                   name: provider.name,
                   sourceType: provider.sourceType,
-                  priority: preferred ? 1 : 2,
-                  preferred,
+                  priority: priority || undefined,
+                  preferred: priority === 1,
                   secretName:
                     'secretName' in provider ? provider.secretName : undefined,
                   health: { state: configured ? 'healthy' : 'unconfigured' },
@@ -626,7 +644,13 @@ export function createSingleTableServiceApp(options: {
                 }
               })
             )
-            return send(response, 200, { items })
+            return send(response, 200, {
+              items,
+              routes: providerRouteDefinitions.map((route) => ({
+                ...route,
+                providers: config.providers.routes[route.id],
+              })),
+            })
           }
           if (method === 'GET' && url.pathname === '/api/models') {
             const config = await loadSingleTableConfig(options.configRoot)
@@ -1096,6 +1120,30 @@ export function createSingleTableServiceApp(options: {
                 source: sourceItem(source, source.enabled),
               })
             }
+            const providerRouteMutation =
+              /^\/api\/provider-routes\/([^/]+)$/u.exec(url.pathname)
+            if (providerRouteMutation && method === 'PUT') {
+              const capability = decodeURIComponent(providerRouteMutation[1]!)
+              if (
+                !providerRouteDefinitions.some(
+                  (definition) => definition.id === capability
+                )
+              )
+                return send(response, 404, {
+                  error: 'provider_route_not_found',
+                })
+              const body = await bodyOf(request)
+              const config = await loadSingleTableConfig(options.configRoot)
+              const routes = providerRoutesSchema.parse({
+                ...config.providers.routes,
+                [capability]: body.providers,
+              })
+              await saveProvidersConfig(options.configRoot, { routes })
+              return send(response, 200, {
+                saved: capability,
+                providers: routes[capability as keyof typeof routes],
+              })
+            }
             const providerMutation = /^\/api\/providers\/([^/]+)$/u.exec(
               url.pathname
             )
@@ -1107,22 +1155,6 @@ export function createSingleTableServiceApp(options: {
               if (!definition)
                 return send(response, 404, { error: 'provider_not_found' })
               const body = await bodyOf(request)
-              const config = await loadSingleTableConfig(options.configRoot)
-              if (body.preferred === true) {
-                if (
-                  definition.sourceType === 'x' &&
-                  (id === 'twitterapi.io' || id === 'tikhub-x')
-                )
-                  config.providers.platforms.x.preferred = id
-                if (
-                  definition.sourceType === 'youtube' &&
-                  (id === 'youtube-data-api' || id === 'tikhub-youtube')
-                )
-                  config.providers.platforms.youtube.preferred = id
-                if (definition.sourceType === 'rss' && id === 'native-rss')
-                  config.providers.platforms.rss.preferred = id
-                await saveProvidersConfig(options.configRoot, config.providers)
-              }
               if ('secretName' in definition) {
                 if (typeof body.secret === 'string' && body.secret.trim())
                   await updateFileSecret(
@@ -1174,11 +1206,16 @@ export function createSingleTableServiceApp(options: {
                   twitterApiKey: await credential('TWITTERAPI_IO_KEY'),
                   youtubeApiKey: await credential('YOUTUBE_API_KEY'),
                   fetch: options.providerFetch,
-                  providerOrder:
-                    definition.sourceType === 'x' ||
-                    definition.sourceType === 'youtube'
-                      ? { [definition.sourceType]: [id] }
-                      : undefined,
+                  providerRoutes:
+                    definition.sourceType === 'x'
+                      ? { x_list: [id as 'twitterapi.io' | 'tikhub-x'] }
+                      : definition.sourceType === 'youtube'
+                        ? {
+                            youtube_list: [
+                              id as 'youtube-data-api' | 'tikhub-youtube',
+                            ],
+                          }
+                        : undefined,
                 })
                 const page = await provider.discover(source, 3)
                 return send(response, 200, {
@@ -1282,15 +1319,7 @@ export function createSingleTableServiceApp(options: {
                 twitterApiKey: await credential('TWITTERAPI_IO_KEY'),
                 youtubeApiKey: await credential('YOUTUBE_API_KEY'),
                 fetch: options.providerFetch,
-                providerOrder:
-                  source.platform === 'x' || source.platform === 'youtube'
-                    ? {
-                        [source.platform]: providerOrder(
-                          config,
-                          source.platform
-                        ),
-                      }
-                    : undefined,
+                providerRoutes: config.providers.routes,
               })
               try {
                 const page = await provider.discover(source, 3)
@@ -1490,15 +1519,7 @@ export function createSingleTableServiceApp(options: {
                   twitterApiKey: await credential('TWITTERAPI_IO_KEY'),
                   youtubeApiKey: await credential('YOUTUBE_API_KEY'),
                   fetch: options.providerFetch,
-                  providerOrder:
-                    source.platform === 'x' || source.platform === 'youtube'
-                      ? {
-                          [source.platform]: providerOrder(
-                            config,
-                            source.platform
-                          ),
-                        }
-                      : undefined,
+                  providerRoutes: config.providers.routes,
                 })
                 const originalBody = await activeRepository.readBody(
                   id,

@@ -8,12 +8,19 @@ export function RuntimeLogPage() {
   const [data, setData] = useState<CollectionData>({})
   useEffect(() => {
     let disposed = false
-    const load = () =>
+    let busy = false
+    const load = () => {
+      if (busy) return
+      busy = true
       void api<CollectionData>('/api/runtime')
         .then((value) => {
           if (!disposed) setData(value)
         })
         .catch(() => undefined)
+        .finally(() => {
+          busy = false
+        })
+    }
     load()
     const timer = setInterval(load, 3000)
     return () => {

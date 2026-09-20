@@ -1,5 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import {
+  appendFile,
+  mkdir,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from 'node:fs/promises'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
@@ -41,6 +48,24 @@ export interface OriginalContent {
   videoDurationSeconds?: number
   publishedAt?: string
   discoveredAt?: string
+}
+
+export interface RuntimeLogSummaryRecord {
+  index: number
+  timestamp: string
+  action: string
+  status: string
+  stage: string
+  trigger: string
+  duration: string
+  retryCount: string
+  processor?: string
+  prompt?: string
+  error?: string
+  contentId: string
+  contentTitle: string
+  sourceId: string
+  sourceName: string
 }
 
 export interface ContentInteraction {
@@ -365,6 +390,16 @@ function markdownDocument(
   return `---\n${stringifyYaml(properties, { lineWidth: 0 }).trimEnd()}\n---\n\n${body.trimEnd()}\n`
 }
 
+const maximumLogPayloadBytes = 32 * 1024
+
+function boundedLogPayload(value: unknown): string {
+  const serialized = JSON.stringify(redact(value), null, 2)
+  const bytes = Buffer.from(serialized)
+  if (bytes.byteLength <= maximumLogPayloadBytes) return serialized
+  const prefix = bytes.subarray(0, maximumLogPayloadBytes).toString('utf8')
+  return `${prefix}\n[TRUNCATED original_bytes=${bytes.byteLength}]`
+}
+
 export class SingleTableRepository {
   private constructor(
     private readonly database: DatabaseSync,
@@ -441,6 +476,18 @@ export class SingleTableRepository {
     externalContentId: string,
     interaction: ContentInteraction
   ): number {
+    const positive = (value: number | null): number | null =>
+      typeof value === 'number' && Number.isFinite(value) && value > 0
+        ? value
+        : null
+    const values = {
+      views: positive(interaction.views),
+      likes: positive(interaction.likes),
+      comments: positive(interaction.comments),
+      shares: positive(interaction.shares),
+      saves: positive(interaction.saves),
+    }
+    if (Object.values(values).every((value) => value === null)) return 0
     const result = this.database
       .prepare(
         `UPDATE contents SET interaction_captured_at=?,
@@ -451,11 +498,11 @@ export class SingleTableRepository {
       )
       .run(
         interaction.capturedAt,
-        interaction.views,
-        interaction.likes,
-        interaction.comments,
-        interaction.shares,
-        interaction.saves,
+        values.views,
+        values.likes,
+        values.comments,
+        values.shares,
+        values.saves,
         new Date().toISOString(),
         sourceAccountId,
         externalContentId
@@ -486,6 +533,38 @@ export class SingleTableRepository {
       'utf8'
     )
     return String(redact(text))
+  }
+
+  async readRuntimeLogSummaries(): Promise<RuntimeLogSummaryRecord[]> {
+    try {
+      const text = await readFile(
+        path.join(this.dataRoot, 'runtime-log-summaries.jsonl'),
+        'utf8'
+      )
+      return text
+        .split('\n')
+        .filter(Boolean)
+        .flatMap((line) => {
+          try {
+            return [JSON.parse(line) as RuntimeLogSummaryRecord]
+          } catch {
+            return []
+          }
+        })
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+      throw error
+    }
+  }
+
+  async replaceRuntimeLogSummaries(
+    summaries: RuntimeLogSummaryRecord[]
+  ): Promise<void> {
+    const text = summaries.map((entry) => JSON.stringify(entry)).join('\n')
+    await atomicWrite(
+      path.join(this.dataRoot, 'runtime-log-summaries.jsonl'),
+      text ? `${text}\n` : ''
+    )
   }
 
   async saveOriginal(input: OriginalContent): Promise<ContentRow> {
@@ -764,15 +843,13 @@ export class SingleTableRepository {
     const target = path.join(this.dataRoot, row.execution_log_markdown_path)
     const previous = await readFile(target, 'utf8')
     const request =
-      event.request === undefined
-        ? '无'
-        : JSON.stringify(redact(event.request), null, 2)
+      event.request === undefined ? '无' : boundedLogPayload(event.request)
     const response =
-      event.response === undefined
-        ? '无'
-        : JSON.stringify(redact(event.response), null, 2)
+      event.response === undefined ? '无' : boundedLogPayload(event.response)
+    const timestamp = new Date().toISOString()
+    const index = [...previous.matchAll(/^## /gmu)].length
     const entry =
-      `\n## ${new Date().toISOString()} | ${event.action} | ${event.status}\n\n` +
+      `\n## ${timestamp} | ${event.action} | ${event.status}\n\n` +
       `- 阶段：\`${event.stage}\`\n- 触发方式：\`${event.trigger ?? 'scheduled'}\`\n` +
       `- 耗时：\`${event.durationMs ?? 0} ms\`\n- 重试次数：\`${event.retryCount ?? 0}\`\n` +
       (event.processor ? `- 处理器：\`${event.processor}\`\n` : '') +
@@ -780,6 +857,29 @@ export class SingleTableRepository {
       (event.error ? `- 错误摘要：\`${String(redact(event.error))}\`\n` : '') +
       `\n### request\n\n\`\`\`json\n${request}\n\`\`\`\n\n### response\n\n\`\`\`json\n${response}\n\`\`\`\n`
     await atomicWrite(target, previous.trimEnd() + '\n' + entry)
+    await appendFile(
+      path.join(this.dataRoot, 'runtime-log-summaries.jsonl'),
+      `${JSON.stringify({
+        index,
+        timestamp,
+        action: event.action,
+        status: event.status,
+        stage: event.stage,
+        trigger: event.trigger ?? 'scheduled',
+        duration: `${event.durationMs ?? 0} ms`,
+        retryCount: String(event.retryCount ?? 0),
+        ...(event.processor ? { processor: event.processor } : {}),
+        ...(event.prompt ? { prompt: event.prompt } : {}),
+        ...(event.error
+          ? { error: String(redact(event.error)).slice(0, 2_000) }
+          : {}),
+        contentId: row.id,
+        contentTitle: row.title,
+        sourceId: String(row.source_account_id),
+        sourceName: String(row.source_account_name),
+      } satisfies RuntimeLogSummaryRecord)}\n`,
+      'utf8'
+    )
   }
 
   fail(id: string, _stage: string, error: unknown): void {

@@ -3,6 +3,7 @@ import {
   BookOpen,
   Bookmark,
   Bot,
+  Cable,
   Database,
   ListFilter,
   Radar,
@@ -47,6 +48,7 @@ const navigationGroups: Array<{
     label: '管理',
     items: [
       { id: 'sources', label: '信源管理', icon: BookOpen },
+      { id: 'collection-settings', label: '采集设置', icon: Cable },
       { id: 'models', label: '模型管理', icon: Bot },
     ],
   },
@@ -121,7 +123,7 @@ export function AppShell({
         <main className='min-h-0 min-w-0 flex-1 overflow-hidden'>
           {children}
         </main>
-        <nav className='fixed inset-x-0 bottom-0 z-40 grid w-screen max-w-full grid-cols-9 border-t bg-background/95 px-1 py-1 backdrop-blur lg:hidden'>
+        <nav className='fixed inset-x-0 bottom-0 z-40 grid w-screen max-w-full grid-cols-10 border-t bg-background/95 px-1 py-1 backdrop-blur lg:hidden'>
           {navigation.map(({ id, label, icon: Icon }) => (
             <button
               key={id}

@@ -235,6 +235,198 @@ it('runs sources and items serially with exactly one list call per source', asyn
   expect(stored?.interaction_captured_at).toBe('2026-09-18T00:00:00.000Z')
 })
 
+it('refreshes duplicate interaction data without resolving or analyzing the content again', async () => {
+  const root = await mkdtemp(
+    path.join(tmpdir(), 'qiushuiai-airadar-duplicate-refresh-')
+  )
+  roots.push(root)
+  const repository = await SingleTableRepository.open(root)
+  repositories.push(repository)
+  await repository.saveOriginal({
+    platform: 'youtube',
+    sourceType: 'youtube',
+    sourceAccountId: 'yt_openai',
+    sourceAccountName: 'OpenAI',
+    externalContentId: 'video-1',
+    canonicalUrl: 'https://www.youtube.com/watch?v=video-1',
+    title: 'Existing video',
+    body: 'Existing transcript',
+    kind: 'video',
+    format: 'subtitle',
+    language: 'en',
+  })
+  repository.updateInteractionBySourceId('yt_openai', 'video-1', {
+    capturedAt: '2026-09-18T00:00:00.000Z',
+    views: 100,
+    likes: 10,
+    comments: 5,
+    shares: null,
+    saves: null,
+  })
+  let resolveCalls = 0
+  let modelCalls = 0
+  const result = await collectSourcesSerially({
+    sources: [
+      {
+        id: 'yt_openai',
+        platform: 'youtube',
+        account_name: 'YouTube / OpenAI',
+        external_identity: 'https://www.youtube.com/@OpenAI',
+        language: 'en',
+        enabled: true,
+      },
+    ],
+    repository,
+    promptsRoot: path.resolve(
+      import.meta.dirname,
+      '../../../docs/prompts/single-table-content'
+    ),
+    profile: { interests: [], goals: [], exclusions: [] },
+    scoring: {
+      weights: {
+        interest_fit: 40,
+        concrete_gain: 30,
+        substance: 20,
+        new_information: 10,
+      },
+      coreThreshold: 80,
+      exploreThreshold: 60,
+      coreMinLevels: {},
+      exploreMinLevels: {},
+    },
+    longContentMinChars: 1000,
+    translationMinimumTotalScore: 60,
+    provider: {
+      async discover() {
+        return {
+          items: [
+            {
+              externalId: 'video-1',
+              url: 'https://www.youtube.com/watch?v=video-1',
+              title: 'Existing video',
+              kind: 'video' as const,
+              interaction: {
+                capturedAt: '2026-09-20T00:00:00.000Z',
+                views: 120,
+                likes: 0,
+                comments: null,
+                shares: null,
+                saves: null,
+              },
+            },
+          ],
+          request: {},
+          response: {},
+        }
+      },
+      async resolve(): Promise<never> {
+        resolveCalls++
+        throw new Error('duplicate content must not be resolved')
+      },
+    },
+    gateway: {
+      async complete(): Promise<never> {
+        modelCalls++
+        throw new Error('duplicate content must not be analyzed')
+      },
+    },
+  })
+  expect(result).toEqual([
+    {
+      sourceId: 'yt_openai',
+      discovered: 1,
+      completed: 0,
+      failed: 0,
+      skipped: 1,
+    },
+  ])
+  expect(resolveCalls).toBe(0)
+  expect(modelCalls).toBe(0)
+  expect(repository.search()).toHaveLength(1)
+  expect(repository.search()[0]).toMatchObject({
+    views: 120,
+    likes: 10,
+    comments: 5,
+    interaction_captured_at: '2026-09-20T00:00:00.000Z',
+  })
+})
+
+it('stops the current source after a provider balance failure', async () => {
+  const root = await mkdtemp(
+    path.join(tmpdir(), 'qiushuiai-airadar-provider-balance-')
+  )
+  roots.push(root)
+  const repository = await SingleTableRepository.open(root)
+  repositories.push(repository)
+  let resolveCalls = 0
+  const result = await collectSourcesSerially({
+    sources: [
+      {
+        id: 'yt_openai',
+        platform: 'youtube',
+        account_name: 'YouTube / OpenAI',
+        external_identity: 'https://www.youtube.com/@OpenAI',
+        language: 'en',
+        enabled: true,
+      },
+    ],
+    repository,
+    promptsRoot: path.resolve(
+      import.meta.dirname,
+      '../../../docs/prompts/single-table-content'
+    ),
+    profile: { interests: [], goals: [], exclusions: [] },
+    scoring: {
+      weights: {
+        interest_fit: 40,
+        concrete_gain: 30,
+        substance: 20,
+        new_information: 10,
+      },
+      coreThreshold: 80,
+      exploreThreshold: 60,
+      coreMinLevels: {},
+      exploreMinLevels: {},
+    },
+    longContentMinChars: 1000,
+    translationMinimumTotalScore: 60,
+    provider: {
+      async discover() {
+        return {
+          items: ['video-1', 'video-2', 'video-3'].map((externalId) => ({
+            externalId,
+            url: `https://www.youtube.com/watch?v=${externalId}`,
+            title: externalId,
+            kind: 'video' as const,
+          })),
+          request: {},
+          response: {},
+        }
+      },
+      async resolve(): Promise<never> {
+        resolveCalls++
+        throw new Error('HTTP 402: Insufficient balance')
+      },
+    },
+    gateway: {
+      async complete(): Promise<never> {
+        throw new Error('must not analyze unresolved content')
+      },
+    },
+  })
+  expect(resolveCalls).toBe(1)
+  expect(result).toEqual([
+    {
+      sourceId: 'yt_openai',
+      discovered: 3,
+      completed: 0,
+      failed: 1,
+      skipped: 0,
+    },
+  ])
+  expect(repository.search()).toHaveLength(1)
+})
+
 it('does not automatically retry a failed content row on the next collection', async () => {
   const root = await mkdtemp(
     path.join(tmpdir(), 'qiushuiai-airadar-no-auto-retry-')

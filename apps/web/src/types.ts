@@ -5,6 +5,7 @@ export type PageKey =
   | 'favorites'
   | 'junk'
   | 'sources'
+  | 'collection-settings'
   | 'models'
   | 'runtime'
   | 'runtime-log'
@@ -117,9 +118,15 @@ export interface ProviderItem {
   id: string
   name: string
   sourceType: string
-  priority: number
+  priority?: number
   preferred: boolean
   secretName?: string
   health: { state: string; reason?: string }
   secretStatus?: { configured: boolean; maskedValue?: string }
+}
+
+export interface ProviderRouteItem {
+  id: string
+  name: string
+  providers: string[]
 }

@@ -10,6 +10,7 @@ import {
   loadSingleTableConfig,
   loadSourceState,
   runtimeConfigSchema,
+  saveAnalysisModelConfig,
   saveEditableConfigFile,
   saveSourceState,
   sourcesConfigSchema,
@@ -68,6 +69,37 @@ it('loads all YAML configuration and preserves source order', async () => {
     new_information: 10,
   })
   expect(config.analysis.translation.minimum_total_score).toBe(10)
+  expect(config.analysis.model).toEqual({
+    provider: 'codex',
+    default: 'gpt-5.5',
+    stages: {},
+  })
+})
+
+it('normalizes legacy model settings and saves per-stage routing', async () => {
+  expect(
+    analysisConfigSchema.shape.model.parse({
+      provider: 'codex',
+      name: 'legacy-model',
+    })
+  ).toEqual({ provider: 'codex', default: 'legacy-model', stages: {} })
+
+  const root = await mkdtemp(path.join(tmpdir(), 'qiushuiai-airadar-models-'))
+  roots.push(root)
+  const configRoot = await initializeSingleTableConfig(
+    path.resolve(import.meta.dirname, '../../../config'),
+    root
+  )
+  await saveAnalysisModelConfig(configRoot, {
+    provider: 'codex',
+    default: 'gpt-5.5',
+    stages: { score: 'gpt-5.6-terra' },
+  })
+  expect((await loadSingleTableConfig(configRoot)).analysis.model).toEqual({
+    provider: 'codex',
+    default: 'gpt-5.5',
+    stages: { score: 'gpt-5.6-terra' },
+  })
 })
 
 it('rejects pagination and invalid scoring weights', () => {

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { AppShell } from '@/components/app-shell'
 import { ConfigPage } from '@/features/config-page'
 import { ContentWorkspace } from '@/features/content-workspace'
+import { ModelManagementPage } from '@/features/model-management-page'
 import { RuntimePage } from '@/features/runtime-page'
 import { SourcesPage } from '@/features/sources-page'
 import type { PageKey } from '@/types'
@@ -25,6 +26,8 @@ export function App() {
         <ContentWorkspace scope='junk' />
       ) : page === 'sources' ? (
         <SourcesPage />
+      ) : page === 'models' ? (
+        <ModelManagementPage />
       ) : page === 'runtime' ? (
         <RuntimePage />
       ) : (

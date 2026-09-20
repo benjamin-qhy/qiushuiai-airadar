@@ -1,0 +1,248 @@
+import { useEffect, useState } from 'react'
+import { Button } from '@/components/ui/button'
+import { api, post } from '@/lib/api'
+
+interface Run {
+  status: 'running' | 'completed' | 'failed' | 'interrupted'
+  startedAt: string
+  updatedAt: string
+  endedAt?: string
+  message?: string
+  sources: Array<{
+    sourceId: string
+    name: string
+    status: string
+    discovered: number
+    completed: number
+    failed: number
+    skipped: number
+  }>
+}
+export interface CollectionData {
+  collection?: Run | null
+  schedule?: { expression: string; active: boolean }
+  total?: number
+  failed?: number
+  waiting?: number
+}
+const time = (value?: string) =>
+  value
+    ? new Date(value).toLocaleString('zh-CN', {
+        timeZone: 'Asia/Shanghai',
+        hour12: false,
+      })
+    : '—'
+const labels = {
+  running: '正在采集',
+  completed: '本轮已结束',
+  failed: '本轮执行失败',
+  interrupted: '本轮采集中断',
+}
+
+export function CollectionStatus({ initial }: { initial: CollectionData }) {
+  const [data, setData] = useState(initial)
+  const [starting, setStarting] = useState(false)
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+  useEffect(() => {
+    let disposed = false
+    let busy = false
+    const timer = setInterval(() => {
+      if (busy) return
+      busy = true
+      void api<CollectionData>('/api/runtime')
+        .then((value) => {
+          if (!disposed) {
+            setData(value)
+            setError('')
+          }
+        })
+        .catch(() => {
+          if (!disposed)
+            setError('状态更新失败，显示的是上次结果，请检查服务连接。')
+        })
+        .finally(() => {
+          busy = false
+        })
+    }, 3000)
+    return () => {
+      disposed = true
+      clearInterval(timer)
+    }
+  }, [])
+  const run = data.collection
+  const running = run?.status === 'running'
+  const done =
+    run?.sources.filter((source) => source.status === 'completed').length ?? 0
+  const total = run?.sources.length ?? 0
+  const current = run?.sources.find((source) => source.status === 'running')
+  async function start() {
+    setStarting(true)
+    setError('')
+    setNotice('')
+    try {
+      const result = await post<{ message: string }>(
+        '/api/collection/start',
+        {}
+      )
+      setNotice(result.message)
+      setData(await api<CollectionData>('/api/runtime'))
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '启动失败，请重试。')
+    } finally {
+      setStarting(false)
+    }
+  }
+  const totals = run?.sources.reduce(
+    (sum, source) => ({
+      discovered: sum.discovered + source.discovered,
+      completed: sum.completed + source.completed,
+      failed: sum.failed + source.failed,
+      skipped: sum.skipped + source.skipped,
+    }),
+    { discovered: 0, completed: 0, failed: 0, skipped: 0 }
+  )
+  return (
+    <div className='mx-auto max-w-6xl space-y-8'>
+      <section className='space-y-4' aria-live='polite'>
+        <div className='flex flex-wrap items-start justify-between gap-4'>
+          <div>
+            <h2 className='text-2xl font-semibold'>
+              {run ? labels[run.status] : '暂无采集任务记录'}
+            </h2>
+            <p className='mt-2 text-sm text-muted-foreground'>
+              {current
+                ? `${running ? '当前信源' : '最后处理信源'}：${current.name}`
+                : run
+                  ? '本轮信源处理情况见下方列表'
+                  : '手工执行后，将记录本轮进度；历史任务无法还原。'}
+            </p>
+          </div>
+          <Button disabled={running || starting} onClick={() => void start()}>
+            {starting ? '正在启动…' : running ? '采集中…' : '手工执行'}
+          </Button>
+        </div>
+        <p className='text-sm text-muted-foreground'>
+          执行所有已启用信源；已有内容不会重复分析。关闭页面后继续运行，电脑和服务需要保持运行。
+        </p>
+        {error && (
+          <p role='alert' className='text-sm text-destructive'>
+            {error}
+          </p>
+        )}
+        {notice && <p className='text-sm'>{notice}</p>}
+        {run?.message && <p className='text-sm'>{run.message}</p>}
+        {run && (
+          <>
+            <div className='flex justify-between text-sm'>
+              <span>
+                已结束 {done} / {total} 个信源
+              </span>
+              <span>剩余 {total - done} 个</span>
+            </div>
+            <progress
+              className='h-2 w-full accent-primary'
+              aria-label='信源处理进度'
+              value={done}
+              max={Math.max(total, 1)}
+            />
+            <p className='text-sm text-muted-foreground'>
+              开始：{time(run.startedAt)} ·{' '}
+              {run.endedAt
+                ? `结束：${time(run.endedAt)}`
+                : `最近进度：${time(run.updatedAt)}`}
+              （北京时间）
+            </p>
+            <div className='grid grid-cols-2 gap-4 border-t pt-4 sm:grid-cols-4'>
+              {[
+                ['本轮发现', totals?.discovered],
+                ['处理成功（含已有）', totals?.completed],
+                ['异常 / 待处理', totals?.failed],
+                ['跳过已有或排除项', totals?.skipped],
+              ].map(([name, value]) => (
+                <div key={name}>
+                  <div className='text-sm text-muted-foreground'>{name}</div>
+                  <div className='mt-2 text-2xl font-semibold'>{value}</div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </section>
+      <section className='border-t pt-5'>
+        <h2 className='font-semibold'>自动执行</h2>
+        <p className='mt-2 text-sm'>
+          当前服务尚未启用定时调度，请使用“手工执行”。
+        </p>
+        <p className='mt-1 text-sm text-muted-foreground'>
+          已保存计划：
+          {data.schedule?.expression === '0 8 * * *'
+            ? '每天北京时间 08:00'
+            : (data.schedule?.expression ?? '未配置')}
+          。保存计划不代表任务已经自动运行。
+        </p>
+      </section>
+      {run && (
+        <section className='border-t pt-5'>
+          <h2 className='mb-3 font-semibold'>本轮信源进度</h2>
+          <div className='overflow-x-auto'>
+            <table className='w-full text-left text-sm'>
+              <thead className='text-muted-foreground'>
+                <tr>
+                  {['信源', '执行情况', '发现', '成功', '异常', '跳过'].map(
+                    (label) => (
+                      <th key={label} className='p-3'>
+                        {label}
+                      </th>
+                    )
+                  )}
+                </tr>
+              </thead>
+              <tbody>
+                {run.sources.map((source) => (
+                  <tr
+                    key={source.sourceId}
+                    className='hover:bg-foreground/[0.025]'
+                  >
+                    <td className='p-3'>{source.name}</td>
+                    <td className='p-3'>
+                      {source.status === 'pending'
+                        ? '等待执行'
+                        : source.status === 'running'
+                          ? running
+                            ? '正在执行'
+                            : '未完成'
+                          : source.failed
+                            ? '已结束，有异常'
+                            : '已结束'}
+                    </td>
+                    {[
+                      source.discovered,
+                      source.completed,
+                      source.failed,
+                      source.skipped,
+                    ].map((value, index) => (
+                      <td key={index} className='p-3'>
+                        {value}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+      <section className='border-t pt-5'>
+        <h2 className='font-semibold'>累计内容概况</h2>
+        <p className='mt-2 text-sm'>
+          累计入库 {data.total ?? '—'} 条 · 失败 {data.failed ?? '—'} 条 ·
+          等待人工转写 {data.waiting ?? '—'} 条
+        </p>
+        <p className='mt-1 text-sm text-muted-foreground'>
+          查看正文请前往“全部内容”；处理失败和转写请前往“异常数据”。
+        </p>
+      </section>
+    </div>
+  )
+}

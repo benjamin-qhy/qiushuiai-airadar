@@ -5,6 +5,7 @@ export type PageKey =
   | 'favorites'
   | 'junk'
   | 'sources'
+  | 'models'
   | 'runtime'
   | 'config'
 export type UtilizationAction =

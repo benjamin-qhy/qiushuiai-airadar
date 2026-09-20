@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
@@ -354,8 +354,94 @@ it('manages sources, provider credentials, connection tests, and validated YAML'
         }),
       ]),
     })
+    const models = (await fetch(`${base}/api/models`).then((response) =>
+      response.json()
+    )) as {
+      defaultModel: string
+      availableModels: Array<{ id: string }>
+    }
+    expect(models.defaultModel).toBe('gpt-5.5')
+    expect(models.availableModels.map((model) => model.id)).toContain(
+      'gpt-5.6-terra'
+    )
+    const modelSave = await mutate('/api/models', 'PUT', {
+      defaultModel: 'gpt-5.5',
+      stages: { score: 'gpt-5.6-terra' },
+    })
+    expect(modelSave.status).toBe(200)
+    expect(
+      (await fetch(`${base}/api/models`).then((response) =>
+        response.json()
+      )) as { stages: Record<string, string> }
+    ).toMatchObject({ stages: { score: 'gpt-5.6-terra' } })
+    expect(
+      (
+        await mutate('/api/models', 'PUT', {
+          defaultModel: 'not-a-real-model',
+          stages: {},
+        })
+      ).status
+    ).toBe(400)
+    const codexAuthPath = path.join(root, 'codex-auth.json')
+    const accessToken = `header.${Buffer.from(
+      JSON.stringify({ exp: 4_102_444_800 })
+    ).toString('base64url')}.signature`
+    await writeFile(
+      codexAuthPath,
+      JSON.stringify({
+        auth_mode: 'chatgpt',
+        tokens: {
+          access_token: accessToken,
+          refresh_token: 'test-refresh-token',
+        },
+      })
+    )
+    const modelProviderSave = await mutate(
+      '/api/model-providers/openai-codex',
+      'PUT',
+      { authPath: codexAuthPath }
+    )
+    expect(modelProviderSave.status).toBe(200)
+    const providersAfterCodex = (await fetch(
+      `${base}/api/model-providers`
+    ).then((response) => response.json())) as {
+      items: Array<Record<string, unknown>>
+    }
+    expect(providersAfterCodex.items).toHaveLength(40)
+    expect(
+      providersAfterCodex.items.find(
+        (provider) => provider.id === 'openai-codex'
+      )
+    ).toMatchObject({
+      id: 'openai-codex',
+      name: 'OpenAI Codex',
+      configured: true,
+      authPath: codexAuthPath,
+      usesDefaultPath: false,
+    })
+    expect(
+      (await mutate('/api/model-providers/openai-codex/test', 'POST', {}))
+        .status
+    ).toBe(200)
+    expect(
+      (
+        await mutate('/api/model-providers/openai', 'PUT', {
+          apiKey: 'test-api-key',
+        })
+      ).status
+    ).toBe(200)
+    const providerPayload = JSON.stringify(
+      await fetch(`${base}/api/model-providers`).then((response) =>
+        response.json()
+      )
+    )
+    expect(providerPayload).not.toContain('test-api-key')
+    expect(providerPayload).toContain('"id":"openai"')
+    expect(providerPayload).toContain('"configured":true')
     if (process.platform !== 'win32')
-      expect((await stat(path.join(root, '.env'))).mode & 0o077).toBe(0)
+      expect(
+        (await stat(path.join(root, 'model-auth.json'))).mode & 0o077
+      ).toBe(0)
 
     const runtimeFile = path.join(configRoot, 'runtime.yaml')
     const runtimeBefore = await readFile(runtimeFile, 'utf8')

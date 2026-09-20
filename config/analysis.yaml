@@ -1,6 +1,7 @@
 model:
   provider: codex
-  name: gpt-5.5
+  default: gpt-5.5
+  stages: {}
 prompts:
   classify: 5
   score: 3

@@ -8,6 +8,7 @@ import {
   editableConfigFileNames,
   loadSingleTableConfig,
   loadSourceState,
+  saveAnalysisModelConfig,
   saveEditableConfigFile,
   saveProvidersConfig,
   saveSourcesConfig,
@@ -22,11 +23,19 @@ import {
 } from '@qiushuiai-airadar/runtime'
 import { classifyNonArticlePage } from '@qiushuiai-airadar/source-adapters'
 import {
-  createSingleTableCodexGateway,
+  createReadOnlyCodexCredentialStore,
+  createFileModelCredentialStore,
+  createProviderLoginManager,
+  createSingleTableModelGateway,
+  listSingleTableModelProviders,
+  listSingleTableModels,
+  normalizeSingleTableProviderId,
   processSingleTableContent,
   type SingleTableModelGateway,
 } from '@qiushuiai-airadar/pipeline'
 import { createSingleTableSourceProvider } from './single-table-provider.js'
+import { collectSingleTable } from './collect-single-table.js'
+import { readCollectionRun } from './collection-run.js'
 
 const scoreNames = {
   interest_fit: 'interestFit',
@@ -310,10 +319,61 @@ export function createSingleTableServiceApp(options: {
   webRoot?: string
   gateway?: SingleTableModelGateway
   providerFetch?: typeof fetch
+  collectionProvider?: import('@qiushuiai-airadar/pipeline').SingleTableSourceProvider
 }) {
   let repository: SingleTableRepository | undefined
   let server: Server | undefined
   const retrying = new Set<string>()
+  let collection: Promise<unknown> | undefined
+  const secretFile = options.secretFile ?? path.join(options.dataRoot, '.env')
+  const credentialFile = path.join(options.dataRoot, 'model-auth.json')
+  const credentialStore = createFileModelCredentialStore(credentialFile)
+  const logins = createProviderLoginManager(credentialStore)
+  const readSecret = async (name: string) => {
+    try {
+      return await createFileSecretReader(secretFile).get(name)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+      throw error
+    }
+  }
+  const codexProviderStatus = async () => {
+    const defaultAuthPath = path.join(homedir(), '.codex', 'auth.json')
+    const configuredAuthPath = await readSecret('CODEX_AUTH_PATH')
+    const authPath = configuredAuthPath || defaultAuthPath
+    return {
+      authPath,
+      usesDefaultPath: !configuredAuthPath,
+    }
+  }
+  const modelProviders = async () => {
+    const config = await loadSingleTableConfig(options.configRoot)
+    const activeProvider = normalizeSingleTableProviderId(
+      config.analysis.model.provider
+    )
+    const codex = await codexProviderStatus()
+    const credentials = new Map(
+      (await credentialStore.list()).map((credential) => [
+        credential.providerId,
+        credential.type,
+      ])
+    )
+    return Promise.all(
+      listSingleTableModelProviders().map(async (provider) => ({
+        ...provider,
+        active: provider.id === activeProvider,
+        configured: credentials.has(provider.id),
+        credentialType: credentials.get(provider.id),
+        ...(provider.id === 'openai-codex'
+          ? {
+              authLabel: 'ChatGPT 订阅 OAuth',
+              authPath: codex.authPath,
+              usesDefaultPath: codex.usesDefaultPath,
+            }
+          : { authLabel: 'API Key' }),
+      }))
+    )
+  }
   return {
     async start(address: { host: string; port: number }) {
       if (server) throw new Error('Service is already running')
@@ -325,6 +385,11 @@ export function createSingleTableServiceApp(options: {
         void (async () => {
           const url = new URL(request.url ?? '/', `http://${address.host}`)
           const method = request.method ?? 'GET'
+          const loginStatus = /^\/api\/model-login\/([^/]+)$/u.exec(
+            url.pathname
+          )
+          if (method === 'GET' && loginStatus)
+            return send(response, 200, logins.get(loginStatus[1]!))
           if (method === 'GET' && url.pathname === '/health')
             return send(response, 200, {
               service: 'qiushuiai-airadar-single-table',
@@ -429,11 +494,75 @@ export function createSingleTableServiceApp(options: {
             )
             return send(response, 200, { items })
           }
-          if (method === 'GET' && url.pathname === '/api/runtime')
+          if (method === 'GET' && url.pathname === '/api/models') {
+            const config = await loadSingleTableConfig(options.configRoot)
+            const provider = normalizeSingleTableProviderId(
+              url.searchParams.get('provider') ?? config.analysis.model.provider
+            )
+            return send(response, 200, {
+              provider,
+              defaultModel: config.analysis.model.default,
+              stages: config.analysis.model.stages,
+              availableModels: listSingleTableModels(provider),
+            })
+          }
+          if (method === 'GET' && url.pathname === '/api/model-providers')
+            return send(response, 200, { items: await modelProviders() })
+          if (method === 'POST' && url.pathname === '/api/collection/start') {
+            const origin = request.headers.origin
+            if (origin && new URL(origin).host !== request.headers.host)
+              return send(response, 403, {
+                message: '只能从本机页面启动采集。',
+              })
+            if (
+              collection ||
+              (await readCollectionRun(options.dataRoot))?.status === 'running'
+            )
+              return send(response, 409, { message: '已有采集任务正在执行。' })
+            if (!options.promptsRoot)
+              return send(response, 400, {
+                message: '服务未配置分析提示词目录，无法启动采集。',
+              })
+            let started!: () => void
+            let rejected!: (error: unknown) => void
+            const ready = new Promise<void>((resolve, reject) => {
+              started = resolve
+              rejected = reject
+            })
+            collection = collectSingleTable({
+              dataRoot: options.dataRoot,
+              templateRoot: options.configRoot,
+              promptsRoot: options.promptsRoot,
+              secretFile: options.secretFile,
+              repository: activeRepository,
+              gateway: options.gateway,
+              provider: options.collectionProvider,
+              onStarted: started,
+            })
+              .catch((error: unknown) => {
+                rejected(error)
+              })
+              .finally(() => {
+                collection = undefined
+              })
+            await ready
+            return send(response, 202, {
+              message: '采集已启动，关闭页面后仍会继续执行。',
+            })
+          }
+          if (method === 'GET' && url.pathname === '/api/runtime') {
+            const config = await loadSingleTableConfig(options.configRoot)
             return send(response, 200, {
               mode: 'single-table',
               ...activeRepository.runtimeOverview(),
+              collection: await readCollectionRun(options.dataRoot),
+              schedule: {
+                expression: config.runtime.collection.schedule,
+                timezone: config.runtime.timezone,
+                active: false,
+              },
             })
+          }
           if (method === 'GET' && url.pathname === '/api/config') {
             const files = await Promise.all(
               editableConfigFileNames.map(async (name) => ({
@@ -457,6 +586,231 @@ export function createSingleTableServiceApp(options: {
               !request.headers['content-type']?.startsWith('application/json')
             )
               return send(response, 415, { error: 'json_required' })
+            if (method === 'POST' && url.pathname === '/api/model-login') {
+              const body = await bodyOf(request)
+              return send(
+                response,
+                200,
+                logins.start(
+                  String(body.providerId ?? ''),
+                  body.method === 'device_code' ? 'device_code' : 'browser'
+                )
+              )
+            }
+            const loginAction =
+              /^\/api\/model-login\/([^/]+)\/(respond|cancel)$/u.exec(
+                url.pathname
+              )
+            if (method === 'POST' && loginAction) {
+              const body = await bodyOf(request)
+              return send(
+                response,
+                200,
+                loginAction[2] === 'cancel'
+                  ? logins.cancel(loginAction[1]!)
+                  : logins.respond(
+                      loginAction[1]!,
+                      String(body.promptId ?? ''),
+                      String(body.answer ?? '')
+                    )
+              )
+            }
+            const connectionTest =
+              /^\/api\/model-providers\/([^/]+)\/connection-test$/u.exec(
+                url.pathname
+              )
+            if (method === 'POST' && connectionTest) {
+              const body = await bodyOf(request)
+              try {
+                return send(
+                  response,
+                  200,
+                  await logins.test(
+                    connectionTest[1]!,
+                    String(body.modelId ?? '')
+                  )
+                )
+              } catch {
+                return send(response, 400, {
+                  message: '连接测试未成功，请检查账号权限、额度或网络后重试。',
+                })
+              }
+            }
+            if (method === 'PUT' && url.pathname === '/api/models') {
+              const body = await bodyOf(request)
+              const config = await loadSingleTableConfig(options.configRoot)
+              const provider = normalizeSingleTableProviderId(
+                typeof body.provider === 'string'
+                  ? body.provider.trim()
+                  : config.analysis.model.provider
+              )
+              const defaultModel =
+                typeof body.defaultModel === 'string'
+                  ? body.defaultModel.trim()
+                  : ''
+              const stages =
+                body.stages &&
+                typeof body.stages === 'object' &&
+                !Array.isArray(body.stages)
+                  ? (body.stages as Record<string, unknown>)
+                  : {}
+              const available = new Set(
+                listSingleTableModels(provider).map((model) => model.id)
+              )
+              const selected = [
+                defaultModel,
+                ...['classify', 'score', 'translate'].flatMap((stage) =>
+                  typeof stages[stage] === 'string' && stages[stage].trim()
+                    ? [stages[stage].trim()]
+                    : []
+                ),
+              ]
+              if (
+                !defaultModel ||
+                selected.some((model) => !available.has(model))
+              )
+                return send(response, 400, {
+                  error: 'invalid_model',
+                  message: '请选择当前提供商支持的模型。',
+                })
+              await saveAnalysisModelConfig(options.configRoot, {
+                provider,
+                default: defaultModel,
+                stages: Object.fromEntries(
+                  ['classify', 'score', 'translate'].flatMap((stage) =>
+                    typeof stages[stage] === 'string' && stages[stage].trim()
+                      ? [[stage, stages[stage].trim()]]
+                      : []
+                  )
+                ),
+              })
+              return send(response, 200, { saved: 'models' })
+            }
+            const modelProviderMutation =
+              /^\/api\/model-providers\/([^/]+)$/u.exec(url.pathname)
+            if (method === 'PUT' && modelProviderMutation) {
+              const providerId = decodeURIComponent(modelProviderMutation[1]!)
+              const definition = listSingleTableModelProviders().find(
+                (provider) => provider.id === providerId
+              )
+              if (!definition)
+                return send(response, 404, {
+                  error: 'model_provider_not_found',
+                })
+              const body = await bodyOf(request)
+              if (providerId === 'openai-codex') {
+                const useDefaultPath = body.useDefaultPath === true
+                const requestedPath =
+                  typeof body.authPath === 'string' ? body.authPath.trim() : ''
+                const authPath = useDefaultPath
+                  ? path.join(homedir(), '.codex', 'auth.json')
+                  : requestedPath
+                if (!authPath || !path.isAbsolute(authPath))
+                  return send(response, 400, {
+                    error: 'invalid_auth_path',
+                    message: '请输入授权文件的绝对路径。',
+                  })
+                try {
+                  const imported =
+                    await createReadOnlyCodexCredentialStore(authPath).read(
+                      'openai-codex'
+                    )
+                  if (!imported) throw new Error('Codex credential is missing')
+                  await credentialStore.modify(providerId, async () => imported)
+                } catch {
+                  return send(response, 400, {
+                    error: 'invalid_codex_auth',
+                    message: '该文件不是可用的 Codex ChatGPT 授权文件。',
+                  })
+                }
+                await updateFileSecret(
+                  secretFile,
+                  'CODEX_AUTH_PATH',
+                  useDefaultPath ? undefined : authPath
+                )
+              } else {
+                if (!definition.authMethods.includes('api_key'))
+                  return send(response, 400, {
+                    error: 'api_key_not_supported',
+                    message: '该提供商不支持 API Key 配置。',
+                  })
+                if (body.clearApiKey === true) {
+                  await credentialStore.delete(providerId)
+                } else if (
+                  typeof body.apiKey === 'string' &&
+                  body.apiKey.trim()
+                ) {
+                  const env =
+                    body.env &&
+                    typeof body.env === 'object' &&
+                    !Array.isArray(body.env)
+                      ? Object.fromEntries(
+                          Object.entries(body.env).flatMap(([name, value]) =>
+                            typeof value === 'string' && value.trim()
+                              ? [[name, value.trim()]]
+                              : []
+                          )
+                        )
+                      : undefined
+                  await credentialStore.modify(providerId, async () => ({
+                    type: 'api_key',
+                    key: body.apiKey!.toString().trim(),
+                    ...(env && Object.keys(env).length ? { env } : {}),
+                  }))
+                } else
+                  return send(response, 400, {
+                    error: 'api_key_required',
+                    message: '请输入 API Key。',
+                  })
+              }
+              return send(response, 200, {
+                saved: providerId,
+                providers: await modelProviders(),
+              })
+            }
+            const modelProviderDelete =
+              /^\/api\/model-providers\/([^/]+)$/u.exec(url.pathname)
+            if (method === 'DELETE' && modelProviderDelete) {
+              const providerId = decodeURIComponent(modelProviderDelete[1]!)
+              if (
+                !listSingleTableModelProviders().some(
+                  (provider) => provider.id === providerId
+                )
+              )
+                return send(response, 404, {
+                  error: 'model_provider_not_found',
+                })
+              await credentialStore.delete(providerId)
+              return send(response, 200, {
+                deleted: providerId,
+                providers: await modelProviders(),
+              })
+            }
+            const modelProviderTest =
+              /^\/api\/model-providers\/([^/]+)\/test$/u.exec(url.pathname)
+            if (method === 'POST' && modelProviderTest) {
+              await bodyOf(request)
+              const providerId = decodeURIComponent(modelProviderTest[1]!)
+              const provider = (await modelProviders()).find(
+                (item) => item.id === providerId
+              )
+              if (!provider)
+                return send(response, 404, {
+                  error: 'model_provider_not_found',
+                })
+              if (!provider.configured)
+                return send(response, 409, {
+                  error: 'model_provider_unconfigured',
+                  message: `${provider.name} 凭据尚未配置。`,
+                })
+              return send(response, 200, {
+                status: 'succeeded',
+                message:
+                  providerId === 'openai-codex'
+                    ? 'Codex ChatGPT 授权文件可用。'
+                    : `${provider.name} API Key 已配置。`,
+              })
+            }
             if (method === 'POST' && url.pathname === '/api/sources') {
               const body = await bodyOf(request)
               const source = sourceFromBody(body)
@@ -883,10 +1237,10 @@ export function createSingleTableServiceApp(options: {
                 })
                 const gateway =
                   options.gateway ??
-                  createSingleTableCodexGateway(
-                    (await credential('CODEX_AUTH_PATH')) ??
-                      path.join(homedir(), '.codex', 'auth.json'),
-                    config.analysis.model.name
+                  createSingleTableModelGateway(
+                    credentialStore,
+                    config.analysis.model.provider,
+                    config.analysis.model
                   )
                 const completed = await processSingleTableContent({
                   repository: activeRepository,
@@ -1045,10 +1399,12 @@ export function createSingleTableServiceApp(options: {
       return { host: address.host, port: bound.port }
     },
     async stop() {
+      logins.stop()
       const current = server
       server = undefined
       if (current)
         await new Promise<void>((resolve) => current.close(() => resolve()))
+      await collection
       repository?.close()
       repository = undefined
     },

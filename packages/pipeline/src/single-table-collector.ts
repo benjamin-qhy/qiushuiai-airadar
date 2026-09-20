@@ -69,6 +69,11 @@ export interface CollectSourcesOptions {
   scoring: ScoringRules
   longContentMinChars: number
   translationMinimumTotalScore: number
+  onProgress?: (
+    source: ConfiguredSource,
+    result: SourceRunResult,
+    finished: boolean
+  ) => Promise<void>
   onError?: (
     source: ConfiguredSource,
     item: DiscoveredContent | undefined,
@@ -103,15 +108,18 @@ export async function collectSourcesSerially(
       skipped: 0,
     }
     results.push(result)
+    await options.onProgress?.(source, result, false)
     let page: SinglePageDiscovery
     try {
       page = await options.provider.discover(source)
     } catch (error) {
       result.failed++
       options.onError?.(source, undefined, error)
+      await options.onProgress?.(source, result, true)
       continue
     }
     result.discovered = page.items.length
+    await options.onProgress?.(source, result, false)
     for (const item of page.items) {
       let original: OriginalContent | undefined
       try {
@@ -227,6 +235,7 @@ export async function collectSourcesSerially(
         }
         options.onError?.(source, item, error)
       } finally {
+        await options.onProgress?.(source, result, false)
         if (item.interaction)
           options.repository.updateInteractionBySourceId(
             source.id,
@@ -236,6 +245,7 @@ export async function collectSourcesSerially(
       }
     }
     if (options.afterSource) await options.afterSource(source, result, page)
+    await options.onProgress?.(source, result, true)
   }
   return results
 }

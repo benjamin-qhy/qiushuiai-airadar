@@ -1,0 +1,139 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { expect, it } from 'vitest'
+import { beginCollectionRun, readCollectionRun } from './collection-run.js'
+import { collectSingleTable } from './collect-single-table.js'
+import { createSingleTableServiceApp } from './single-table-service.js'
+
+it('starts asynchronously via HTTP, prevents duplicate starts and reports final progress', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'airadar-manual-'))
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const { initializeSingleTableConfig } =
+    await import('@qiushuiai-airadar/config')
+  const configRoot = await initializeSingleTableConfig(
+    path.resolve(import.meta.dirname, '../../../config'),
+    root
+  )
+  const service = createSingleTableServiceApp({
+    dataRoot: root,
+    configRoot,
+    promptsRoot: 'unused',
+    gateway: {
+      complete: async () => {
+        throw new Error('unexpected model call')
+      },
+    },
+    collectionProvider: {
+      discover: async () => {
+        await gate
+        return { items: [], request: {}, response: {} }
+      },
+      resolve: async () => {
+        throw new Error('unexpected resolve')
+      },
+    },
+  })
+  try {
+    const { port } = await service.start({ host: '127.0.0.1', port: 0 })
+    const url = `http://127.0.0.1:${port}`
+    expect(
+      (
+        await fetch(url + '/api/collection/start', {
+          method: 'POST',
+          headers: { origin: 'https://example.com' },
+        })
+      ).status
+    ).toBe(403)
+    expect(
+      (await fetch(url + '/api/collection/start', { method: 'POST' })).status
+    ).toBe(202)
+    expect(
+      (await fetch(url + '/api/collection/start', { method: 'POST' })).status
+    ).toBe(409)
+    expect(
+      (await (await fetch(url + '/api/runtime')).json()).collection.status
+    ).toBe('running')
+    release()
+    await service.stop()
+    expect((await readCollectionRun(root))?.status).toBe('completed')
+    expect(
+      (await readCollectionRun(root))?.sources.every(
+        (source) => source.status === 'completed'
+      )
+    ).toBe(true)
+  } finally {
+    release()
+    await service.stop()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+it('persists progress, rejects overlapping runs and detects an exited owner', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'airadar-run-'))
+  try {
+    expect(await readCollectionRun(root)).toBeNull()
+    const first = await beginCollectionRun(root)
+    await first.save()
+    expect((await readCollectionRun(root))?.status).toBe('running')
+    await expect(beginCollectionRun(root)).rejects.toThrow('已有采集任务')
+    first.run.pid = 2147483647
+    await first.save()
+    expect((await readCollectionRun(root))?.status).toBe('interrupted')
+    await first.release()
+    const next = await beginCollectionRun(root)
+    await next.release()
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+it('tracks real collector source completion and failures without stopping remaining sources', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'airadar-collection-'))
+  try {
+    const { initializeSingleTableConfig } =
+      await import('@qiushuiai-airadar/config')
+    const config = await initializeSingleTableConfig(
+      path.resolve(import.meta.dirname, '../../../config'),
+      root
+    )
+    await writeFile(
+      path.join(config, 'sources.yaml'),
+      'sources:\n  - {id: first, platform: x, account_name: First, external_identity: first, language: en, enabled: true}\n  - {id: second, platform: x, account_name: Second, external_identity: second, language: en, enabled: true}\n'
+    )
+    await collectSingleTable({
+      dataRoot: root,
+      templateRoot: config,
+      promptsRoot: '',
+      gateway: {
+        complete: async () => {
+          throw new Error('unexpected model call')
+        },
+      },
+      provider: {
+        discover: async (source) => {
+          if (source.id === 'first') throw new Error('unavailable')
+          return { items: [], request: {}, response: {} }
+        },
+        resolve: async () => {
+          throw new Error('unexpected resolution')
+        },
+      },
+    })
+    const run = await readCollectionRun(root)
+    expect(run?.status).toBe('completed')
+    expect(
+      run?.sources.map((source) => [source.status, source.failed])
+    ).toEqual([
+      ['completed', 1],
+      ['completed', 0],
+    ])
+    const next = await beginCollectionRun(root)
+    await next.release()
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})

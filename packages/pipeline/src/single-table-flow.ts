@@ -3,7 +3,12 @@ import path from 'node:path'
 
 import { parse as parseYaml } from 'yaml'
 import { z } from 'zod'
-import { createModels } from '@earendil-works/pi-ai'
+import { createModels, type CredentialStore } from '@earendil-works/pi-ai'
+import {
+  builtinModels,
+  getBuiltinModels,
+  getBuiltinProviders,
+} from '@earendil-works/pi-ai/providers/all'
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex'
 
 import type {
@@ -61,18 +66,104 @@ export interface SingleTableModelGateway {
   }): Promise<SingleTableModelResponse>
 }
 
-export function createSingleTableCodexGateway(
-  authPath: string,
-  modelId: string
-): SingleTableModelGateway {
-  const models = createModels({
-    credentials: createReadOnlyCodexCredentialStore(authPath),
-  })
+export interface SingleTableModelRouting {
+  default: string
+  stages?: Partial<Record<keyof typeof promptNames, string>>
+}
+
+export function resolveSingleTableModel(
+  routing: SingleTableModelRouting,
+  stage: keyof typeof promptNames
+): string {
+  return routing.stages?.[stage] ?? routing.default
+}
+
+export function listSingleTableCodexModels(): Array<{
+  id: string
+  name: string
+}> {
+  const models = createModels()
   models.setProvider(openaiCodexProvider())
-  const model = models.getModel('openai-codex', modelId)
-  if (!model) throw new Error(`Codex model is unavailable: ${modelId}`)
+  return models
+    .getModels('openai-codex')
+    .map((model) => ({ id: model.id, name: model.name }))
+}
+
+export function normalizeSingleTableProviderId(providerId: string): string {
+  return providerId === 'codex' ? 'openai-codex' : providerId
+}
+
+export function modelProviderSecretName(providerId: string): string {
+  return `MODEL_PROVIDER_${providerId.replace(/[^a-z0-9]+/giu, '_').toUpperCase()}_API_KEY`
+}
+
+export function listSingleTableModelProviders(): Array<{
+  id: string
+  name: string
+  authMethods: Array<'api_key' | 'oauth'>
+  apiKeyLabel?: string
+  apiKeyConfigurable: boolean
+  oauthLabel?: string
+  subscription: boolean
+  modelCount: number
+}> {
+  const models = builtinModels()
+  return models.getProviders().map((provider) => ({
+    id: provider.id,
+    name: provider.name,
+    authMethods: [
+      ...(provider.auth.apiKey ? (['api_key'] as const) : []),
+      ...(provider.auth.oauth ? (['oauth'] as const) : []),
+    ],
+    apiKeyLabel: provider.auth.apiKey?.name,
+    apiKeyConfigurable: Boolean(provider.auth.apiKey?.login),
+    oauthLabel: provider.auth.oauth?.loginLabel ?? provider.auth.oauth?.name,
+    subscription: Boolean(provider.auth.oauth?.isSubscription),
+    modelCount: provider.getModels().length,
+  }))
+}
+
+export function listSingleTableModels(providerId: string): Array<{
+  id: string
+  name: string
+}> {
+  const normalized = normalizeSingleTableProviderId(providerId)
+  if (!getBuiltinProviders().includes(normalized as never)) return []
+  return getBuiltinModels(normalized as never).map((model) => ({
+    id: model.id,
+    name: model.name,
+  }))
+}
+
+export function createSingleTableModelGateway(
+  credentials: CredentialStore,
+  providerId: string,
+  routing: string | SingleTableModelRouting
+): SingleTableModelGateway {
+  const normalizedProvider = normalizeSingleTableProviderId(providerId)
+  const models = builtinModels({ credentials })
+  const routes: SingleTableModelRouting =
+    typeof routing === 'string' ? { default: routing } : routing
+  const modelIds = new Set([
+    routes.default,
+    ...Object.values(routes.stages ?? {}),
+  ])
+  for (const modelId of modelIds) {
+    if (!models.getModel(normalizedProvider, modelId))
+      throw new Error(`Model is unavailable: ${normalizedProvider}/${modelId}`)
+  }
+  return createGateway(models, normalizedProvider, routes)
+}
+
+function createGateway(
+  models: ReturnType<typeof createModels>,
+  providerId: string,
+  routes: SingleTableModelRouting
+): SingleTableModelGateway {
   return {
     async complete(input) {
+      const modelId = resolveSingleTableModel(routes, input.stage)
+      const model = models.getModel(providerId, modelId)!
       const request = {
         context: {
           systemPrompt: input.system,
@@ -102,8 +193,6 @@ export function createSingleTableCodexGateway(
         model: message.model,
         stopReason: message.stopReason,
         errorMessage: message.errorMessage,
-        // Internal reasoning payloads and signatures are not user-facing
-        // response content and must never be persisted to Markdown logs.
         content: message.content
           .filter((block) => block.type === 'text')
           .map((block) => ({ type: 'text', text: block.text })),
@@ -141,6 +230,27 @@ export function createSingleTableCodexGateway(
       }
     },
   }
+}
+
+export function createSingleTableCodexGateway(
+  authPath: string,
+  routing: string | SingleTableModelRouting
+): SingleTableModelGateway {
+  const models = createModels({
+    credentials: createReadOnlyCodexCredentialStore(authPath),
+  })
+  models.setProvider(openaiCodexProvider())
+  const routes: SingleTableModelRouting =
+    typeof routing === 'string' ? { default: routing } : routing
+  const modelIds = new Set([
+    routes.default,
+    ...Object.values(routes.stages ?? {}),
+  ])
+  for (const modelId of modelIds) {
+    if (!models.getModel('openai-codex', modelId))
+      throw new Error(`Codex model is unavailable: ${modelId}`)
+  }
+  return createGateway(models, 'openai-codex', routes)
 }
 
 export interface ContentFlowOptions {

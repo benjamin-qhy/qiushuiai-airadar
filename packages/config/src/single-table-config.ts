@@ -19,8 +19,40 @@ const weights = z.object(
   ) as Record<(typeof dimensions)[number], z.ZodNumber>
 )
 
+const modelStageNames = ['classify', 'score', 'translate'] as const
+
+export const analysisModelConfigSchema = z
+  .object({
+    provider: z.string().min(1),
+    default: z.string().min(1).optional(),
+    // `name` is the pre-model-routing field. Keep reading it so existing
+    // installations upgrade without requiring a manual config edit.
+    name: z.string().min(1).optional(),
+    stages: z
+      .object({
+        classify: z.string().min(1).optional(),
+        score: z.string().min(1).optional(),
+        translate: z.string().min(1).optional(),
+      })
+      .default({}),
+  })
+  .refine((value) => Boolean(value.default ?? value.name), {
+    message: 'A default model is required',
+  })
+  .transform((value) => ({
+    provider: value.provider,
+    default: value.default ?? value.name!,
+    stages: Object.fromEntries(
+      modelStageNames.flatMap((stage) =>
+        value.stages[stage] ? [[stage, value.stages[stage]]] : []
+      )
+    ) as Partial<Record<(typeof modelStageNames)[number], string>>,
+  }))
+
+export type AnalysisModelConfig = z.output<typeof analysisModelConfigSchema>
+
 export const analysisConfigSchema = z.object({
-  model: z.object({ provider: z.string().min(1), name: z.string().min(1) }),
+  model: analysisModelConfigSchema,
   prompts: z.object({
     classify: z.number().int().positive(),
     score: z.number().int().positive(),
@@ -248,6 +280,21 @@ export async function saveProvidersConfig(
     configRoot,
     'providers.yaml',
     stringifyYaml(providers)
+  )
+}
+
+export async function saveAnalysisModelConfig(
+  configRoot: string,
+  model: AnalysisModelConfig
+): Promise<void> {
+  const current = await parseFile(
+    path.join(configRoot, 'analysis.yaml'),
+    analysisConfigSchema
+  )
+  await saveEditableConfigFile(
+    configRoot,
+    'analysis.yaml',
+    stringifyYaml({ ...current, model: analysisModelConfigSchema.parse(model) })
   )
 }
 

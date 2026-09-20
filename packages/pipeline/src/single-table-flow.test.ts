@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
@@ -13,8 +13,10 @@ import {
 import {
   createSingleTableCodexGateway,
   processSingleTableContent,
+  resolveSingleTableModel,
   type SingleTableModelGateway,
 } from './single-table-flow.js'
+import { createFileModelCredentialStore } from './model-credential-store.js'
 
 const roots: string[] = []
 const repositories: SingleTableRepository[] = []
@@ -105,10 +107,39 @@ const score = JSON.stringify({
 })
 
 describe('single-table AI flow', () => {
+  it('persists provider credentials without exposing secrets from list', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'qiushuiai-model-auth-'))
+    roots.push(root)
+    const file = path.join(root, 'model-auth.json')
+    const store = createFileModelCredentialStore(file)
+    await store.modify('openai', async () => ({
+      type: 'api_key',
+      key: 'secret-test-key',
+    }))
+    expect(await store.list()).toEqual([
+      { providerId: 'openai', type: 'api_key' },
+    ])
+    expect(await store.read('openai')).toMatchObject({
+      type: 'api_key',
+      key: 'secret-test-key',
+    })
+    expect(await readFile(file, 'utf8')).toContain('secret-test-key')
+    if (process.platform !== 'win32')
+      expect((await stat(file)).mode & 0o077).toBe(0)
+  })
   it('accepts the configured Codex model without reading credentials', () => {
     expect(
       createSingleTableCodexGateway('/nonexistent/auth.json', 'gpt-5.6-terra')
     ).toBeDefined()
+  })
+  it('uses a stage override and otherwise falls back to the default model', () => {
+    const routing = {
+      default: 'gpt-5.5',
+      stages: { score: 'gpt-5.6-terra' },
+    }
+    expect(resolveSingleTableModel(routing, 'classify')).toBe('gpt-5.5')
+    expect(resolveSingleTableModel(routing, 'score')).toBe('gpt-5.6-terra')
+    expect(resolveSingleTableModel(routing, 'translate')).toBe('gpt-5.5')
   })
   it('calls only classification for junk content', async () => {
     const { result, calls } = await fixture({

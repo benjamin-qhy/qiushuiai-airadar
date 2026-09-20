@@ -1,5 +1,41 @@
 # Learnings
 
+## [LRN-20260920-MP1] correction
+
+**Logged**: 2026-09-20T08:40:00+08:00
+**Priority**: high
+**Status**: resolved
+**Area**: frontend
+
+### Summary
+
+“模型管理”中的“提供商”专指大模型提供商，不是 TwitterAPI、TikHub 等内容采集提供商。
+
+### Details
+
+首次实现仅按界面里已有的“供应商”字样，把信源采集 API 提供商搬进了模型管理，混淆了两个不同领域。正确边界是：OpenAI Codex 等 LLM 提供商及其授权方式属于模型管理；TwitterAPI、TikHub、YouTube Data API 和 RSS 等仍属于信源管理。
+
+### Suggested Action
+
+涉及“提供商”时先结合页面领域和实际调用链确认语义。模型管理绑定分析模型网关与模型凭据；信源管理绑定采集适配器与采集 API 凭据。
+
+### Metadata
+
+- Source: user_feedback
+- Related Files: apps/web/src/features/model-management-page.tsx, apps/web/src/features/sources-page.tsx, apps/service/src/single-table-service.ts
+- Tags: model-provider, source-provider, domain-boundary
+- Pattern-Key: frontend.provider_term_requires_domain_context
+- Recurrence-Count: 1
+- First-Seen: 2026-09-20
+- Last-Seen: 2026-09-20
+
+### Resolution
+
+- **Resolved**: 2026-09-20T08:52:00+08:00
+- **Notes**: 模型管理改为 OpenAI Codex 大模型提供商及本机 OAuth 授权配置；采集 API 提供商恢复到信源管理，并完成开发版浏览器验证。
+
+---
+
 ## [LRN-20260918-001] correction
 
 **Logged**: 2026-09-18T14:27:00+08:00

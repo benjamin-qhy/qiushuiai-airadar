@@ -33,6 +33,7 @@ interface FileConfigData {
   mode: 'file'
   files: Array<{ name: string; content: string }>
 }
+
 export function ConfigPage() {
   const [data, setData] = useState<ConfigData>()
   const [fileData, setFileData] = useState<FileConfigData>()
@@ -159,7 +160,7 @@ export function ConfigPage() {
               </p>
             )}
             <p className='text-sm text-muted-foreground'>
-              保存前会检查 YAML 格式和字段规则；密钥请在“平台与供应商”中配置。
+              保存前会检查 YAML 格式和字段规则；密钥请在“模型管理”中配置。
             </p>
           </div>
         </div>

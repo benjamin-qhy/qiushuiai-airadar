@@ -33,6 +33,7 @@ describe('complete web shell', () => {
     expect(html).toContain('我的收藏')
     expect(html).toContain('垃圾内容')
     expect(html).toContain('信源管理')
+    expect(html).toContain('模型管理')
     expect(html).toContain('运行状态')
     expect(html).toContain('系统配置')
     expect(html).toContain('data-slot="sidebar"')

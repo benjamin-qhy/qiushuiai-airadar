@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   Activity,
-  CheckCircle2,
   FlaskConical,
   Pencil,
   Plus,
@@ -21,6 +20,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { CollectionProvidersPanel } from '@/features/collection-providers-panel'
 import { api, post, put, remove } from '@/lib/api'
 import type { ProviderItem, SourceItem } from '@/types'
 
@@ -67,9 +67,6 @@ export function SourcesPage() {
   const [sourceDialog, setSourceDialog] = useState(false)
   const [editingId, setEditingId] = useState<string>()
   const [draft, setDraft] = useState<SourceDraft>(emptySource)
-  const [providerSecrets, setProviderSecrets] = useState<
-    Record<string, string>
-  >({})
   const load = () =>
     Promise.all([
       api<{ items: SourceItem[] }>('/api/sources'),
@@ -170,14 +167,14 @@ export function SourcesPage() {
     <div className='flex h-full min-h-0 flex-col'>
       <PageHeader
         title='信源管理'
-        description='管理采集信源、平台供应商与连接状态'
+        description='管理采集信源、有效参数与运行状态'
       />
       <div className='min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 pb-24 md:p-6 lg:pb-6'>
         <div className='mx-auto max-w-[1500px]'>
           <Tabs defaultValue='sources'>
             <TabsList>
               <TabsTrigger value='sources'>信源管理</TabsTrigger>
-              <TabsTrigger value='providers'>平台与供应商</TabsTrigger>
+              <TabsTrigger value='providers'>平台与采集提供商</TabsTrigger>
             </TabsList>
             <TabsContent value='sources' className='mt-4'>
               <div className='grid w-full min-w-0 grid-cols-[minmax(0,1fr)] overflow-hidden rounded-sm border bg-card lg:min-h-[calc(100svh-9rem)] lg:grid-cols-[380px_minmax(0,1fr)]'>
@@ -397,108 +394,7 @@ export function SourcesPage() {
               </div>
             </TabsContent>
             <TabsContent value='providers' className='mt-4'>
-              <div className='grid gap-4 md:grid-cols-2 xl:grid-cols-3'>
-                {(providers ?? []).map((provider) => (
-                  <Card key={provider.id}>
-                    <CardHeader>
-                      <div className='flex items-start justify-between'>
-                        <div>
-                          <CardTitle>{provider.name}</CardTitle>
-                          <p className='mt-1 text-xs text-muted-foreground'>
-                            {typeLabels[provider.sourceType] ??
-                              provider.sourceType}{' '}
-                            · 优先级 {provider.priority}
-                          </p>
-                        </div>
-                        <CheckCircle2 className='size-5 text-foreground' />
-                      </div>
-                    </CardHeader>
-                    <CardContent>
-                      <div className='mb-4 rounded-sm bg-foreground/[0.025] p-3 text-sm'>
-                        凭据：
-                        {provider.secretStatus
-                          ? provider.secretStatus.configured
-                            ? (provider.secretStatus.maskedValue ?? '已配置')
-                            : '未配置'
-                          : '无需凭据'}
-                      </div>
-                      {provider.secretName && (
-                        <Input
-                          type='password'
-                          value={providerSecrets[provider.id] ?? ''}
-                          onChange={(event) =>
-                            setProviderSecrets((current) => ({
-                              ...current,
-                              [provider.id]: event.target.value,
-                            }))
-                          }
-                          placeholder={`填写 ${provider.secretName}`}
-                          className='mb-3'
-                        />
-                      )}
-                      <div className='flex flex-wrap gap-2'>
-                        <Button
-                          size='sm'
-                          onClick={() =>
-                            void put(`/api/providers/${provider.id}`, {
-                              preferred: true,
-                              secret: providerSecrets[provider.id],
-                            })
-                              .then(async () => {
-                                setProviderSecrets((current) => ({
-                                  ...current,
-                                  [provider.id]: '',
-                                }))
-                                setMessage(`${provider.name} 配置已保存。`)
-                                await load()
-                              })
-                              .catch((error) => setMessage(String(error)))
-                          }
-                        >
-                          {provider.preferred ? '保存配置' : '设为首选并保存'}
-                        </Button>
-                        <Button
-                          variant='outline'
-                          size='sm'
-                          onClick={() =>
-                            void post<{ items?: unknown[] }>(
-                              `/api/providers/${encodeURIComponent(provider.id)}/test`,
-                              {}
-                            )
-                              .then((result) =>
-                                setMessage(
-                                  `${provider.name} 连接成功，返回 ${result.items?.length ?? 0} 条预览。`
-                                )
-                              )
-                              .catch((error) => setMessage(String(error)))
-                          }
-                        >
-                          测试连接
-                        </Button>
-                        {provider.secretStatus?.configured && (
-                          <Button
-                            variant='ghost'
-                            size='sm'
-                            onClick={() =>
-                              void put(`/api/providers/${provider.id}`, {
-                                clearSecret: true,
-                              })
-                                .then(async () => {
-                                  setMessage(`${provider.name} 密钥已清除。`)
-                                  await load()
-                                })
-                                .catch((error) => setMessage(String(error)))
-                            }
-                          >
-                            清除密钥
-                          </Button>
-                        )}
-                      </div>
-                    </CardContent>
-                  </Card>
-                ))}
-              </div>
-              {message && <p className='mt-4 text-sm'>{message}</p>}
+              <CollectionProvidersPanel />
             </TabsContent>
           </Tabs>
         </div>

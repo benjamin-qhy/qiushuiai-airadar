@@ -23,6 +23,8 @@ import { z } from 'zod'
 
 export * from './single-table-flow.js'
 export * from './single-table-collector.js'
+export * from './model-credential-store.js'
+export * from './provider-login.js'
 
 import { canonicalizeContentUrl, type Source } from '@qiushuiai-airadar/domain'
 import type {

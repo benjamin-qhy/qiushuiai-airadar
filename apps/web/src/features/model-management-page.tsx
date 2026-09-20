@@ -13,8 +13,17 @@ type ModelStage = 'classify' | 'score' | 'translate'
 interface ModelConfigData {
   provider: string
   defaultModel: string
-  stages: Partial<Record<ModelStage, string>>
+  stages: Partial<
+    Record<ModelStage, string | { provider: string; model: string }>
+  >
   availableModels: Array<{ id: string; name: string }>
+  availableModelGroups: ModelGroup[]
+}
+
+interface ModelGroup {
+  providerId: string
+  providerName: string
+  models: Array<{ id: string; name: string }>
 }
 
 interface ModelProviderItem {
@@ -63,6 +72,15 @@ function authDescription(provider: ModelProviderItem) {
     .join(' / ')
 }
 
+function modelChoice(providerId: string, modelId: string) {
+  return `${providerId}\n${modelId}`
+}
+
+function parseModelChoice(value: string) {
+  const [provider, model] = value.split('\n')
+  return provider && model ? { provider, model } : undefined
+}
+
 export function ModelManagementPage() {
   const [providers, setProviders] = useState<ModelProviderItem[]>([])
   const [selectedProviderId, setSelectedProviderId] = useState('openai-codex')
@@ -75,6 +93,7 @@ export function ModelManagementPage() {
   const [stageModels, setStageModels] = useState<
     Partial<Record<ModelStage, string>>
   >({})
+  const [testingProviderId, setTestingProviderId] = useState('')
   const [message, setMessage] = useState('')
 
   const loadProviders = useCallback(async () => {
@@ -93,14 +112,32 @@ export function ModelManagementPage() {
   const applyModelData = useCallback(
     (result: ModelConfigData, reset = false) => {
       setModelData(result)
-      setModelProvider(result.provider)
-      const available = new Set(result.availableModels.map((model) => model.id))
+      const configuredGroup = result.availableModelGroups.find(
+        (group) => group.providerId === result.provider
+      )
+      const fallbackGroup = result.availableModelGroups[0]
+      const selectedGroup = configuredGroup ?? fallbackGroup
+      const available = new Set(
+        selectedGroup?.models.map((model) => model.id) ?? []
+      )
+      setModelProvider(selectedGroup?.providerId ?? '')
       setDefaultModel(
         !reset && available.has(result.defaultModel)
           ? result.defaultModel
-          : (result.availableModels[0]?.id ?? '')
+          : (selectedGroup?.models[0]?.id ?? '')
       )
-      setStageModels(reset ? {} : result.stages)
+      setStageModels(
+        reset || selectedGroup?.providerId !== result.provider
+          ? {}
+          : Object.fromEntries(
+              Object.entries(result.stages).map(([stage, route]) => [
+                stage,
+                typeof route === 'string'
+                  ? modelChoice(result.provider, route)
+                  : modelChoice(route.provider, route.model),
+              ])
+            )
+      )
     },
     []
   )
@@ -160,13 +197,14 @@ export function ModelManagementPage() {
       })
       setMessage(`${provider.name} 凭据已保存，密钥不会回显。`)
       setApiKey('')
-      await loadProviders()
+      await Promise.all([loadProviders(), loadModels()])
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error))
     }
   }
 
   async function testProvider(provider: ModelProviderItem) {
+    setTestingProviderId(provider.id)
     try {
       const result = await post<{ message: string }>(
         `/api/model-providers/${encodeURIComponent(provider.id)}/test`,
@@ -175,6 +213,8 @@ export function ModelManagementPage() {
       setMessage(result.message)
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setTestingProviderId('')
     }
   }
 
@@ -182,16 +222,7 @@ export function ModelManagementPage() {
     try {
       await remove(`/api/model-providers/${encodeURIComponent(provider.id)}`)
       setMessage(`${provider.name} 凭据已移除。`)
-      await loadProviders()
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error))
-    }
-  }
-
-  async function changeModelProvider(provider: string) {
-    try {
-      setModelProvider(provider)
-      await loadModels(provider, true)
+      await Promise.all([loadProviders(), loadModels()])
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error))
     }
@@ -202,13 +233,25 @@ export function ModelManagementPage() {
       await put('/api/models', {
         provider: modelProvider,
         defaultModel,
-        stages: stageModels,
+        stages: Object.fromEntries(
+          Object.entries(stageModels).flatMap(([stage, choice]) => {
+            const route = choice ? parseModelChoice(choice) : undefined
+            return route ? [[stage, route]] : []
+          })
+        ),
       })
       setMessage('模型配置已保存，新采集和手动重试会立即使用。')
       await Promise.all([loadProviders(), loadModels()])
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error))
     }
+  }
+
+  function selectDefaultModel(value: string) {
+    const route = parseModelChoice(value)
+    if (!route) return
+    setModelProvider(route.provider)
+    setDefaultModel(route.model)
   }
 
   return (
@@ -368,21 +411,26 @@ export function ModelManagementPage() {
                       </div>
                     )}
                     <div className='mt-7 flex flex-wrap gap-2 border-t pt-4'>
-                      <Button
-                        variant='outline'
-                        size='sm'
-                        onClick={() => void testProvider(selectedProvider)}
-                      >
-                        检查配置
-                      </Button>
                       {selectedProvider.configured && (
-                        <Button
-                          variant='ghost'
-                          size='sm'
-                          onClick={() => void clearProvider(selectedProvider)}
-                        >
-                          移除凭据
-                        </Button>
+                        <>
+                          <Button
+                            variant='outline'
+                            size='sm'
+                            disabled={testingProviderId === selectedProvider.id}
+                            onClick={() => void testProvider(selectedProvider)}
+                          >
+                            {testingProviderId === selectedProvider.id
+                              ? '正在测试…'
+                              : '测试连通性'}
+                          </Button>
+                          <Button
+                            variant='ghost'
+                            size='sm'
+                            onClick={() => void clearProvider(selectedProvider)}
+                          >
+                            移除凭据
+                          </Button>
+                        </>
                       )}
                     </div>
                   </section>
@@ -397,7 +445,7 @@ export function ModelManagementPage() {
                       模型配置
                     </h2>
                     <p className='mt-1 text-sm text-muted-foreground'>
-                      先选择提供商和默认模型，再按处理环节单独覆盖。
+                      从已配置提供商的模型中直接选择，并按处理环节单独覆盖。
                     </p>
                   </div>
                   <Button
@@ -411,91 +459,110 @@ export function ModelManagementPage() {
                 </div>
                 {modelData && (
                   <div className='mt-5 grid gap-5'>
-                    <label className='grid gap-1.5 text-sm sm:grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)] sm:items-center'>
-                      <span>
-                        <span className='font-medium'>大模型提供商</span>
-                        <span className='mt-0.5 block text-xs text-muted-foreground'>
-                          模型列表会随提供商切换
-                        </span>
-                      </span>
-                      <select
-                        aria-label='大模型提供商'
-                        value={modelProvider}
-                        onChange={(event) =>
-                          void changeModelProvider(event.target.value)
-                        }
-                        className='h-9 w-full rounded-md border bg-background px-3 text-sm'
-                      >
-                        {providers.map((provider) => (
-                          <option key={provider.id} value={provider.id}>
-                            {provider.name}
-                            {provider.configured ? '' : '（未配置）'}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className='grid gap-1.5 text-sm sm:grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)] sm:items-center'>
-                      <span>
-                        <span className='font-medium'>默认模型</span>
-                        <span className='mt-0.5 block text-xs text-muted-foreground'>
-                          未单独设置的环节都会使用它
-                        </span>
-                      </span>
-                      <select
-                        aria-label='默认模型'
-                        value={defaultModel}
-                        onChange={(event) =>
-                          setDefaultModel(event.target.value)
-                        }
-                        className='h-9 w-full rounded-md border bg-background px-3 font-mono text-sm'
-                      >
-                        {modelData.availableModels.map((model) => (
-                          <option key={model.id} value={model.id}>
-                            {model.name} ({model.id})
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <div className='border-t pt-4'>
-                      <div className='mb-3 font-mono text-xs text-muted-foreground'>
-                        按处理环节单独设置
+                    {modelData.availableModelGroups.length === 0 ? (
+                      <div className='bg-foreground/[0.025] p-4 text-sm'>
+                        <p className='font-medium'>还没有可选择的模型</p>
+                        <p className='mt-1 text-muted-foreground'>
+                          请先到“提供商管理”完成至少一个提供商的配置。
+                        </p>
                       </div>
-                      <div className='grid gap-4'>
-                        {modelStages.map((stage) => (
-                          <label
-                            key={stage.id}
-                            className='grid gap-1.5 text-sm sm:grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)] sm:items-center'
-                          >
-                            <span>
-                              <span className='font-medium'>{stage.label}</span>
-                              <span className='mt-0.5 block text-xs text-muted-foreground'>
-                                {stage.description}
-                              </span>
+                    ) : (
+                      <>
+                        <label className='grid gap-1.5 text-sm sm:grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)] sm:items-center'>
+                          <span>
+                            <span className='font-medium'>默认模型</span>
+                            <span className='mt-0.5 block text-xs text-muted-foreground'>
+                              只显示已配置的提供商，并按提供商分组
                             </span>
-                            <select
-                              aria-label={`${stage.label}模型`}
-                              value={stageModels[stage.id] ?? ''}
-                              onChange={(event) =>
-                                setStageModels((current) => ({
-                                  ...current,
-                                  [stage.id]: event.target.value || undefined,
-                                }))
-                              }
-                              className='h-9 w-full rounded-md border bg-background px-3 font-mono text-sm'
-                            >
-                              <option value=''>
-                                跟随默认模型（{defaultModel}）
-                              </option>
-                              {modelData.availableModels.map((model) => (
-                                <option key={model.id} value={model.id}>
-                                  {model.name} ({model.id})
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                        ))}
-                      </div>
-                    </div>
+                          </span>
+                          <select
+                            aria-label='默认模型'
+                            value={modelChoice(modelProvider, defaultModel)}
+                            onChange={(event) =>
+                              selectDefaultModel(event.target.value)
+                            }
+                            className='h-9 w-full rounded-md border bg-background px-3 font-mono text-sm'
+                          >
+                            {modelData.availableModelGroups.map((group) => (
+                              <optgroup
+                                key={group.providerId}
+                                label={group.providerName}
+                              >
+                                {group.models.map((model) => (
+                                  <option
+                                    key={`${group.providerId}/${model.id}`}
+                                    value={modelChoice(
+                                      group.providerId,
+                                      model.id
+                                    )}
+                                  >
+                                    {model.name} ({model.id})
+                                  </option>
+                                ))}
+                              </optgroup>
+                            ))}
+                          </select>
+                        </label>
+                        <div className='border-t pt-4'>
+                          <div className='mb-3 font-mono text-xs text-muted-foreground'>
+                            按处理环节单独设置
+                          </div>
+                          <div className='grid gap-4'>
+                            {modelStages.map((stage) => (
+                              <label
+                                key={stage.id}
+                                className='grid gap-1.5 text-sm sm:grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)] sm:items-center'
+                              >
+                                <span>
+                                  <span className='font-medium'>
+                                    {stage.label}
+                                  </span>
+                                  <span className='mt-0.5 block text-xs text-muted-foreground'>
+                                    {stage.description}
+                                  </span>
+                                </span>
+                                <select
+                                  aria-label={`${stage.label}模型`}
+                                  value={stageModels[stage.id] ?? ''}
+                                  onChange={(event) =>
+                                    setStageModels((current) => ({
+                                      ...current,
+                                      [stage.id]:
+                                        event.target.value || undefined,
+                                    }))
+                                  }
+                                  className='h-9 w-full rounded-md border bg-background px-3 font-mono text-sm'
+                                >
+                                  <option value=''>
+                                    跟随默认模型（{defaultModel}）
+                                  </option>
+                                  {modelData.availableModelGroups.map(
+                                    (group) => (
+                                      <optgroup
+                                        key={group.providerId}
+                                        label={group.providerName}
+                                      >
+                                        {group.models.map((model) => (
+                                          <option
+                                            key={`${group.providerId}/${model.id}`}
+                                            value={modelChoice(
+                                              group.providerId,
+                                              model.id
+                                            )}
+                                          >
+                                            {model.name} ({model.id})
+                                          </option>
+                                        ))}
+                                      </optgroup>
+                                    )
+                                  )}
+                                </select>
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                      </>
+                    )}
                   </div>
                 )}
               </section>

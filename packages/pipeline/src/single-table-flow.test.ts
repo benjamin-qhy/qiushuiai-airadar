@@ -140,6 +140,17 @@ describe('single-table AI flow', () => {
     expect(resolveSingleTableModel(routing, 'classify')).toBe('gpt-5.5')
     expect(resolveSingleTableModel(routing, 'score')).toBe('gpt-5.6-terra')
     expect(resolveSingleTableModel(routing, 'translate')).toBe('gpt-5.5')
+    expect(
+      resolveSingleTableModel(
+        {
+          default: 'gpt-5.5',
+          stages: {
+            score: { provider: 'deepseek', model: 'deepseek-v4-pro' },
+          },
+        },
+        'score'
+      )
+    ).toBe('deepseek-v4-pro')
   })
   it('calls only classification for junk content', async () => {
     const { result, calls } = await fixture({

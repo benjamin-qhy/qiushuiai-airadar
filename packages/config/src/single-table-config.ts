@@ -20,6 +20,10 @@ const weights = z.object(
 )
 
 const modelStageNames = ['classify', 'score', 'translate'] as const
+const modelRouteSchema = z.union([
+  z.string().min(1),
+  z.object({ provider: z.string().min(1), model: z.string().min(1) }),
+])
 
 export const analysisModelConfigSchema = z
   .object({
@@ -30,9 +34,9 @@ export const analysisModelConfigSchema = z
     name: z.string().min(1).optional(),
     stages: z
       .object({
-        classify: z.string().min(1).optional(),
-        score: z.string().min(1).optional(),
-        translate: z.string().min(1).optional(),
+        classify: modelRouteSchema.optional(),
+        score: modelRouteSchema.optional(),
+        translate: modelRouteSchema.optional(),
       })
       .default({}),
   })
@@ -46,7 +50,12 @@ export const analysisModelConfigSchema = z
       modelStageNames.flatMap((stage) =>
         value.stages[stage] ? [[stage, value.stages[stage]]] : []
       )
-    ) as Partial<Record<(typeof modelStageNames)[number], string>>,
+    ) as Partial<
+      Record<
+        (typeof modelStageNames)[number],
+        string | { provider: string; model: string }
+      >
+    >,
   }))
 
 export type AnalysisModelConfig = z.output<typeof analysisModelConfigSchema>

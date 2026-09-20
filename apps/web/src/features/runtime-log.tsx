@@ -231,7 +231,8 @@ export function RuntimeLog() {
     }
   }, [keyword, limit, source, status])
   useEffect(() => {
-    void load()
+    const timer = setTimeout(() => void load(), 0)
+    return () => clearTimeout(timer)
   }, [load])
   useEffect(() => {
     if (!data.running) return

@@ -389,6 +389,10 @@ export function createSingleTableServiceApp(options: {
   promptsRoot?: string
   webRoot?: string
   gateway?: SingleTableModelGateway
+  modelConnectionTest?: (
+    providerId: string,
+    modelId: string
+  ) => Promise<{ status: 'succeeded'; message: string }>
   providerFetch?: typeof fetch
   collectionProvider?: import('@qiushuiai-airadar/pipeline').SingleTableSourceProvider
 }) {
@@ -611,11 +615,19 @@ export function createSingleTableServiceApp(options: {
             const provider = normalizeSingleTableProviderId(
               url.searchParams.get('provider') ?? config.analysis.model.provider
             )
+            const configuredProviders = (await modelProviders()).filter(
+              (item) => item.configured
+            )
             return send(response, 200, {
               provider,
               defaultModel: config.analysis.model.default,
               stages: config.analysis.model.stages,
               availableModels: listSingleTableModels(provider),
+              availableModelGroups: configuredProviders.map((item) => ({
+                providerId: item.id,
+                providerName: item.name,
+                models: listSingleTableModels(item.id),
+              })),
             })
           }
           if (method === 'GET' && url.pathname === '/api/model-providers')
@@ -766,35 +778,56 @@ export function createSingleTableServiceApp(options: {
                 !Array.isArray(body.stages)
                   ? (body.stages as Record<string, unknown>)
                   : {}
-              const available = new Set(
-                listSingleTableModels(provider).map((model) => model.id)
-              )
-              const selected = [
-                defaultModel,
-                ...['classify', 'score', 'translate'].flatMap((stage) =>
-                  typeof stages[stage] === 'string' && stages[stage].trim()
-                    ? [stages[stage].trim()]
-                    : []
+              const stageRoutes: Record<
+                string,
+                string | { provider: string; model: string }
+              > = {}
+              for (const stage of ['classify', 'score', 'translate']) {
+                const value = stages[stage]
+                if (typeof value === 'string' && value.trim()) {
+                  stageRoutes[stage] = value.trim()
+                  continue
+                }
+                if (
+                  value &&
+                  typeof value === 'object' &&
+                  !Array.isArray(value)
+                ) {
+                  const route = value as Record<string, unknown>
+                  const stageProvider = normalizeSingleTableProviderId(
+                    typeof route.provider === 'string'
+                      ? route.provider.trim()
+                      : ''
+                  )
+                  const model =
+                    typeof route.model === 'string' ? route.model.trim() : ''
+                  if (stageProvider && model)
+                    stageRoutes[stage] = { provider: stageProvider, model }
+                }
+              }
+              const routes = [
+                { provider, model: defaultModel },
+                ...Object.values(stageRoutes).map((route) =>
+                  typeof route === 'string' ? { provider, model: route } : route
                 ),
               ]
               if (
                 !defaultModel ||
-                selected.some((model) => !available.has(model))
+                routes.some(
+                  (route) =>
+                    !listSingleTableModels(route.provider).some(
+                      (model) => model.id === route.model
+                    )
+                )
               )
                 return send(response, 400, {
                   error: 'invalid_model',
-                  message: '请选择当前提供商支持的模型。',
+                  message: '请选择已配置提供商支持的模型。',
                 })
               await saveAnalysisModelConfig(options.configRoot, {
                 provider,
                 default: defaultModel,
-                stages: Object.fromEntries(
-                  ['classify', 'score', 'translate'].flatMap((stage) =>
-                    typeof stages[stage] === 'string' && stages[stage].trim()
-                      ? [[stage, stages[stage].trim()]]
-                      : []
-                  )
-                ),
+                stages: stageRoutes,
               })
               return send(response, 200, { saved: 'models' })
             }
@@ -901,7 +934,7 @@ export function createSingleTableServiceApp(options: {
             const modelProviderTest =
               /^\/api\/model-providers\/([^/]+)\/test$/u.exec(url.pathname)
             if (method === 'POST' && modelProviderTest) {
-              await bodyOf(request)
+              const body = await bodyOf(request)
               const providerId = decodeURIComponent(modelProviderTest[1]!)
               const provider = (await modelProviders()).find(
                 (item) => item.id === providerId
@@ -915,13 +948,43 @@ export function createSingleTableServiceApp(options: {
                   error: 'model_provider_unconfigured',
                   message: `${provider.name} 凭据尚未配置。`,
                 })
-              return send(response, 200, {
-                status: 'succeeded',
-                message:
-                  providerId === 'openai-codex'
-                    ? 'Codex ChatGPT 授权文件可用。'
-                    : `${provider.name} API Key 已配置。`,
-              })
+              const config = await loadSingleTableConfig(options.configRoot)
+              const availableModels = listSingleTableModels(providerId)
+              const requestedModel =
+                typeof body.modelId === 'string' ? body.modelId.trim() : ''
+              const modelId =
+                (requestedModel &&
+                availableModels.some((model) => model.id === requestedModel)
+                  ? requestedModel
+                  : undefined) ??
+                (normalizeSingleTableProviderId(
+                  config.analysis.model.provider
+                ) === providerId &&
+                availableModels.some(
+                  (model) => model.id === config.analysis.model.default
+                )
+                  ? config.analysis.model.default
+                  : availableModels[0]?.id)
+              if (!modelId)
+                return send(response, 409, {
+                  error: 'model_provider_has_no_models',
+                  message: `${provider.name} 暂无可测试的模型。`,
+                })
+              try {
+                const result = options.modelConnectionTest
+                  ? await options.modelConnectionTest(providerId, modelId)
+                  : await logins.test(providerId, modelId)
+                return send(response, 200, {
+                  ...result,
+                  message: `${provider.name} 连通性测试成功，模型 ${modelId} 已响应。`,
+                  modelId,
+                })
+              } catch {
+                return send(response, 400, {
+                  error: 'model_connection_failed',
+                  message: `${provider.name} 连通性测试失败，请检查凭据、额度或网络后重试。`,
+                })
+              }
             }
             if (method === 'POST' && url.pathname === '/api/sources') {
               const body = await bodyOf(request)

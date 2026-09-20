@@ -296,6 +296,10 @@ it('manages sources, provider credentials, connection tests, and validated YAML'
     path.join(tmpdir(), 'qiushuiai-airadar-management-')
   )
   let service: ReturnType<typeof createSingleTableServiceApp> | undefined
+  const modelConnectionTests: Array<{
+    providerId: string
+    modelId: string
+  }> = []
   try {
     const configRoot = await initializeSingleTableConfig(
       path.resolve(import.meta.dirname, '../../../config'),
@@ -309,6 +313,10 @@ it('manages sources, provider credentials, connection tests, and validated YAML'
           '<rss><channel><title>Feed</title><item><guid>one</guid><title>Item one</title><link>https://example.com/one</link></item></channel></rss>',
           { headers: { 'content-type': 'application/xml' } }
         ),
+      modelConnectionTest: async (providerId, modelId) => {
+        modelConnectionTests.push({ providerId, modelId })
+        return { status: 'succeeded', message: 'connected' }
+      },
     })
     const address = await service.start({ host: '127.0.0.1', port: 0 })
     const base = `http://${address.host}:${address.port}`
@@ -384,14 +392,22 @@ it('manages sources, provider credentials, connection tests, and validated YAML'
     )
     const modelSave = await mutate('/api/models', 'PUT', {
       defaultModel: 'gpt-5.5',
-      stages: { score: 'gpt-5.6-terra' },
+      stages: {
+        score: { provider: 'deepseek', model: 'deepseek-v4-pro' },
+      },
     })
     expect(modelSave.status).toBe(200)
     expect(
       (await fetch(`${base}/api/models`).then((response) =>
         response.json()
-      )) as { stages: Record<string, string> }
-    ).toMatchObject({ stages: { score: 'gpt-5.6-terra' } })
+      )) as {
+        stages: Record<string, { provider: string; model: string }>
+      }
+    ).toMatchObject({
+      stages: {
+        score: { provider: 'deepseek', model: 'deepseek-v4-pro' },
+      },
+    })
     expect(
       (
         await mutate('/api/models', 'PUT', {
@@ -438,9 +454,27 @@ it('manages sources, provider credentials, connection tests, and validated YAML'
       usesDefaultPath: false,
     })
     expect(
+      (await fetch(`${base}/api/models`).then((response) =>
+        response.json()
+      )) as unknown
+    ).toMatchObject({
+      availableModelGroups: [
+        expect.objectContaining({
+          providerId: 'openai-codex',
+          providerName: 'OpenAI Codex',
+          models: expect.arrayContaining([
+            expect.objectContaining({ id: 'gpt-5.5' }),
+          ]),
+        }),
+      ],
+    })
+    expect(
       (await mutate('/api/model-providers/openai-codex/test', 'POST', {}))
         .status
     ).toBe(200)
+    expect(modelConnectionTests).toEqual([
+      { providerId: 'openai-codex', modelId: 'gpt-5.5' },
+    ])
     expect(
       (
         await mutate('/api/model-providers/openai', 'PUT', {

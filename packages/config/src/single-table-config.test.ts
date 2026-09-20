@@ -93,12 +93,16 @@ it('normalizes legacy model settings and saves per-stage routing', async () => {
   await saveAnalysisModelConfig(configRoot, {
     provider: 'codex',
     default: 'gpt-5.5',
-    stages: { score: 'gpt-5.6-terra' },
+    stages: {
+      score: { provider: 'deepseek', model: 'deepseek-v4-pro' },
+    },
   })
   expect((await loadSingleTableConfig(configRoot)).analysis.model).toEqual({
     provider: 'codex',
     default: 'gpt-5.5',
-    stages: { score: 'gpt-5.6-terra' },
+    stages: {
+      score: { provider: 'deepseek', model: 'deepseek-v4-pro' },
+    },
   })
 })
 

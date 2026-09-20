@@ -68,14 +68,37 @@ export interface SingleTableModelGateway {
 
 export interface SingleTableModelRouting {
   default: string
-  stages?: Partial<Record<keyof typeof promptNames, string>>
+  stages?: Partial<
+    Record<
+      keyof typeof promptNames,
+      string | { provider: string; model: string }
+    >
+  >
 }
 
 export function resolveSingleTableModel(
   routing: SingleTableModelRouting,
   stage: keyof typeof promptNames
 ): string {
-  return routing.stages?.[stage] ?? routing.default
+  const route = routing.stages?.[stage]
+  return typeof route === 'string' ? route : (route?.model ?? routing.default)
+}
+
+function resolveSingleTableModelRoute(
+  providerId: string,
+  routing: SingleTableModelRouting,
+  stage: keyof typeof promptNames
+): { provider: string; model: string } {
+  const route = routing.stages?.[stage]
+  return typeof route === 'object'
+    ? {
+        provider: normalizeSingleTableProviderId(route.provider),
+        model: route.model,
+      }
+    : {
+        provider: normalizeSingleTableProviderId(providerId),
+        model: route ?? routing.default,
+      }
 }
 
 export function listSingleTableCodexModels(): Array<{
@@ -144,13 +167,20 @@ export function createSingleTableModelGateway(
   const models = builtinModels({ credentials })
   const routes: SingleTableModelRouting =
     typeof routing === 'string' ? { default: routing } : routing
-  const modelIds = new Set([
-    routes.default,
-    ...Object.values(routes.stages ?? {}),
-  ])
-  for (const modelId of modelIds) {
-    if (!models.getModel(normalizedProvider, modelId))
-      throw new Error(`Model is unavailable: ${normalizedProvider}/${modelId}`)
+  const modelRoutes = [
+    { provider: normalizedProvider, model: routes.default },
+    ...Object.values(routes.stages ?? {}).map((route) =>
+      typeof route === 'string'
+        ? { provider: normalizedProvider, model: route }
+        : {
+            provider: normalizeSingleTableProviderId(route.provider),
+            model: route.model,
+          }
+    ),
+  ]
+  for (const route of modelRoutes) {
+    if (!models.getModel(route.provider, route.model))
+      throw new Error(`Model is unavailable: ${route.provider}/${route.model}`)
   }
   return createGateway(models, normalizedProvider, routes)
 }
@@ -162,8 +192,12 @@ function createGateway(
 ): SingleTableModelGateway {
   return {
     async complete(input) {
-      const modelId = resolveSingleTableModel(routes, input.stage)
-      const model = models.getModel(providerId, modelId)!
+      const route = resolveSingleTableModelRoute(
+        providerId,
+        routes,
+        input.stage
+      )
+      const model = models.getModel(route.provider, route.model)!
       const request = {
         context: {
           systemPrompt: input.system,
@@ -242,13 +276,25 @@ export function createSingleTableCodexGateway(
   models.setProvider(openaiCodexProvider())
   const routes: SingleTableModelRouting =
     typeof routing === 'string' ? { default: routing } : routing
-  const modelIds = new Set([
-    routes.default,
-    ...Object.values(routes.stages ?? {}),
-  ])
-  for (const modelId of modelIds) {
-    if (!models.getModel('openai-codex', modelId))
-      throw new Error(`Codex model is unavailable: ${modelId}`)
+  const modelRoutes = [
+    { provider: 'openai-codex', model: routes.default },
+    ...Object.values(routes.stages ?? {}).map((route) =>
+      typeof route === 'string'
+        ? { provider: 'openai-codex', model: route }
+        : {
+            provider: normalizeSingleTableProviderId(route.provider),
+            model: route.model,
+          }
+    ),
+  ]
+  for (const route of modelRoutes) {
+    if (
+      route.provider !== 'openai-codex' ||
+      !models.getModel(route.provider, route.model)
+    )
+      throw new Error(
+        `Codex model is unavailable: ${route.provider}/${route.model}`
+      )
   }
   return createGateway(models, 'openai-codex', routes)
 }

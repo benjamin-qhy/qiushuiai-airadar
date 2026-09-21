@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { App, ContentCard, type FeedItem } from './app.js'
 import { Detail } from './features/content-workspace.js'
+import { CollectionProvidersPanel } from './features/collection-providers-panel.js'
 import {
   filterContentItems,
   filterContentScope,
@@ -24,6 +25,12 @@ const item: FeedItem = {
 }
 
 describe('complete web shell', () => {
+  it('separates collection providers from business interface routing', () => {
+    const html = renderToStaticMarkup(<CollectionProvidersPanel />)
+    expect(html).toContain('采集供应商配置')
+    expect(html).toContain('业务接口配置')
+  })
+
   it('shows all primary pages without demo content', () => {
     const html = renderToStaticMarkup(<App />)
     expect(html).toContain('qiushuiai-airadar')

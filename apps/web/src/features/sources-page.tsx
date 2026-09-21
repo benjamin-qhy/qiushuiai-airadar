@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   Activity,
   FlaskConical,
+  LoaderCircle,
   Pencil,
   Plus,
   Search,
@@ -56,6 +57,10 @@ const emptySource: SourceDraft = {
   enabled: true,
 }
 
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error)
+}
+
 export function SourcesPage() {
   const [sources, setSources] = useState<SourceItem[]>()
   const [providers, setProviders] = useState<ProviderItem[]>()
@@ -63,7 +68,13 @@ export function SourcesPage() {
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState('all')
   const [message, setMessage] = useState('')
+  const [messageKind, setMessageKind] = useState<'info' | 'error'>('info')
+  const [sourceAction, setSourceAction] = useState<
+    'testing' | 'status' | 'deleting' | ''
+  >('')
   const [sourceDialog, setSourceDialog] = useState(false)
+  const [dialogSaving, setDialogSaving] = useState(false)
+  const [dialogError, setDialogError] = useState('')
   const [editingId, setEditingId] = useState<string>()
   const [draft, setDraft] = useState<SourceDraft>(emptySource)
   const load = () =>
@@ -93,6 +104,7 @@ export function SourcesPage() {
   function openCreate() {
     setEditingId(undefined)
     setDraft(emptySource)
+    setDialogError('')
     setSourceDialog(true)
   }
   function openEdit() {
@@ -106,9 +118,20 @@ export function SourcesPage() {
       language: source.language,
       enabled: source.status === 'enabled',
     })
+    setDialogError('')
     setSourceDialog(true)
   }
   async function saveSource() {
+    if (
+      !draft.id.trim() ||
+      !draft.name.trim() ||
+      !draft.externalIdentity.trim()
+    ) {
+      setDialogError('请填写信源 ID、显示名称和账号或订阅地址。')
+      return
+    }
+    setDialogSaving(true)
+    setDialogError('')
     try {
       const body = draft
       const result = editingId
@@ -119,48 +142,77 @@ export function SourcesPage() {
         : await post<{ source: SourceItem }>('/api/sources', body)
       setSourceDialog(false)
       setSelected(result.source.id)
+      setMessageKind('info')
       setMessage(editingId ? '信源已更新。' : '信源已新增。')
       await load()
     } catch (error) {
-      setMessage(String(error))
+      setDialogError(errorMessage(error))
+    } finally {
+      setDialogSaving(false)
     }
   }
   async function deleteSource() {
     if (!source || !window.confirm(`确定删除信源「${source.name}」？`)) return
+    setSourceAction('deleting')
+    setMessageKind('info')
+    setMessage('正在删除信源定义，已有内容不会被删除…')
     try {
       await remove(`/api/sources/${encodeURIComponent(source.id)}`)
       setSelected(undefined)
       setMessage('信源定义已删除，已有内容仍然保留。')
       await load()
     } catch (error) {
-      setMessage(String(error))
+      setMessageKind('error')
+      setMessage(errorMessage(error))
+    } finally {
+      setSourceAction('')
     }
   }
   async function changeStatus(next: SourceItem['status']) {
     if (!source) return
-    await post(`/api/sources/${encodeURIComponent(source.id)}/status`, {
-      status: next,
-    })
-    setMessage(
-      `已将「${source.name}」设为${next === 'enabled' ? '启用' : next === 'disabled' ? '停用' : '归档'}`
-    )
-    await load()
+    setSourceAction('status')
+    setMessageKind('info')
+    setMessage(`正在${next === 'enabled' ? '启用' : '停用'}「${source.name}」…`)
+    try {
+      await post(`/api/sources/${encodeURIComponent(source.id)}/status`, {
+        status: next,
+      })
+      setMessage(
+        `已将「${source.name}」设为${next === 'enabled' ? '启用' : next === 'disabled' ? '停用' : '归档'}`
+      )
+      await load()
+    } catch (error) {
+      setMessageKind('error')
+      setMessage(errorMessage(error))
+    } finally {
+      setSourceAction('')
+    }
   }
   async function testFetch() {
     if (!source) return
-    const data = await post<{
-      providerId: string
-      items: Array<{ title?: string }>
-    }>(`/api/sources/${encodeURIComponent(source.id)}/test-fetch`, {
-      execute: true,
-    })
-    const titles = data.items
-      .map((item) => item.title)
-      .filter(Boolean)
-      .join('；')
-    setMessage(
-      `试抓成功（${data.providerId}，${data.items.length} 条）${titles ? `：${titles}` : ''}`
-    )
+    setSourceAction('testing')
+    setMessageKind('info')
+    setMessage('正在抓取少量预览，不会保存内容…')
+    try {
+      const data = await post<{
+        providerId: string
+        items: Array<{ title?: string }>
+      }>(`/api/sources/${encodeURIComponent(source.id)}/test-fetch`, {
+        execute: true,
+      })
+      const titles = data.items
+        .map((item) => item.title)
+        .filter(Boolean)
+        .join('；')
+      setMessage(
+        `试抓成功（${data.providerId}，${data.items.length} 条）${titles ? `：${titles}` : ''}`
+      )
+    } catch (error) {
+      setMessageKind('error')
+      setMessage(errorMessage(error))
+    } finally {
+      setSourceAction('')
+    }
   }
   return (
     <div className='flex h-full min-h-0 flex-col'>
@@ -180,7 +232,11 @@ export function SourcesPage() {
                       已配置 {sources?.length ?? 0} 个信源
                     </p>
                   </div>
-                  <Button size='sm' onClick={openCreate}>
+                  <Button
+                    size='sm'
+                    disabled={Boolean(sourceAction)}
+                    onClick={openCreate}
+                  >
                     <Plus />
                     新增
                   </Button>
@@ -209,7 +265,10 @@ export function SourcesPage() {
                 {visible.map((item) => (
                   <button
                     key={item.id}
-                    onClick={() => setSelected(item.id)}
+                    onClick={() => {
+                      setSelected(item.id)
+                      setMessage('')
+                    }}
                     className={`w-full p-4 text-left hover:bg-foreground/[0.025] ${selected === item.id ? 'bg-foreground/[0.05]' : ''}`}
                   >
                     <div className='flex justify-between gap-2'>
@@ -252,25 +311,36 @@ export function SourcesPage() {
                     <div className='flex flex-wrap gap-2'>
                       <Button
                         variant='outline'
+                        disabled={Boolean(sourceAction)}
                         onClick={() => void testFetch()}
                       >
-                        <FlaskConical />
-                        试抓预览
+                        {sourceAction === 'testing' ? (
+                          <LoaderCircle className='animate-spin' />
+                        ) : (
+                          <FlaskConical />
+                        )}
+                        {sourceAction === 'testing' ? '正在试抓…' : '试抓预览'}
                       </Button>
-                      <Button variant='outline' onClick={openEdit}>
+                      <Button
+                        variant='outline'
+                        disabled={Boolean(sourceAction)}
+                        onClick={openEdit}
+                      >
                         <Pencil />
                         编辑
                       </Button>
                       <Button
                         variant='outline'
+                        disabled={Boolean(sourceAction)}
                         onClick={() => void deleteSource()}
                       >
                         <Trash2 />
-                        删除
+                        {sourceAction === 'deleting' ? '删除中…' : '删除'}
                       </Button>
                       <select
                         aria-label='修改信源状态'
                         value={source.status}
+                        disabled={Boolean(sourceAction)}
                         onChange={(event) =>
                           void changeStatus(
                             event.target.value as SourceItem['status']
@@ -284,7 +354,11 @@ export function SourcesPage() {
                     </div>
                   </div>
                   {message && (
-                    <p className='mt-4 border-l-2 border-foreground/30 bg-foreground/[0.025] p-3 text-sm'>
+                    <p
+                      role={messageKind === 'error' ? 'alert' : 'status'}
+                      aria-live='polite'
+                      className={`mt-4 border-l-2 p-3 text-sm ${messageKind === 'error' ? 'border-destructive/60 text-destructive' : 'border-foreground/30 bg-foreground/[0.025]'}`}
+                    >
                       {message}
                     </p>
                   )}
@@ -375,7 +449,12 @@ export function SourcesPage() {
           </div>
         </div>
       </div>
-      <Dialog open={sourceDialog} onOpenChange={setSourceDialog}>
+      <Dialog
+        open={sourceDialog}
+        onOpenChange={(open) => {
+          if (!dialogSaving) setSourceDialog(open)
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{editingId ? '编辑信源' : '新增信源'}</DialogTitle>
@@ -385,7 +464,7 @@ export function SourcesPage() {
               信源 ID
               <Input
                 value={draft.id}
-                disabled={Boolean(editingId)}
+                disabled={Boolean(editingId) || dialogSaving}
                 onChange={(event) =>
                   setDraft({ ...draft, id: event.target.value })
                 }
@@ -396,6 +475,7 @@ export function SourcesPage() {
               平台
               <select
                 value={draft.type}
+                disabled={dialogSaving}
                 onChange={(event) =>
                   setDraft({
                     ...draft,
@@ -413,6 +493,7 @@ export function SourcesPage() {
               显示名称
               <Input
                 value={draft.name}
+                disabled={dialogSaving}
                 onChange={(event) =>
                   setDraft({ ...draft, name: event.target.value })
                 }
@@ -423,6 +504,7 @@ export function SourcesPage() {
               账号或订阅地址
               <Input
                 value={draft.externalIdentity}
+                disabled={dialogSaving}
                 onChange={(event) =>
                   setDraft({ ...draft, externalIdentity: event.target.value })
                 }
@@ -438,6 +520,7 @@ export function SourcesPage() {
                 内容语言
                 <select
                   value={draft.language}
+                  disabled={dialogSaving}
                   onChange={(event) =>
                     setDraft({
                       ...draft,
@@ -455,6 +538,7 @@ export function SourcesPage() {
               <input
                 type='checkbox'
                 checked={draft.enabled}
+                disabled={dialogSaving}
                 onChange={(event) =>
                   setDraft({ ...draft, enabled: event.target.checked })
                 }
@@ -462,11 +546,23 @@ export function SourcesPage() {
               保存后立即启用
             </label>
           </div>
+          {dialogError && (
+            <p role='alert' className='text-sm text-destructive'>
+              {dialogError}
+            </p>
+          )}
           <DialogFooter>
-            <Button variant='outline' onClick={() => setSourceDialog(false)}>
+            <Button
+              variant='outline'
+              disabled={dialogSaving}
+              onClick={() => setSourceDialog(false)}
+            >
               取消
             </Button>
-            <Button onClick={() => void saveSource()}>保存</Button>
+            <Button disabled={dialogSaving} onClick={() => void saveSource()}>
+              {dialogSaving && <LoaderCircle className='animate-spin' />}
+              {dialogSaving ? '保存中…' : '保存'}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

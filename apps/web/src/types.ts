@@ -128,5 +128,7 @@ export interface ProviderItem {
 export interface ProviderRouteItem {
   id: string
   name: string
+  description: string
   providers: string[]
+  availableProviders: string[]
 }

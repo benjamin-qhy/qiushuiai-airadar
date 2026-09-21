@@ -540,6 +540,7 @@ it('manages sources, provider credentials, connection tests, and validated YAML'
         expect.objectContaining({
           id: 'x_list',
           providers: ['tikhub-x', 'twitterapi.io'],
+          availableProviders: ['twitterapi.io', 'tikhub-x'],
         }),
       ]),
     })

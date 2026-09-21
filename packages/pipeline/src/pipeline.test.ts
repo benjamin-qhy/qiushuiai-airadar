@@ -1757,6 +1757,7 @@ describe('analysis and end-to-end orchestration', () => {
       ruleVersion: 'rules-1',
       modelRouteVersion: 'route-1',
       limit: 20,
+      now: new Date('2026-09-14T12:00:00Z'),
     })
     expect(result.failed).toBe(1)
     expect(faux.state.callCount).toBe(0)
@@ -1925,6 +1926,7 @@ describe('analysis and end-to-end orchestration', () => {
       ruleVersion: 'rules-1',
       modelRouteVersion: 'route-1',
       limit: 2,
+      now: new Date('2026-09-14T12:00:00Z'),
     })
     expect(faux.state.callCount).toBe(1)
     expect(runtime.listAnalyses()).toHaveLength(1)
@@ -1971,6 +1973,7 @@ describe('analysis and end-to-end orchestration', () => {
       ruleVersion: 'rules-1',
       modelRouteVersion: 'route-1',
       limit: 1,
+      now: new Date('2026-09-14T12:00:00Z'),
     })
     expect(result.failed).toBe(1)
     expect(runtime.listAnalyses()).toEqual([])

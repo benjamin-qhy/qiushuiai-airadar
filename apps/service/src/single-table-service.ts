@@ -88,12 +88,42 @@ const providerDefinitions = [
 ] as const
 
 const providerRouteDefinitions = [
-  { id: 'x_list', name: 'X 博主作品列表' },
-  { id: 'x_article', name: 'X 文章正文' },
-  { id: 'youtube_list', name: 'YouTube 博主作品列表' },
-  { id: 'youtube_captions', name: 'YouTube 字幕' },
-  { id: 'rss_list', name: 'RSS 作品列表' },
-  { id: 'web_article', name: '网页文章正文' },
+  {
+    id: 'x_list',
+    name: 'X 博主作品列表',
+    description: '获取 X 博主发布的作品列表及随列表返回的互动数据。',
+    availableProviders: ['twitterapi.io', 'tikhub-x'],
+  },
+  {
+    id: 'x_article',
+    name: 'X 文章正文',
+    description: '补全 X Article 或帖子中链接文章的正文。',
+    availableProviders: ['twitterapi.io', 'native-http'],
+  },
+  {
+    id: 'youtube_list',
+    name: 'YouTube 博主作品列表',
+    description: '获取 YouTube 频道的视频列表及列表自带的互动数据。',
+    availableProviders: ['youtube-data-api', 'tikhub-youtube'],
+  },
+  {
+    id: 'youtube_captions',
+    name: 'YouTube 字幕',
+    description: '获取视频已有字幕，不单独查询互动数据。',
+    availableProviders: ['tikhub-youtube'],
+  },
+  {
+    id: 'rss_list',
+    name: 'RSS 作品列表',
+    description: '读取 RSS Feed 中的作品列表。',
+    availableProviders: ['native-rss'],
+  },
+  {
+    id: 'web_article',
+    name: '网页文章正文',
+    description: '抓取普通网页文章正文。',
+    availableProviders: ['native-http'],
+  },
 ] as const
 
 function sourceItem(

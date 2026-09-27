@@ -8,15 +8,81 @@ program_root="$new_root/program"
 production_data_root="$new_root/production-data"
 port="${QIUSHUIAI_AIRADAR_PORT:-43120}"
 
-command -v curl >/dev/null 2>&1 || { echo "缺少 curl" >&2; exit 1; }
-command -v npm >/dev/null 2>&1 || { echo "缺少 npm，请先安装 Node.js 24" >&2; exit 1; }
-command -v node >/dev/null 2>&1 || { echo "缺少 Node.js 24" >&2; exit 1; }
+find_node_24() {
+  for candidate in \
+    /opt/homebrew/opt/node@24/bin/node \
+    /usr/local/opt/node@24/bin/node \
+    "$(command -v node 2>/dev/null || true)"
+  do
+    if [ -x "$candidate" ] && [ "$("$candidate" -p 'process.versions.node.split(`.`)[0]' 2>/dev/null || true)" = "24" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
 
-node_version="$(node -p 'process.versions.node')"
+node_executable="$(find_node_24 || true)"
+if [ -z "$node_executable" ]; then
+  echo "未找到 Node.js 24。请先安装：brew install node@24，然后重新运行本安装命令。" >&2
+  exit 1
+fi
+node_bin="$(dirname "$node_executable")"
+PATH="$node_bin:$PATH"
+export PATH
+
+command -v curl >/dev/null 2>&1 || { echo "缺少 curl" >&2; exit 1; }
+command -v npm >/dev/null 2>&1 || { echo "Node.js 24 不完整：缺少 npm，请重新安装 Node.js 24" >&2; exit 1; }
+
+node_version="$("$node_executable" -p 'process.versions.node')"
 node_major="${node_version%%.*}"
 if [ "$node_major" != "24" ]; then
   echo "需要 Node.js 24，当前是 $node_version" >&2
   exit 1
+fi
+
+configure_shell_path() {
+  shell_name="$(basename "${SHELL:-}")"
+  case "$shell_name" in
+    zsh) shell_config="$HOME/.zshrc" ;;
+    bash)
+      if [ "$(uname -s)" = "Darwin" ]; then
+        shell_config="$HOME/.bash_profile"
+      else
+        shell_config="$HOME/.bashrc"
+      fi
+      ;;
+    *)
+      if [ "$(uname -s)" = "Darwin" ]; then
+        shell_config="$HOME/.zshrc"
+      else
+        shell_config="$HOME/.profile"
+      fi
+      ;;
+  esac
+
+  marker="# >>> qiushuiai-airadar installer >>>"
+  if [ -f "$shell_config" ] && grep -F "$marker" "$shell_config" >/dev/null 2>&1; then
+    printf '%s\n' "$shell_config"
+    return 0
+  fi
+
+  mkdir -p "$(dirname "$shell_config")"
+  if [ -s "$shell_config" ]; then printf '\n' >> "$shell_config"; fi
+  escaped_node_bin="$(printf '%s' "$node_bin" | sed "s/'/'\\\\''/g")"
+  {
+    printf '%s\n' "$marker"
+    printf "export PATH='%s':\"\$HOME/.qiushuiai-airadar/program/bin:\$PATH\"\n" "$escaped_node_bin"
+    printf '%s\n' "# <<< qiushuiai-airadar installer <<<"
+  } >> "$shell_config"
+  printf '%s\n' "$shell_config"
+}
+
+if [ "${1:-}" = "--configure-path-only" ]; then
+  shell_config="$(configure_shell_path)"
+  echo "命令环境已配置：$shell_config"
+  echo "请关闭并重新打开终端。"
+  exit 0
 fi
 
 temporary="$(mktemp -d "${TMPDIR:-/tmp}/qiushuiai-airadar-install.XXXXXX")"
@@ -63,7 +129,10 @@ mkdir -p "$new_root/backups"
 chmod 700 "$new_root" "$new_root/backups"
 stamp="$(date +%Y%m%d-%H%M%S)"
 if [ "$(uname -s)" = "Darwin" ]; then
-  for plist in +    "$HOME/Library/LaunchAgents/ai.qiushuiai.airadar-installed.plist" +    "$HOME/Library/LaunchAgents/ai.qiushuiai.airadar-v2.plist" +    "$HOME/Library/LaunchAgents/ai.qiushuiai.qiushuiai-airadar-installed.plist"
+  for plist in \
+    "$HOME/Library/LaunchAgents/ai.qiushuiai.airadar-installed.plist" \
+    "$HOME/Library/LaunchAgents/ai.qiushuiai.airadar-v2.plist" \
+    "$HOME/Library/LaunchAgents/ai.qiushuiai.qiushuiai-airadar-installed.plist"
   do
     if [ -f "$plist" ]; then
       name="$(basename "$plist")"
@@ -144,4 +213,9 @@ if [ "$installed_version" != "$version" ]; then
 fi
 curl --noproxy '*' --retry 10 --retry-connrefused --retry-delay 1 -fsS \
   "http://127.0.0.1:$port/health" >/dev/null
+shell_config="$(configure_shell_path)"
 echo "qiushuiai-airadar $version 已安装并运行：http://127.0.0.1:$port"
+echo "命令环境已自动配置：$shell_config（重新打开终端后生效）"
+if [ "$(uname -s)" = "Darwin" ] && [ "${QIUSHUIAI_AIRADAR_OPEN_BROWSER:-1}" = "1" ]; then
+  open "http://127.0.0.1:$port" >/dev/null 2>&1 || true
+fi
